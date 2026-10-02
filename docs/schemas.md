@@ -75,3 +75,18 @@ Typed dictionary carrying execution state across graph nodes:
 - `cached: bool`: Whether served from semantic cache (`X-Cache: HIT`).
 - `cache_similarity: float | None`: Cosine similarity score if matched in cache.
 - `execution_time_ms: float`: Request turnaround time in milliseconds.
+
+### `HealthResponse`
+- `status`: Service status (`"healthy"` or `"degraded"`).
+- `version`: API release version string (`"0.5.0"`).
+- `redis_connected`: True if Redis is reachable and active.
+- `cache_driver`: Active vector driver (`"redisearch"`, `"redis_hash_fallback"`, or `"in_memory"`).
+- `circuits`: Dictionary mapping breaker names to states (`{"statuspage": "closed", "chaos": "closed"}`).
+- `active_model`: Identifier of the active LLM inference engine.
+
+### `ResilienceStatusResponse`
+- `circuits`: Dictionary mapping breaker names to deep diagnostic `CircuitSnapshot` models (state, failure counts, last state change, last failure reason).
+- `chaos_active`: Boolean flag indicating if runtime chaos simulation is active.
+- `cache_driver`: Name of the active vector search driver.
+- `cache_entries_count`: Count of documents cached in memory.
+- `active_model`: Active LLM engine name.
