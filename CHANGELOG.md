@@ -24,7 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added unit test `test_embedding_provider_lru_cache` in `tests/test_cache.py`.
 - **Interactive Demo Script & Guide**:
   - `docs/demo.md`: Complete 5-Act presentation script and SRE walkthrough guide for live demos and interviews.
-  - Added interactive "🎬 Demo Script" modal directly to the SRE Command Center dashboard at `/`.
 
 ### Changed
 - **Groq LPU Client Optimization**:

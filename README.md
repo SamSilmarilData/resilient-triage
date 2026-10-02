@@ -44,7 +44,7 @@
   - `🧹 Flush Semantic Cache`: Purges Redis and in-memory vector cache on demand.
 - **Live Event Audit Stream**: Real-time ticker logging every request with dual-metric precision: `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
 
-> 🎬 **Showcasing or Presenting?** Check out the [Interactive Demo Guide & 5-Act Script](docs/demo.md) or click the **🎬 Demo Script** button in the dashboard navbar at `/`.
+> 🎬 **Showcasing or Presenting?** Check out the [Interactive Demo Guide & 5-Act Presentation Script](docs/demo.md).
 
 ---
 

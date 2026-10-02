@@ -108,10 +108,6 @@
         </div>
       </div>
 
-      <button onclick="toggleDemoModal()" class="px-2.5 py-1 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-700/80 text-purple-200 transition-colors flex items-center space-x-1 font-mono font-medium cursor-pointer shadow-sm">
-        <span>🎬 Demo Script</span>
-      </button>
-
       <a href="/docs" target="_blank" class="px-3 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-200 transition-colors flex items-center space-x-1">
         <span>API Docs</span>
         <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -796,71 +792,9 @@
       }
     }
 
-    // Demo Script Modal Toggle
-    function toggleDemoModal() {
-      const modal = document.getElementById('demo-modal');
-      if (modal) {
-        modal.classList.toggle('hidden');
-      }
-    }
-
     // Initial load polling
     pollSystemHealth();
     setInterval(pollSystemHealth, 3000);
   </script>
-
-  <!-- DEMO SCRIPT MODAL -->
-  <div id="demo-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
-    <div class="bg-zinc-900 border border-zinc-700 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-      <!-- Modal Header -->
-      <div class="p-4 border-b border-zinc-800 flex items-center justify-between bg-zinc-950">
-        <div class="flex items-center space-x-2">
-          <span class="text-base font-bold text-white">🎬 Live Demo & Interview Presentation Script</span>
-          <span class="px-1.5 py-0.5 text-[10px] font-mono bg-purple-950 text-purple-300 rounded border border-purple-800">v1.1.0</span>
-        </div>
-        <button onclick="toggleDemoModal()" class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
-      </div>
-      <!-- Modal Body -->
-      <div class="p-5 overflow-y-auto space-y-4 text-xs font-sans text-zinc-300 leading-relaxed">
-        <div class="p-3 rounded-xl bg-purple-950/30 border border-purple-800/40 text-purple-200">
-          <strong>The 30-Second Hook:</strong> "During major infrastructure outages, naive LLM bots crash on dead sockets. Resilient Triage is an autonomous SRE gateway that combines LangGraph, Groq LPUs, Redis 8 RediSearch, and Pybreaker to deliver sub-2ms cache hits and guaranteed sub-1.3s fault-tolerant reports."
-        </div>
-
-        <div class="space-y-3 font-mono">
-          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
-            <div class="text-purple-400 font-bold mb-1">Act 1: Cold Incident Triage (Cache Miss)</div>
-            <p class="text-zinc-400 font-sans text-xs">Click <strong>💥 Actions 503 Outage</strong> and run triage. Notice the violet badge: <strong>Server: ~1.2s (Groq LPU)</strong>. LangGraph synthesized telemetry and generated structured Pydantic reports with zero prompt bloat.</p>
-          </div>
-
-          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
-            <div class="text-emerald-400 font-bold mb-1">Act 2: Instant Semantic Cache Hit (Redis HNSW)</div>
-            <p class="text-zinc-400 font-sans text-xs">Without refreshing, click <strong>Run Triage</strong> again. The banner turns emerald green: <strong>Server: 1.16ms (Redis HNSW)</strong> with 95%+ cosine similarity. In-memory LRU vector cache completely offloads LLM cost.</p>
-          </div>
-
-          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
-            <div class="text-cyan-400 font-bold mb-1">Act 3: Dual-Metric Telemetry Explainer</div>
-            <p class="text-zinc-400 font-sans text-xs">Point to the banner and audit ticker: <strong>Server: 1ms | Net RTT: ~80ms</strong>. Deployed in Singapore; shows recruiters the Redis cache responds in single-digit ms, cleanly isolated from WAN internet distance.</p>
-          </div>
-
-          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
-            <div class="text-amber-400 font-bold mb-1">Act 4: Chaos Injection & Circuit Breaker Fail-Fast</div>
-            <p class="text-zinc-400 font-sans text-xs">Toggle <strong>Inject 503</strong> and click <strong>⚡ Trip Breaker</strong>. Watch the navbar show <code>chaos: OPEN</code>. Run triage: LangGraph intercepts the failure, skips dead probes, routes through DegradedFallbackNode, and produces a report marking blind spots with <strong>zero 500s or hangs</strong>.</p>
-          </div>
-
-          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
-            <div class="text-zinc-300 font-bold mb-1">Act 5: Clean Recovery</div>
-            <p class="text-zinc-400 font-sans text-xs">Click <strong>🔄 Reset Circuits</strong>. The system returns to 100% HEALTHY. Point out 53/53 automated tests passing in 4 seconds.</p>
-          </div>
-        </div>
-      </div>
-      <!-- Modal Footer -->
-      <div class="p-3 border-t border-zinc-800 bg-zinc-950 flex items-center justify-between text-zinc-500 font-mono text-[11px]">
-        <span>Full guide available in <a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/demo.md" target="_blank" class="text-purple-400 hover:underline">docs/demo.md</a></span>
-        <button onclick="toggleDemoModal()" class="px-3 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors cursor-pointer">Close</button>
-      </div>
-    </div>
-  </div>
 </body>
 </html>
