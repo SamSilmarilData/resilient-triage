@@ -5,9 +5,13 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0] - 2026-10-02
+## [1.0.0] - 2026-10-02 — General Availability (GA)
 
-### Added
+### Highlights
+- Official production-ready release of `resilient-triage`.
+- Zero-downtime SRE incident triage gateway with real Groq LPU SOTA generation (~1.1s) and Redis 8 RediSearch HNSW vector caching (7.71ms).
+- Dark-mode interactive SRE Command Center console live at `/`.
+- Dual-mode self-booting container deployed to Render.com.
 - **Native Redis 8 & RediSearch Vector Search**:
   - `src/resilient_triage/cache/semantic_cache.py`: Native Redis 8 integration with HNSW float32 cosine vector index (`triage_vector_idx`).
   - Achieves **`7.71ms` live vector lookup turnaround**, dramatically exceeding the sub-20ms target for similar queries ($\ge 0.90$ cosine similarity).

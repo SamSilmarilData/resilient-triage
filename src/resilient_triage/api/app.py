@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Resilient Incident Triage Gateway",
     description="High-availability LangGraph incident triage state machine with Redis semantic caching and circuit breaker telemetry.",
-    version="0.5.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
@@ -232,7 +232,7 @@ async def get_health():
 
     return HealthResponse(
         status="degraded" if any_open else "healthy",
-        version="0.5.0",
+        version="1.0.0",
         redis_connected=is_redis_online,
         cache_driver=semantic_cache.driver,
         circuits=circuit_states,
