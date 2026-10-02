@@ -148,7 +148,7 @@ resilient-triage/
   - Python 3.12 environment setup.
   - Containerization for OrbStack and Docker.
   - Strict Pydantic v2 schemas and validation test suite.
-- [ ] **Phase 2: Resilience Layer & Telemetry Inputs**
+- [x] **Phase 2: Resilience Layer & Telemetry Inputs**
   - Tenacity retry wrappers with exponential backoff & jitter.
   - Pybreaker circuit breakers with 3-failure trip limit.
   - Live Atlassian Statuspage and configurable `/chaos` endpoint.

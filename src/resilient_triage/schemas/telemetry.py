@@ -43,6 +43,20 @@ class StatuspageSummary(BaseModel):
     components: list[StatuspageComponent] = Field(default_factory=list)
     incidents: list[StatuspageIncident] = Field(default_factory=list)
 
+    @classmethod
+    def from_api_response(cls, data: dict) -> "StatuspageSummary":
+        """Parse raw Atlassian Statuspage JSON structure into StatuspageSummary."""
+        page = data.get("page", {})
+        status = data.get("status", {})
+        return cls(
+            page_name=page.get("name", "Unknown Statuspage"),
+            page_url=page.get("url", ""),
+            indicator=status.get("indicator", "none"),
+            description=status.get("description", "All Systems Operational"),
+            components=data.get("components", []),
+            incidents=data.get("incidents", []),
+        )
+
 
 class ChaosConfig(BaseModel):
     """Runtime configuration for chaos simulation endpoint."""
