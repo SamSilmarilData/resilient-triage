@@ -44,6 +44,8 @@
   - `🧹 Flush Semantic Cache`: Purges Redis and in-memory vector cache on demand.
 - **Live Event Audit Stream**: Real-time ticker logging every request with dual-metric precision: `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
 
+> 🎬 **Showcasing or Presenting?** Check out the [Interactive Demo Guide & 5-Act Script](docs/demo.md) or click the **🎬 Demo Script** button in the dashboard navbar at `/`.
+
 ---
 
 ## 🏛️ System Architecture
@@ -206,6 +208,7 @@ resilient-triage/
 │   ├── run_local.sh                # 1-click native macOS local runner
 │   └── smoke_test.py               # 9-step automated end-to-end smoke test suite
 ├── docs/
+│   ├── demo.md                     # Interactive 5-Act presentation script & demo guide
 │   ├── architecture.md             # Deep-dive system design & resilience state machine
 │   ├── schemas.md                  # Strict Pydantic contracts and schemas
 │   └── deployment.md               # 100% Free cloud hosting guide (Hugging Face Spaces / Render)
@@ -217,7 +220,7 @@ resilient-triage/
 │   ├── cache/                      # Redis 8 RediSearch & NumPy vector caching engine
 │   ├── graph/                      # LangGraph cyclic state machine and self-repair nodes
 │   └── api/                        # FastAPI gateway, middleware, and SRE console UI
-└── tests/                          # 51 unit, integration, and chaos resilience tests
+└── tests/                          # 53 unit, integration, and chaos resilience tests
 ```
 
 ---

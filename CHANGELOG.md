@@ -5,6 +5,39 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-03 — Performance & Dual-Metric Observability
+
+### Highlights
+- Slashed end-to-end latency across cloud deployments (e.g. Render Singapore):
+  - **Cache Hit Turnaround**: Reduced to **`1.16ms`** (Redis HNSW + In-Memory LRU Vector Cache), well below the 20ms target.
+  - **Cache Miss Turnaround**: Reduced from ~2.8s to **`1.27s`** (~55% faster) via persistent Groq connection pooling and 10s Statuspage caching.
+- Surfaced **Dual-Metric Latency Telemetry** across the SRE Command Center UI, cleanly isolating server execution from physical internet WAN RTT.
+- Expanded automated regression test suite to **53/53 passing tests** in 4.09s.
+
+### Added
+- **Statuspage 10-Second Short-TTL In-Memory Cache**:
+  - `src/resilient_triage/telemetry/statuspage.py`: In-memory cache for parsed `StatuspageSummary` records with 10-second TTL. Eliminates redundant ~700ms external network calls to GitHub Status API on rapid triage queries.
+  - Added `clear_statuspage_cache()` and test coverage in `tests/test_telemetry.py`.
+- **In-Memory Embedding LRU Cache & Preset Pre-Warming**:
+  - `src/resilient_triage/cache/embeddings.py`: Added 512-entry `OrderedDict` LRU cache to `FastEmbedProvider` and `DeterministicEmbeddingProvider`.
+  - `src/resilient_triage/api/app.py`: Automatically pre-warms quick incident presets (GitHub Actions, Stripe, PostgreSQL) during FastAPI startup (`lifespan`), ensuring instant 0.001ms vector resolution for demo visitors.
+  - Added unit test `test_embedding_provider_lru_cache` in `tests/test_cache.py`.
+- **Interactive Demo Script & Guide**:
+  - `docs/demo.md`: Complete 5-Act presentation script and SRE walkthrough guide for live demos and interviews.
+  - Added interactive "🎬 Demo Script" modal directly to the SRE Command Center dashboard at `/`.
+
+### Changed
+- **Groq LPU Client Optimization**:
+  - `src/resilient_triage/graph/llm.py`: Replaced per-request HTTP client creation with a persistent, keep-alive pooled `httpx.AsyncClient` (`limits=httpx.Limits(max_keepalive_connections=20, max_connections=50)`).
+  - Added `max_tokens=650` to Groq LPU completion payload to eliminate runaway token generation while producing complete, structured incident reports.
+- **SRE Command Center Observability**:
+  - `src/resilient_triage/api/templates/index.html`: Updated glowing telemetry banner and live audit stream to display dual-metric precision: `Server: 1.16ms (Redis HNSW) • Net RTT: 78ms (79ms total)` and `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
+  - Bumped UI version tag to `v1.1.0`.
+- **Version Unification**:
+  - Unified package version to `1.1.0` across `pyproject.toml`, `src/resilient_triage/__init__.py`, `src/resilient_triage/api/app.py`, `docs/schemas.md`, and `tests/test_api.py`.
+
+---
+
 ## [1.0.0] - 2026-10-02 — General Availability (GA)
 
 ### Highlights

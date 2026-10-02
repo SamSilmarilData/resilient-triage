@@ -45,7 +45,7 @@ async def test_health_endpoint(client: httpx.AsyncClient):
 
     data = resp.json()
     assert data["status"] == "healthy"
-    assert data["version"] == "1.0.0"
+    assert data["version"] == "1.1.0"
     assert "statuspage" in data["circuits"]
     assert "chaos" in data["circuits"]
     assert data["circuits"]["statuspage"] == "closed"

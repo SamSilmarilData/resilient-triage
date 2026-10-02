@@ -78,7 +78,7 @@ Typed dictionary carrying execution state across graph nodes:
 
 ### `HealthResponse`
 - `status`: Service status (`"healthy"` or `"degraded"`).
-- `version`: API release version string (`"1.0.0"`).
+- `version`: API release version string (`"1.1.0"`).
 - `redis_connected`: True if Redis is reachable and active.
 - `cache_driver`: Active vector driver (`"redisearch"`, `"redis_hash_fallback"`, or `"in_memory"`).
 - `circuits`: Dictionary mapping breaker names to states (`{"statuspage": "closed", "chaos": "closed"}`).

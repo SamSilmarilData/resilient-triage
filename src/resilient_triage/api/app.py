@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from resilient_triage import __version__
 from resilient_triage.cache.semantic_cache import semantic_cache
 from resilient_triage.graph.builder import triage_graph
 from resilient_triage.graph.llm import get_active_model_name
@@ -69,7 +70,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Resilient Incident Triage Gateway",
     description="High-availability LangGraph incident triage state machine with Redis semantic caching and circuit breaker telemetry.",
-    version="1.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -243,7 +244,7 @@ async def get_health():
 
     return HealthResponse(
         status="degraded" if any_open else "healthy",
-        version="1.0.0",
+        version=__version__,
         redis_connected=is_redis_online,
         cache_driver=semantic_cache.driver,
         circuits=circuit_states,
