@@ -39,8 +39,19 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing semantic cache and warming up embedding models...")
     await semantic_cache.initialize()
     try:
-        # Pre-warm embedding model weights so first request has zero cold-start penalty
-        semantic_cache.embedding_provider.embed_query("warmup telemetry query")
+        # Pre-warm embedding model weights and 3 quick presets so initial demo requests run in 0.001ms
+        presets = [
+            "warmup telemetry query",
+            "GitHub Actions workflows are failing with 503 and high webhook latency",
+            "[scope: actions] GitHub Actions workflows are failing with 503 and high webhook latency",
+            "Stripe webhook ingestion failing with 504 gateway timeout",
+            "[scope: billing] Stripe webhook ingestion failing with 504 gateway timeout",
+            "PostgreSQL primary connection pool exhausted under spike",
+            "[scope: database] PostgreSQL primary connection pool exhausted under spike",
+        ]
+        for p in presets:
+            semantic_cache.embedding_provider.embed_query(p)
+        logger.info("Pre-warmed %d incident presets in embedding LRU cache.", len(presets))
     except Exception as exc:
         logger.warning("Embedding pre-warmup warning: %s", exc)
 

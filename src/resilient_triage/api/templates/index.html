@@ -184,8 +184,8 @@
       </div>
 
       <!-- Execution Latency & Cache Banner -->
-      <div id="telemetry-banner" class="hidden rounded-xl border p-3 flex items-center justify-between font-mono text-xs">
-        <div class="flex items-center space-x-3">
+      <div id="telemetry-banner" class="hidden rounded-xl border p-3 flex flex-wrap items-center justify-between font-mono text-xs gap-2">
+        <div class="flex flex-wrap items-center gap-2 sm:gap-3">
           <div id="cache-badge" class="px-2.5 py-1 rounded-md font-semibold text-xs flex items-center space-x-1.5">
             <span id="cache-pulse" class="h-2 w-2 rounded-full"></span>
             <span id="cache-text">X-Cache: MISS</span>
@@ -385,21 +385,34 @@
     }
 
     // Audit Logger
-    function logEvent(method, path, status, latency) {
+    function logEvent(method, path, status, latency, serverLatency) {
       const log = document.getElementById('audit-log');
       const now = new Date().toTimeString().split(' ')[0];
       const entry = document.createElement('div');
       const statusColor = status >= 200 && status < 300 ? 'text-emerald-400' : 'text-red-400';
       entry.className = 'flex items-center justify-between border-b border-zinc-900/60 pb-1';
+
+      let latencyDisplay = `<span class="text-zinc-500">${latency}ms</span>`;
+      if (serverLatency !== undefined && serverLatency !== null) {
+        const netLatency = Math.max(0, Math.round(latency - serverLatency));
+        latencyDisplay = `
+          <span class="text-zinc-400 font-mono text-[10px] space-x-1">
+            <span class="text-emerald-400 font-semibold">Srv:${serverLatency}ms</span>
+            <span class="text-zinc-600">|</span>
+            <span class="text-zinc-400">Net:${netLatency}ms</span>
+          </span>
+        `;
+      }
+
       entry.innerHTML = `
         <div class="flex items-center space-x-1.5 truncate">
           <span class="text-zinc-600">${now}</span>
           <span class="font-bold text-zinc-300">${method}</span>
-          <span class="text-zinc-400 truncate max-w-[140px]">${path}</span>
+          <span class="text-zinc-400 truncate max-w-[125px]">${path}</span>
         </div>
         <div class="flex items-center space-x-2">
           <span class="${statusColor} font-semibold">${status}</span>
-          <span class="text-zinc-500">${latency}ms</span>
+          ${latencyDisplay}
         </div>
       `;
       log.prepend(entry);
@@ -461,21 +474,24 @@
         });
 
         const elapsed = Math.round(performance.now() - start);
-        logEvent('POST', '/triage', res.status, elapsed);
 
         if (!res.ok) {
+          logEvent('POST', '/triage', res.status, elapsed);
           const errData = await res.json().catch(() => ({}));
           throw new Error(errData.message || 'Triage failed');
         }
 
         const data = await res.json();
+        const serverMs = data.execution_time_ms;
+        logEvent('POST', '/triage', res.status, elapsed, serverMs);
+
         const cacheHeader = res.headers.get('x-cache') || (data.cached ? 'HIT' : 'MISS');
         const similarity = res.headers.get('x-cache-similarity') || data.cache_similarity;
         const threadId = res.headers.get('x-thread-id');
         if (threadId) activeThreadId = threadId;
 
-        // Render Telemetry Banner
-        renderTelemetryBanner(cacheHeader, similarity, data.execution_time_ms, threadId);
+        // Render Telemetry Banner with Dual Metrics (Server vs Network)
+        renderTelemetryBanner(cacheHeader, similarity, serverMs, elapsed, threadId);
 
         // Render Report
         renderReport(data.report);
@@ -492,7 +508,7 @@
     }
 
     // Render Telemetry Banner
-    function renderTelemetryBanner(cacheStatus, similarity, latencyMs, threadId) {
+    function renderTelemetryBanner(cacheStatus, similarity, serverMs, elapsedMs, threadId) {
       const banner = document.getElementById('telemetry-banner');
       const badge = document.getElementById('cache-badge');
       const pulse = document.getElementById('cache-pulse');
@@ -503,21 +519,33 @@
 
       banner.classList.remove('hidden');
 
+      const netTransit = elapsedMs !== undefined ? Math.max(0, Math.round(elapsedMs - serverMs)) : null;
+
       if (cacheStatus === 'HIT') {
-        banner.className = 'rounded-xl border border-emerald-800/80 bg-emerald-950/30 p-3 flex items-center justify-between font-mono text-xs shadow-lg shadow-emerald-950/20';
+        banner.className = 'rounded-xl border border-emerald-800/80 bg-emerald-950/30 p-3 flex flex-wrap items-center justify-between font-mono text-xs shadow-lg shadow-emerald-950/20 gap-2';
         badge.className = 'px-2.5 py-1 rounded-md font-semibold text-xs flex items-center space-x-1.5 bg-emerald-900/60 text-emerald-300 border border-emerald-700/60';
         pulse.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse';
         cacheText.innerText = '⚡ X-Cache: HIT';
-        turnaroundText.innerHTML = `<span class="font-bold text-emerald-400">${latencyMs}ms</span> turnaround (<20ms target)`;
+
+        let netString = netTransit !== null ? ` • <span class="text-zinc-400">Net RTT:</span> <span class="text-zinc-200 font-semibold">${netTransit}ms</span>` : '';
+        let totalString = elapsedMs !== undefined ? ` (<span class="text-emerald-300 font-bold">${elapsedMs}ms</span> total)` : '';
+        turnaroundText.innerHTML = `<span><span class="text-zinc-400">Server:</span> <strong class="text-emerald-400 font-bold">${serverMs}ms</strong> (Redis HNSW)${netString}${totalString}</span>`;
+
         if (similarity) {
           similarityText.innerText = `• ${(similarity * 100).toFixed(1)}% match`;
+        } else {
+          similarityText.innerText = '';
         }
       } else {
-        banner.className = 'rounded-xl border border-purple-800/80 bg-purple-950/30 p-3 flex items-center justify-between font-mono text-xs shadow-lg shadow-purple-950/20';
+        banner.className = 'rounded-xl border border-purple-800/80 bg-purple-950/30 p-3 flex flex-wrap items-center justify-between font-mono text-xs shadow-lg shadow-purple-950/20 gap-2';
         badge.className = 'px-2.5 py-1 rounded-md font-semibold text-xs flex items-center space-x-1.5 bg-purple-900/60 text-purple-300 border border-purple-700/60';
         pulse.className = 'h-2 w-2 rounded-full bg-purple-400 animate-pulse';
         cacheText.innerText = '🔍 X-Cache: MISS';
-        turnaroundText.innerHTML = `<span class="font-bold text-purple-400">${latencyMs}ms</span> (Live LLM Engine)`;
+
+        const serverDisplay = serverMs >= 1000 ? `${(serverMs / 1000).toFixed(2)}s` : `${serverMs}ms`;
+        let netString = netTransit !== null ? ` • <span class="text-zinc-400">Net RTT:</span> <span class="text-zinc-200 font-semibold">${netTransit}ms</span>` : '';
+        let totalString = elapsedMs !== undefined ? ` (<span class="text-purple-300 font-bold">${elapsedMs >= 1000 ? (elapsedMs / 1000).toFixed(2) + 's' : elapsedMs + 'ms'}</span> total)` : '';
+        turnaroundText.innerHTML = `<span><span class="text-zinc-400">Server:</span> <strong class="text-purple-400 font-bold">${serverDisplay}</strong> (Groq LPU)${netString}${totalString}</span>`;
         similarityText.innerText = '';
       }
 

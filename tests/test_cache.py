@@ -67,6 +67,32 @@ def test_fastembed_provider():
     assert len(batch[0]) == 384
 
 
+def test_embedding_provider_lru_cache():
+    """Verify embedding provider caches query vectors in LRU cache."""
+    provider = DeterministicEmbeddingProvider(dimension=384, max_cache_size=2)
+    assert len(provider._cache) == 0
+
+    v1 = provider.embed_query("query A")
+    assert len(provider._cache) == 1
+    assert "query a" in [k.lower() for k in provider._cache]
+
+    # Re-reading same query uses cache directly
+    v1_cached = provider.embed_query("query A")
+    assert v1 == v1_cached
+    assert len(provider._cache) == 1
+
+    # Add second query
+    provider.embed_query("query B")
+    assert len(provider._cache) == 2
+
+    # Add third query: exceeds max_cache_size 2, evicts oldest
+    provider.embed_query("query C")
+    assert len(provider._cache) == 2
+    assert "query a" not in [k.lower() for k in provider._cache]
+    assert "query c" in [k.lower() for k in provider._cache]
+
+
+
 def test_format_scoped_query():
     """Verify query scope formatting."""
     assert format_scoped_query("Is Actions down?") == "Is Actions down?"

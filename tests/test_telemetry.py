@@ -134,3 +134,47 @@ async def test_chaos_manager_and_client_trip():
     assert len(tripped_signals) == 1
     assert tripped_signals[0].status == "CIRCUIT_OPEN"
     assert tripped_signals[0].latency_ms < 10.0  # Fast fail without hanging
+
+
+@pytest.mark.asyncio
+async def test_statuspage_client_short_ttl_cache():
+    """Verify StatuspageClient short-TTL cache prevents redundant network fetches."""
+    from resilient_triage.telemetry.statuspage import clear_statuspage_cache
+
+    clear_statuspage_cache()
+    payload = {
+        "page": {"id": "test_page", "name": "CacheTest Status", "url": "https://status.test"},
+        "status": {"indicator": "none", "description": "All Systems Operational"},
+        "components": [],
+        "incidents": [],
+    }
+    mock_resp = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://cache.test/summary.json"),
+        json=payload,
+    )
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.get.return_value = mock_resp
+
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create("test_statuspage_cache_cb")
+
+    sp_client = StatuspageClient(
+        url="https://cache.test/summary.json",
+        circuit_breaker=cb,
+        client=mock_client,
+        cache_ttl_seconds=10.0,
+    )
+
+    # First fetch: calls client.get
+    summary1 = await sp_client.fetch_summary()
+    assert summary1.page_name == "CacheTest Status"
+    assert mock_client.get.call_count == 1
+
+    # Second fetch within 10s: serves from cache, no network call
+    summary2 = await sp_client.fetch_summary()
+    assert summary2.page_name == "CacheTest Status"
+    assert mock_client.get.call_count == 1
+
+    clear_statuspage_cache()
+

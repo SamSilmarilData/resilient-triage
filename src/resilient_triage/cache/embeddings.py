@@ -10,6 +10,8 @@ import numpy as np
 
 from resilient_triage.config import settings
 
+from collections import OrderedDict
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,13 +48,15 @@ class BaseEmbeddingProvider(ABC):
 
 
 class FastEmbedProvider(BaseEmbeddingProvider):
-    """High-performance ONNX-based embedding provider powered by FastEmbed."""
+    """High-performance ONNX-based embedding provider powered by FastEmbed with LRU caching."""
 
-    def __init__(self, model_name: str | None = None) -> None:
+    def __init__(self, model_name: str | None = None, max_cache_size: int = 512) -> None:
         self.model_name = model_name or settings.embedding_model
         self._dim = settings.vector_dimension
         self._model: Any = None
         self._lock = threading.Lock()
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._max_cache_size = max_cache_size
 
     def _ensure_model(self) -> Any:
         if self._model is None:
@@ -75,11 +79,23 @@ class FastEmbedProvider(BaseEmbeddingProvider):
         return self._dim
 
     def embed_query(self, text: str) -> list[float]:
+        cache_key = text.strip()
+        with self._lock:
+            if cache_key in self._cache:
+                self._cache.move_to_end(cache_key)
+                return self._cache[cache_key]
+
         model = self._ensure_model()
         # FastEmbed returns a generator of numpy arrays
         raw_vec = next(model.embed([text]))
-        normalized = _normalize_vector(raw_vec)
-        return normalized.tolist()
+        normalized = _normalize_vector(raw_vec).tolist()
+
+        with self._lock:
+            self._cache[cache_key] = normalized
+            if len(self._cache) > self._max_cache_size:
+                self._cache.popitem(last=False)
+
+        return normalized
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -98,8 +114,11 @@ class DeterministicEmbeddingProvider(BaseEmbeddingProvider):
     Ideal for unit tests, offline environments, and airgapped deployments.
     """
 
-    def __init__(self, dimension: int | None = None) -> None:
+    def __init__(self, dimension: int | None = None, max_cache_size: int = 512) -> None:
         self._dim = dimension or settings.vector_dimension
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._max_cache_size = max_cache_size
+        self._lock = threading.Lock()
 
     @property
     def dimension(self) -> int:
@@ -132,10 +151,21 @@ class DeterministicEmbeddingProvider(BaseEmbeddingProvider):
         return _normalize_vector(vec)
 
     def embed_query(self, text: str) -> list[float]:
-        return self._vectorize(text).tolist()
+        cache_key = text.strip()
+        with self._lock:
+            if cache_key in self._cache:
+                self._cache.move_to_end(cache_key)
+                return self._cache[cache_key]
+
+        vec_list = self._vectorize(text).tolist()
+        with self._lock:
+            self._cache[cache_key] = vec_list
+            if len(self._cache) > self._max_cache_size:
+                self._cache.popitem(last=False)
+        return vec_list
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._vectorize(t).tolist() for t in texts]
+        return [self.embed_query(t) for t in texts]
 
 
 _singleton_lock = threading.Lock()

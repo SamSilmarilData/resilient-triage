@@ -16,6 +16,20 @@ from resilient_triage.config import settings
 logger = logging.getLogger(__name__)
 
 
+_groq_async_client: httpx.AsyncClient | None = None
+
+
+def get_groq_async_client(timeout: float = 20.0) -> httpx.AsyncClient:
+    """Return persistent, keep-alive pooled httpx.AsyncClient for Groq LPU calls."""
+    global _groq_async_client
+    if _groq_async_client is None or _groq_async_client.is_closed:
+        _groq_async_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+        )
+    return _groq_async_client
+
+
 class GroqChatModel(BaseChatModel):
     """Native high-speed Groq LPU chat model client supporting structured JSON generation."""
 
@@ -49,6 +63,7 @@ class GroqChatModel(BaseChatModel):
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
+            "max_tokens": 650,
         }
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(
@@ -72,20 +87,21 @@ class GroqChatModel(BaseChatModel):
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
+            "max_tokens": 650,
         }
 
         from resilient_triage.resilience.retry import with_retry
 
         @with_retry(max_attempts=3, min_wait=0.2, max_wait=2.0)
         async def _send_request() -> str:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                )
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"]
+            client = get_groq_async_client(timeout=self.timeout)
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
 
         content = await _send_request()
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
