@@ -5,12 +5,28 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-02
 
-### Planned
-- **Phase 5**: FastAPI REST gateway with OpenAPI documentation and full chaos testing suite.
+### Added
+- **FastAPI REST Application & Gateway**:
+  - `src/resilient_triage/api/app.py`: High-performance FastAPI application wrapping the LangGraph triage engine and semantic cache.
+  - Startup lifespan management: auto-initializes `semantic_cache` and pre-warms ONNX embedding weights for zero cold-start delay.
+  - Graceful shutdown lifecycle: terminates Redis connections cleanly.
+  - `ProcessTimeAndCorrelationMiddleware`: adds `X-Request-ID` and `X-Process-Time-Ms` to all incoming requests, and provides top-level exception sanitization.
+  - Structured global exception handling: catches unexpected server exceptions into sanitized JSON (`InternalServerError`) with request ID correlation without leaking environment variables or stack traces.
+  - Concurrency & stampede guard: `asyncio.Semaphore(10)` limits concurrent graph executions while fast-path semantic cache lookups remain non-blocking.
+- **REST Endpoints**:
+  - `POST /triage`: Primary incident triage endpoint supporting `X-Thread-ID`, returning cache telemetry headers (`X-Cache: HIT|MISS`, `X-Cache-Similarity`).
+  - `POST /chaos/inject`: Dynamic runtime configuration of chaos simulation parameters (503 fault injection, failure rate, latency).
+  - `GET /chaos/config`: Live inspection of runtime chaos parameters.
+  - `GET /chaos/probe`: Diagnostic probe triggering Tenacity retries and circuit breaker tracking.
+  - `GET /health`: Service health status (`healthy` / `degraded`), Redis connectivity, and all circuit breaker states.
+  - `GET /resilience/status`: Deep resilience diagnostics with snapshots of all registered circuit breakers, failure counts, and cache metrics.
+  - `POST /resilience/reset`: Administrative reset restoring all tripped circuit breakers to `CLOSED` and resetting chaos parameters.
+  - `POST /cache/clear`: Flushes in-memory and Redis semantic vector cache.
+- **End-to-End Integration & Resilience Test Suite**:
+  - `tests/test_api.py`: 11 integration tests verifying health checks, cache hits (<20ms), cache misses, force refresh bypass, client-specified thread checkpointing, chaos injection, circuit breaker tripping, compensatory graceful degradation during outages, administrative resets, and exception sanitization.
 
----
 
 ## [0.4.0] - 2026-10-02
 

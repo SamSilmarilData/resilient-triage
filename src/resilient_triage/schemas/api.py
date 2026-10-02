@@ -1,5 +1,8 @@
 """FastAPI request and response schemas."""
 
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig
@@ -46,3 +49,42 @@ class TriageResponse(BaseModel):
 class ChaosTriggerRequest(ChaosConfig):
     """Request body to update runtime chaos simulation parameters."""
     pass
+
+
+class CircuitSnapshot(BaseModel):
+    """Snapshot representation of a circuit breaker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    state: str = Field(..., description="Current state: 'closed', 'open', or 'half-open'")
+    fail_counter: int = Field(..., description="Consecutive failure count")
+    fail_max: int = Field(..., description="Failure threshold to trip breaker")
+    is_open: bool = Field(..., description="True if breaker is currently open")
+    last_failure_time: datetime | None = None
+    last_state_change: datetime | None = None
+    last_failure_reason: str | None = None
+
+
+class HealthResponse(BaseModel):
+    """System health check and component availability status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["healthy", "degraded"]
+    version: str
+    redis_connected: bool
+    circuits: dict[str, str] = Field(
+        description="Current state of all registered circuit breakers ('closed', 'open', 'half-open')"
+    )
+
+
+class ResilienceStatusResponse(BaseModel):
+    """Deep resilience diagnostics for circuit breakers, chaos, and cache."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    circuits: dict[str, CircuitSnapshot]
+    chaos_active: bool
+    cache_driver: str
+    cache_entries_count: int

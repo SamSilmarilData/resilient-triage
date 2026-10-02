@@ -364,6 +364,37 @@ class SemanticCacheManager:
             except Exception as e:
                 logger.warning("Redis clear error: %s", e)
 
+    @property
+    def is_redis_connected(self) -> bool:
+        """Check if Redis connection is established."""
+        return self._redis is not None
+
+    @property
+    def driver(self) -> str:
+        """Return the active vector search driver name."""
+        if self._has_redisearch:
+            return "redisearch"
+        if self._redis is not None:
+            return "redis_hash_fallback"
+        return "in_memory"
+
+    @property
+    def count(self) -> int:
+        """Return total count of cached documents in memory."""
+        return len(self._in_memory_docs)
+
+    async def close(self) -> None:
+        """Gracefully close Redis client connection."""
+        if self._redis:
+            try:
+                await self._redis.aclose()
+            except Exception as e:
+                logger.debug("Error closing Redis connection: %s", e)
+            finally:
+                self._redis = None
+                self._initialized = False
+
 
 # Global singleton
 semantic_cache = SemanticCacheManager()
+

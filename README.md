@@ -101,8 +101,52 @@ docker compose up -d
 docker compose ps
 ```
 
-### 3. Run Automated Tests
+### 3. Running the FastAPI Gateway
 
+```bash
+# Start the API server with uvicorn
+uvicorn resilient_triage.api.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+The interactive OpenAPI documentation is immediately available at `http://localhost:8000/docs`.
+
+#### Example: Triage an Incident
+```bash
+curl -i -X POST http://localhost:8000/triage \
+  -H "Content-Type: application/json" \
+  -d '{"query": "GitHub Actions workflows are failing with 503 and elevated webhook latency"}'
+```
+
+#### Example: Semantic Cache Hit (<20ms)
+A synonymous or similar query immediately matches the vector cache in sub-20ms:
+```bash
+curl -i -X POST http://localhost:8000/triage \
+  -H "Content-Type: application/json" \
+  -d '{"query": "GitHub Actions jobs failing with 503 service unavailable"}'
+
+# Headers:
+# X-Cache: HIT
+# X-Cache-Similarity: 0.9412
+# X-Process-Time-Ms: 4.12
+```
+
+#### Example: Inject Chaos & Inspect Resilience
+```bash
+# Inject 503 outages into the telemetry probe
+curl -X POST http://localhost:8000/chaos/inject \
+  -H "Content-Type: application/json" \
+  -d '{"active": true, "inject_503": true}'
+
+# Inspect circuit breaker diagnostic states
+curl http://localhost:8000/resilience/status
+
+# Reset circuit breakers and chaos state
+curl -X POST http://localhost:8000/resilience/reset
+```
+
+### 4. Run Automated Tests
+
+Run the full regression test suite (48 tests across all 5 phases):
 ```bash
 pytest tests/ -v
 ```
@@ -125,19 +169,24 @@ resilient-triage/
 │   └── resilient_triage/
 │       ├── __init__.py
 │       ├── config.py            # Centralized pydantic-settings
-│       ├── schemas/             # Strict data contracts
-│       │   ├── __init__.py
+│       ├── schemas/             # Strict data contracts (incident, telemetry, state, api)
 │       │   ├── incident.py      # IncidentTriageReport, enums, impact models
 │       │   ├── telemetry.py     # Statuspage and Chaos models
 │       │   ├── state.py         # LangGraph TriageState definition
 │       │   └── api.py           # API request & response schemas
-│       ├── resilience/          # Tenacity and Pybreaker wrappers (Phase 2)
-│       ├── telemetry/           # Statuspage & Chaos clients (Phase 2)
-│       ├── cache/               # Redis semantic vector cache (Phase 3)
-│       ├── graph/               # LangGraph nodes and cyclic state machine (Phase 4)
-│       └── api/                 # FastAPI routes and middleware (Phase 5)
+│       ├── resilience/          # Tenacity and AsyncCircuitBreaker wrappers
+│       ├── telemetry/           # Statuspage & Chaos clients
+│       ├── cache/               # Semantic cache (FastEmbed ONNX & RediSearch/NumPy)
+│       ├── graph/               # LangGraph cyclic state machine and self-repair nodes
+│       └── api/                 # FastAPI application, middleware, and endpoints
 └── tests/
-    └── test_schemas.py          # Schema validation and error handling tests
+    ├── test_schemas.py          # Schema validation tests
+    ├── test_retry.py            # Tenacity backoff & jitter tests
+    ├── test_circuit_breaker.py  # Pybreaker circuit breaker tests
+    ├── test_telemetry.py        # Statuspage & chaos probe tests
+    ├── test_cache.py            # Vector embedding & sub-20ms cache tests
+    ├── test_graph.py            # LangGraph routing & self-repair loop tests
+    └── test_api.py              # End-to-end FastAPI integration & chaos resilience tests
 ```
 
 ---
@@ -159,9 +208,11 @@ resilient-triage/
   - Dynamic routing with degraded fallback and compensatory nodes.
   - LLM self-repair retry loop for malformed schemas (max 2 retries).
   - Confidence-driven refinement cycles and thread-scoped checkpointing.
-- [ ] **Phase 5: FastAPI Application & End-to-End Resilience Suite**
-  - Expose API endpoints and interactive OpenAPI docs.
-  - Chaos injection test suite validating end-to-end fault tolerance.
+- [x] **Phase 5: FastAPI Application & End-to-End Resilience Suite**
+  - High-performance FastAPI REST gateway with Lifespan management and pre-warming.
+  - Concurrency stampede guard (`asyncio.Semaphore(10)`) and structured exception sanitization.
+  - Live `/chaos` control, `/health`, `/resilience/status`, and cache administrative endpoints.
+  - End-to-end integration and resilience test suite verifying graceful degradation.
 
 ---
 
