@@ -155,9 +155,10 @@ resilient-triage/
 - [x] **Phase 3: Redis Semantic Caching**
   - Sub-20ms vector similarity lookups ($\ge 0.90$ cosine similarity).
   - Cache response headers (`X-Cache: HIT / MISS`).
-- [ ] **Phase 4: LangGraph Cyclic State Machine**
-  - Dynamic routing with degraded fallback node.
+- [x] **Phase 4: LangGraph Cyclic State Machine**
+  - Dynamic routing with degraded fallback and compensatory nodes.
   - LLM self-repair retry loop for malformed schemas (max 2 retries).
+  - Confidence-driven refinement cycles and thread-scoped checkpointing.
 - [ ] **Phase 5: FastAPI Application & End-to-End Resilience Suite**
   - Expose API endpoints and interactive OpenAPI docs.
   - Chaos injection test suite validating end-to-end fault tolerance.

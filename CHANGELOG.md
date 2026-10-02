@@ -8,8 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- **Phase 4**: LangGraph cyclic state machine with degraded fallback routing and LLM self-repair retry loop (capped at 2 retries).
 - **Phase 5**: FastAPI REST gateway with OpenAPI documentation and full chaos testing suite.
+
+---
+
+## [0.4.0] - 2026-10-02
+
+### Added
+- **Clever LangGraph Cyclic State Machine**:
+  - `builder.py`: Compiled cyclic state graph powered by `StateGraph(TriageState)` and thread-scoped `MemorySaver` checkpointing.
+  - `analyze_query.py`: Dynamic tool targeting (`target_tools`) dynamically inspecting query keywords and service scope to selectively probe `statuspage`, `chaos`, or both.
+  - `collect_telemetry.py`: Concurrent telemetry fetching with `asyncio.gather(..., return_exceptions=True)`.
+  - `compensate_blindspots.py`: Compensatory routing bridging data loss during live upstream outages by querying historical patterns from Redis.
+  - `degraded_fallback.py`: Graceful degradation annotating blind spots and setting `PARTIALLY_DEGRADED` or `SEVERELY_DEGRADED`.
+  - `refine_reflection.py`: Confidence-driven reflection cycle triggering deeper root-cause analysis when `confidence_score < 0.60`.
+  - `validate_report.py`: Markdown fence auto-cleaning (`clean_json_string`) and strict Pydantic `IncidentTriageReport` parsing.
+  - `self_repair.py`: Automated multi-turn self-repair feeding `ValidationError` tracebacks back to the LLM (capped at 2 retries).
+  - `fallback_report.py`: Guaranteed fallback report generation preventing request crashes on retry exhaustion.
+  - `finalize.py`: Programmatic enforcement of tripped circuit breakers and synchronous commit to `semantic_cache`.
+- **LLM Simulation & Prompts**:
+  - `llm.py`: `MockTriageChatModel` supporting deterministic sequence simulation for automated self-repair and reflection testing.
+  - `prompts.py`: SRE persona prompt, self-repair template, and reflection directive.
+  - `schemas/incident.py`: Added `action_type` (`diagnostic` vs `remediative`) and `requires_approval: bool` to `ActionRecommendation`.
+- **Automated Test Suite**:
+  - `tests/test_graph.py`: 9 comprehensive tests verifying happy path, dynamic targeting, compensatory routing, bad enum self-repair, malformed JSON self-repair, retry exhaustion fallback, confidence refinement cycles, and thread-scoped memory.
 
 ---
 

@@ -66,6 +66,14 @@ class ActionRecommendation(BaseModel):
     priority: PriorityLevel = Field(default=PriorityLevel.P1, description="Action urgency priority")
     action: str = Field(..., description="Concrete action command or instruction")
     target_system: str = Field(..., description="Target service or infrastructure component")
+    action_type: str = Field(
+        default="remediative",
+        description="Action nature: 'diagnostic' (read-only/safe) or 'remediative' (mutating/mitigating)",
+    )
+    requires_approval: bool = Field(
+        default=False,
+        description="True if command is high-risk or mutating and requires approval",
+    )
 
 
 class IncidentTriageReport(BaseModel):
