@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Resilient Triage • SRE Incident Command Center</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#f5f3ff',
+              500: '#8b5cf6',
+              600: '#7c3aed',
+              700: '#6d28d9',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #09090b;
+      color: #fafafa;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #18181b;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #27272a;
+      border-radius: 3px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #3f3f46;
+    }
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .animate-pulse-slow {
+      animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-purple-900 selection:text-purple-100">
+
+  <!-- TOP NAVIGATION BAR -->
+  <header class="border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-md sticky top-0 z-50 px-4 lg:px-8 py-3 flex items-center justify-between">
+    <div class="flex items-center space-x-3">
+      <div class="h-9 w-9 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-purple-950/50">
+        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      </div>
+      <div>
+        <div class="flex items-center space-x-2">
+          <span class="font-bold text-base tracking-tight text-white">Resilient Triage</span>
+          <span class="px-1.5 py-0.5 text-[10px] font-mono bg-zinc-800 text-zinc-300 rounded border border-zinc-700">v0.5.0</span>
+        </div>
+        <p class="text-xs text-zinc-400 hidden sm:block">Fault-tolerant SRE incident agent with semantic cache & circuit breakers</p>
+      </div>
+    </div>
+
+    <!-- Telemetry Pills & Docs -->
+    <div class="flex items-center space-x-2 sm:space-x-3 text-xs">
+      <!-- Active Model Engine Pill -->
+      <div id="active-model-badge" class="px-2.5 py-1 rounded-full bg-purple-950/40 border border-purple-800/60 text-purple-300 flex items-center space-x-1.5 font-mono shadow-sm">
+        <span class="h-2 w-2 rounded-full bg-purple-400 animate-pulse"></span>
+        <span id="model-name-text">Loading Model...</span>
+      </div>
+
+      <!-- Health Pill -->
+      <div id="health-badge" class="px-2.5 py-1 rounded-full bg-emerald-950/40 border border-emerald-800/60 text-emerald-400 flex items-center space-x-1.5 font-mono">
+        <span id="health-dot" class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse-slow"></span>
+        <span id="health-text">HEALTHY</span>
+      </div>
+
+      <!-- Circuit Breakers Status -->
+      <div class="hidden md:flex items-center space-x-2 font-mono text-[11px]">
+        <div id="cb-statuspage-badge" class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 flex items-center space-x-1">
+          <span class="text-zinc-500">statuspage:</span>
+          <span id="cb-statuspage-state" class="text-emerald-400 font-semibold">CLOSED</span>
+        </div>
+        <div id="cb-chaos-badge" class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 flex items-center space-x-1">
+          <span class="text-zinc-500">chaos:</span>
+          <span id="cb-chaos-state" class="text-emerald-400 font-semibold">CLOSED</span>
+        </div>
+      </div>
+
+      <a href="/docs" target="_blank" class="px-3 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-200 transition-colors flex items-center space-x-1">
+        <span>API Docs</span>
+        <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+        </svg>
+      </a>
+    </div>
+  </header>
+
+  <!-- MAIN DASHBOARD CONTENT -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 lg:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+    <!-- LEFT / MAIN: INCIDENT CONSOLE & REPORT (7 cols) -->
+    <section class="lg:col-span-7 flex flex-col space-y-5">
+
+      <!-- Query Input Card -->
+      <div class="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-5 shadow-xl backdrop-blur-sm">
+        <label for="incident-query" class="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">
+          Incident Description & Symptoms
+        </label>
+        
+        <div class="relative">
+          <textarea
+            id="incident-query"
+            rows="3"
+            class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 rounded-xl p-3.5 text-sm text-zinc-100 placeholder-zinc-500 resize-none font-sans outline-none transition-all"
+            placeholder="Describe the incident symptoms, errors, or affected microservices..."
+          >GitHub Actions workflows are failing with 503 and high webhook latency</textarea>
+          
+          <div class="absolute bottom-2.5 right-3 text-[11px] font-mono text-zinc-500 hidden sm:block">
+            <kbd class="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700">Cmd</kbd> + <kbd class="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700">Enter</kbd> to run
+          </div>
+        </div>
+
+        <!-- Presets -->
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <span class="text-xs text-zinc-400 font-medium">Quick Presets:</span>
+          <button onclick="setQuery('GitHub Actions workflows are failing with 503 and high webhook latency', 'actions')" class="text-xs px-2.5 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
+            💥 Actions 503 Outage
+          </button>
+          <button onclick="setQuery('Stripe webhook ingestion failing with 504 gateway timeout', 'billing')" class="text-xs px-2.5 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
+            💳 Stripe Timeout
+          </button>
+          <button onclick="setQuery('PostgreSQL primary connection pool exhausted under spike', 'database')" class="text-xs px-2.5 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
+            🗄️ Postgres Pool
+          </button>
+        </div>
+
+        <!-- Run Controls Bar -->
+        <div class="mt-4 pt-3 border-t border-zinc-800/60 flex items-center justify-between">
+          <div class="flex items-center space-x-4">
+            <label class="flex items-center space-x-2 text-xs text-zinc-300 cursor-pointer">
+              <input type="checkbox" id="force-refresh" class="rounded bg-zinc-800 border-zinc-700 text-purple-600 focus:ring-purple-500 h-4 w-4">
+              <span>Force Refresh (Bypass Cache)</span>
+            </label>
+            <input type="text" id="service-filter" placeholder="Service filter (opt)" class="w-32 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200 outline-none focus:border-zinc-600 font-mono hidden sm:block">
+          </div>
+
+          <button
+            id="run-triage-btn"
+            onclick="executeTriage()"
+            class="px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-sm shadow-lg shadow-purple-950/60 flex items-center space-x-2 transition-all active:scale-[0.98]"
+          >
+            <svg id="run-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <svg id="spinner-icon" class="w-4 h-4 animate-spin hidden" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span id="btn-text">Run Triage</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Execution Latency & Cache Banner -->
+      <div id="telemetry-banner" class="hidden rounded-xl border p-3 flex items-center justify-between font-mono text-xs">
+        <div class="flex items-center space-x-3">
+          <div id="cache-badge" class="px-2.5 py-1 rounded-md font-semibold text-xs flex items-center space-x-1.5">
+            <span id="cache-pulse" class="h-2 w-2 rounded-full"></span>
+            <span id="cache-text">X-Cache: MISS</span>
+          </div>
+          <span id="turnaround-text" class="text-zinc-300">1.8s execution</span>
+          <span id="similarity-text" class="text-zinc-500 hidden sm:inline"></span>
+        </div>
+        <div class="text-zinc-400 text-[11px] truncate max-w-[200px]" id="thread-id-display"></div>
+      </div>
+
+      <!-- Structured Incident Report Output Card -->
+      <div id="report-container" class="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-center items-center text-center">
+        <!-- Initial Blank State -->
+        <div id="empty-state" class="py-12 flex flex-col items-center">
+          <div class="h-12 w-12 rounded-2xl bg-zinc-800/80 border border-zinc-700/80 flex items-center justify-center mb-3">
+            <svg class="w-6 h-6 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <p class="text-zinc-300 font-medium text-sm">No Active Incident Report</p>
+          <p class="text-zinc-500 text-xs mt-1 max-w-sm">Type an incident query above or choose a preset and click "Run Triage" to execute.</p>
+        </div>
+
+        <!-- Rendered Report Content -->
+        <div id="report-content" class="w-full text-left space-y-4 hidden">
+          <!-- Report Header: Severity + Confidence -->
+          <div class="flex items-center justify-between pb-3 border-b border-zinc-800/80">
+            <div class="flex items-center space-x-2">
+              <span id="rep-severity" class="px-3 py-1 rounded-lg text-xs font-bold font-mono tracking-wider uppercase bg-red-950 text-red-400 border border-red-800">
+                CRITICAL
+              </span>
+              <span id="rep-degradation" class="px-2 py-0.5 rounded text-[11px] font-mono bg-zinc-800 text-zinc-300">
+                HEALTHY
+              </span>
+            </div>
+            <div class="flex items-center space-x-2 font-mono text-xs text-zinc-400">
+              <span>Confidence:</span>
+              <div class="w-24 bg-zinc-800 h-2.5 rounded-full overflow-hidden">
+                <div id="confidence-bar" class="bg-gradient-to-r from-purple-500 to-emerald-400 h-full w-[90%]"></div>
+              </div>
+              <span id="rep-confidence" class="font-bold text-zinc-200">95%</span>
+            </div>
+          </div>
+
+          <!-- Summary & Root Cause -->
+          <div>
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1">Executive Summary</h4>
+            <p id="rep-summary" class="text-sm font-medium text-zinc-100 bg-zinc-950/60 p-3 rounded-xl border border-zinc-800/60 leading-relaxed"></p>
+          </div>
+
+          <div>
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1">Root Cause Analysis</h4>
+            <p id="rep-rootcause" class="text-xs text-zinc-300 bg-zinc-950/60 p-3 rounded-xl border border-zinc-800/60 leading-relaxed"></p>
+          </div>
+
+          <!-- Affected Services -->
+          <div>
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Affected Services & Impact</h4>
+            <div id="rep-services" class="grid grid-cols-1 sm:grid-cols-2 gap-2"></div>
+          </div>
+
+          <!-- Action Recommendations -->
+          <div>
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Recommended SRE Actions</h4>
+            <div id="rep-actions" class="space-y-2"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: CHAOS & RESILIENCE CONTROLLER (5 cols) -->
+    <aside class="lg:col-span-5 flex flex-col space-y-5">
+
+      <!-- Chaos Simulation Engine Card -->
+      <div class="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-5 shadow-xl backdrop-blur-sm">
+        <div class="flex items-center justify-between pb-3 border-b border-zinc-800/80 mb-4">
+          <div class="flex items-center space-x-2">
+            <span class="text-lg">⚡</span>
+            <h3 class="font-semibold text-sm text-zinc-200 tracking-tight">Chaos & Outage Simulator</h3>
+          </div>
+          <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">FAULT INJECTION</span>
+        </div>
+
+        <p class="text-xs text-zinc-400 mb-4">
+          Simulate live upstream outages and network drops to verify circuit breaker trip dynamics and automatic compensatory degradation.
+        </p>
+
+        <!-- Chaos Form -->
+        <div class="space-y-3.5 text-xs">
+          <!-- Toggle 503 -->
+          <div class="flex items-center justify-between p-3 rounded-xl bg-zinc-950 border border-zinc-800">
+            <div>
+              <span class="font-medium text-zinc-200">Inject HTTP 503 Outages</span>
+              <p class="text-[11px] text-zinc-500">Forces upstream telemetry probe to return 503 errors</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="chaos-503-toggle" class="sr-only peer" onchange="submitChaosConfig()">
+              <div class="w-11 h-6 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+            </label>
+          </div>
+
+          <!-- Failure Rate Slider -->
+          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
+            <div class="flex justify-between items-center mb-1.5">
+              <span class="font-medium text-zinc-200">Random Failure Rate</span>
+              <span id="rate-val" class="font-mono text-purple-400 font-semibold">0%</span>
+            </div>
+            <input type="range" id="chaos-rate-slider" min="0" max="1" step="0.1" value="0" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-purple-500" oninput="document.getElementById('rate-val').innerText = Math.round(this.value * 100) + '%'" onchange="submitChaosConfig()">
+          </div>
+
+          <!-- Artificial Latency Slider -->
+          <div class="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
+            <div class="flex justify-between items-center mb-1.5">
+              <span class="font-medium text-zinc-200">Artificial Injected Latency</span>
+              <span id="latency-val" class="font-mono text-purple-400 font-semibold">0 ms</span>
+            </div>
+            <input type="range" id="chaos-latency-slider" min="0" max="1000" step="50" value="0" class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-purple-500" oninput="document.getElementById('latency-val').innerText = this.value + ' ms'" onchange="submitChaosConfig()">
+          </div>
+        </div>
+
+        <!-- Quick Trigger Buttons -->
+        <div class="mt-4 pt-3 border-t border-zinc-800/60 grid grid-cols-2 gap-2">
+          <button
+            onclick="tripChaosCircuit()"
+            class="px-3 py-2 rounded-xl bg-red-950/40 hover:bg-red-900/60 border border-red-800/80 text-red-300 text-xs font-medium flex items-center justify-center space-x-1.5 transition-colors"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span>⚡ Trip Breaker</span>
+          </button>
+
+          <button
+            onclick="resetResilience()"
+            class="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium flex items-center justify-center space-x-1.5 transition-colors"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>🔄 Reset Circuits</span>
+          </button>
+        </div>
+
+        <button
+          onclick="clearCache()"
+          class="mt-2 w-full px-3 py-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-[11px] font-mono flex items-center justify-center space-x-1 transition-colors"
+        >
+          <span>🧹 Flush Semantic Cache Memory</span>
+        </button>
+      </div>
+
+      <!-- Live Real-Time Audit Log Stream -->
+      <div class="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-5 shadow-xl flex-1 flex flex-col">
+        <div class="flex items-center justify-between pb-2 mb-2 border-b border-zinc-800/80">
+          <div class="flex items-center space-x-2">
+            <span class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Live Request Audit Log</h4>
+          </div>
+          <button onclick="clearAuditLog()" class="text-[10px] text-zinc-500 hover:text-zinc-300 font-mono">Clear</button>
+        </div>
+
+        <div id="audit-log" class="flex-1 custom-scrollbar overflow-y-auto max-h-[220px] font-mono text-[11px] space-y-1.5 text-zinc-400">
+          <div class="text-zinc-600 italic">Listening for incident triage & chaos events...</div>
+        </div>
+      </div>
+
+    </aside>
+
+  </main>
+
+  <!-- TOAST NOTIFICATION CONTAINER -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-700 shadow-2xl text-xs font-medium text-white flex items-center space-x-2">
+    <span id="toast-icon">✓</span>
+    <span id="toast-msg">Notification</span>
+  </div>
+
+  <!-- JAVASCRIPT APP LOGIC -->
+  <script>
+    let activeThreadId = null;
+
+    // Toast utility
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toast-msg');
+      const toastIcon = document.getElementById('toast-icon');
+      toastMsg.innerText = msg;
+      toastIcon.innerText = isError ? '✕' : '✓';
+      toast.className = `fixed bottom-5 right-5 z-50 transition-all duration-300 px-4 py-2.5 rounded-xl border shadow-2xl text-xs font-medium flex items-center space-x-2 ${
+        isError ? 'bg-red-950 border-red-800 text-red-200' : 'bg-zinc-900 border-zinc-700 text-white'
+      }`;
+      toast.style.transform = 'translateY(0)';
+      toast.style.opacity = '1';
+      setTimeout(() => {
+        toast.style.transform = 'translateY(20px)';
+        toast.style.opacity = '0';
+      }, 3000);
+    }
+
+    // Audit Logger
+    function logEvent(method, path, status, latency) {
+      const log = document.getElementById('audit-log');
+      const now = new Date().toTimeString().split(' ')[0];
+      const entry = document.createElement('div');
+      const statusColor = status >= 200 && status < 300 ? 'text-emerald-400' : 'text-red-400';
+      entry.className = 'flex items-center justify-between border-b border-zinc-900/60 pb-1';
+      entry.innerHTML = `
+        <div class="flex items-center space-x-1.5 truncate">
+          <span class="text-zinc-600">${now}</span>
+          <span class="font-bold text-zinc-300">${method}</span>
+          <span class="text-zinc-400 truncate max-w-[140px]">${path}</span>
+        </div>
+        <div class="flex items-center space-x-2">
+          <span class="${statusColor} font-semibold">${status}</span>
+          <span class="text-zinc-500">${latency}ms</span>
+        </div>
+      `;
+      log.prepend(entry);
+    }
+
+    function clearAuditLog() {
+      document.getElementById('audit-log').innerHTML = '<div class="text-zinc-600 italic">Audit log cleared.</div>';
+    }
+
+    // Set preset query
+    function setQuery(text, filter) {
+      document.getElementById('incident-query').value = text;
+      document.getElementById('service-filter').value = filter || '';
+      document.getElementById('incident-query').focus();
+    }
+
+    // Keyboard shortcut (Cmd+Enter)
+    document.getElementById('incident-query').addEventListener('keydown', function(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        executeTriage();
+      }
+    });
+
+    // Execute Incident Triage
+    async function executeTriage() {
+      const query = document.getElementById('incident-query').value.trim();
+      if (!query) {
+        showToast('Please enter an incident description', true);
+        return;
+      }
+
+      const forceRefresh = document.getElementById('force-refresh').checked;
+      const serviceFilter = document.getElementById('service-filter').value.trim() || null;
+
+      const runBtn = document.getElementById('run-triage-btn');
+      const runIcon = document.getElementById('run-icon');
+      const spinner = document.getElementById('spinner-icon');
+      const btnText = document.getElementById('btn-text');
+
+      runBtn.disabled = true;
+      runIcon.classList.add('hidden');
+      spinner.classList.remove('hidden');
+      btnText.innerText = 'Triaging...';
+
+      const start = performance.now();
+
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (activeThreadId) headers['X-Thread-ID'] = activeThreadId;
+
+        const res = await fetch('/triage', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            query: query,
+            service_filter: serviceFilter,
+            force_refresh: forceRefresh
+          })
+        });
+
+        const elapsed = Math.round(performance.now() - start);
+        logEvent('POST', '/triage', res.status, elapsed);
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || 'Triage failed');
+        }
+
+        const data = await res.json();
+        const cacheHeader = res.headers.get('x-cache') || (data.cached ? 'HIT' : 'MISS');
+        const similarity = res.headers.get('x-cache-similarity') || data.cache_similarity;
+        const threadId = res.headers.get('x-thread-id');
+        if (threadId) activeThreadId = threadId;
+
+        // Render Telemetry Banner
+        renderTelemetryBanner(cacheHeader, similarity, data.execution_time_ms, threadId);
+
+        // Render Report
+        renderReport(data.report);
+        showToast(cacheHeader === 'HIT' ? '⚡ Instant Semantic Cache Hit (<20ms)' : 'Triage Report Generated');
+      } catch (err) {
+        showToast(err.message || 'Error executing incident triage', true);
+      } finally {
+        runBtn.disabled = false;
+        runIcon.classList.remove('hidden');
+        spinner.classList.add('hidden');
+        btnText.innerText = 'Run Triage';
+        pollSystemHealth();
+      }
+    }
+
+    // Render Telemetry Banner
+    function renderTelemetryBanner(cacheStatus, similarity, latencyMs, threadId) {
+      const banner = document.getElementById('telemetry-banner');
+      const badge = document.getElementById('cache-badge');
+      const pulse = document.getElementById('cache-pulse');
+      const cacheText = document.getElementById('cache-text');
+      const turnaroundText = document.getElementById('turnaround-text');
+      const similarityText = document.getElementById('similarity-text');
+      const threadDisplay = document.getElementById('thread-id-display');
+
+      banner.classList.remove('hidden');
+
+      if (cacheStatus === 'HIT') {
+        banner.className = 'rounded-xl border border-emerald-800/80 bg-emerald-950/30 p-3 flex items-center justify-between font-mono text-xs shadow-lg shadow-emerald-950/20';
+        badge.className = 'px-2.5 py-1 rounded-md font-semibold text-xs flex items-center space-x-1.5 bg-emerald-900/60 text-emerald-300 border border-emerald-700/60';
+        pulse.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse';
+        cacheText.innerText = '⚡ X-Cache: HIT';
+        turnaroundText.innerHTML = `<span class="font-bold text-emerald-400">${latencyMs}ms</span> turnaround (<20ms target)`;
+        if (similarity) {
+          similarityText.innerText = `• ${(similarity * 100).toFixed(1)}% match`;
+        }
+      } else {
+        banner.className = 'rounded-xl border border-purple-800/80 bg-purple-950/30 p-3 flex items-center justify-between font-mono text-xs shadow-lg shadow-purple-950/20';
+        badge.className = 'px-2.5 py-1 rounded-md font-semibold text-xs flex items-center space-x-1.5 bg-purple-900/60 text-purple-300 border border-purple-700/60';
+        pulse.className = 'h-2 w-2 rounded-full bg-purple-400 animate-pulse';
+        cacheText.innerText = '🔍 X-Cache: MISS';
+        turnaroundText.innerHTML = `<span class="font-bold text-purple-400">${latencyMs}ms</span> (Live LLM Engine)`;
+        similarityText.innerText = '';
+      }
+
+      if (threadId) {
+        threadDisplay.innerText = `Thread: ${threadId.slice(0, 8)}...`;
+      }
+    }
+
+    // Render Incident Report
+    function renderReport(report) {
+      document.getElementById('empty-state').classList.add('hidden');
+      const content = document.getElementById('report-content');
+      content.classList.remove('hidden');
+
+      // Severity badge styling
+      const sev = document.getElementById('rep-severity');
+      sev.innerText = report.severity;
+      if (report.severity === 'CRITICAL') {
+        sev.className = 'px-3 py-1 rounded-lg text-xs font-bold font-mono uppercase bg-red-950/80 text-red-400 border border-red-700 shadow-sm shadow-red-950/50';
+      } else if (report.severity === 'HIGH') {
+        sev.className = 'px-3 py-1 rounded-lg text-xs font-bold font-mono uppercase bg-orange-950/80 text-orange-400 border border-orange-700';
+      } else if (report.severity === 'MEDIUM') {
+        sev.className = 'px-3 py-1 rounded-lg text-xs font-bold font-mono uppercase bg-amber-950/80 text-amber-400 border border-amber-700';
+      } else {
+        sev.className = 'px-3 py-1 rounded-lg text-xs font-bold font-mono uppercase bg-blue-950/80 text-blue-400 border border-blue-700';
+      }
+
+      // Degradation badge
+      const deg = document.getElementById('rep-degradation');
+      deg.innerText = report.degradation_status;
+      if (report.degradation_status === 'HEALTHY') {
+        deg.className = 'px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-950/50 text-emerald-400 border border-emerald-800';
+      } else {
+        deg.className = 'px-2 py-0.5 rounded text-[11px] font-mono bg-amber-950/50 text-amber-400 border border-amber-800 animate-pulse';
+      }
+
+      // Confidence
+      const confScore = Math.round((report.confidence_score || 0.9) * 100);
+      document.getElementById('confidence-bar').style.width = confScore + '%';
+      document.getElementById('rep-confidence').innerText = confScore + '%';
+
+      // Summary & Root Cause
+      document.getElementById('rep-summary').innerText = report.summary || 'N/A';
+      document.getElementById('rep-rootcause').innerText = report.root_cause_analysis || 'N/A';
+
+      // Affected Services
+      const servContainer = document.getElementById('rep-services');
+      servContainer.innerHTML = '';
+      if (report.affected_services && report.affected_services.length > 0) {
+        report.affected_services.forEach(s => {
+          const card = document.createElement('div');
+          card.className = 'p-2.5 rounded-xl bg-zinc-950/60 border border-zinc-800/80 text-xs';
+          card.innerHTML = `
+            <div class="flex items-center justify-between font-mono font-medium">
+              <span class="text-zinc-200">${s.service_name}</span>
+              <span class="text-amber-400 text-[10px] uppercase font-bold">${s.impact_level}</span>
+            </div>
+            <p class="text-zinc-400 text-[11px] mt-1">${s.details}</p>
+          `;
+          servContainer.appendChild(card);
+        });
+      } else {
+        servContainer.innerHTML = '<span class="text-zinc-500 text-xs italic">No specific service impact identified.</span>';
+      }
+
+      // Actions
+      const actContainer = document.getElementById('rep-actions');
+      actContainer.innerHTML = '';
+      if (report.recommended_actions && report.recommended_actions.length > 0) {
+        report.recommended_actions.forEach(a => {
+          const item = document.createElement('div');
+          const isRemediation = a.action_type === 'remediative' || a.action_type === 'remediation';
+          const typeBadge = isRemediation
+            ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800">REMEDIATIVE</span>'
+            : '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800">DIAGNOSTIC</span>';
+          
+          const approvalBadge = a.requires_approval
+            ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-300 border border-amber-800">APPROVAL REQ</span>'
+            : '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-800">AUTO-APPROVED</span>';
+
+          item.className = 'p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 flex items-start justify-between space-x-3 group hover:border-zinc-700 transition-colors';
+          item.innerHTML = `
+            <div class="flex-1">
+              <div class="flex items-center space-x-2 mb-1.5">
+                <span class="font-mono font-bold text-xs text-purple-400">${a.priority || 'P0'}</span>
+                ${typeBadge}
+                ${approvalBadge}
+                <span class="text-zinc-500 text-[11px] font-mono">Target: ${a.target_system || 'General'}</span>
+              </div>
+              <div class="font-mono text-xs text-zinc-200 select-all">${a.action}</div>
+            </div>
+            <button onclick="navigator.clipboard.writeText('${a.action.replace(/'/g, "\\'")}'); showToast('Action copied to clipboard');" class="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors opacity-80 group-hover:opacity-100" title="Copy action command">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </button>
+          `;
+          actContainer.appendChild(item);
+        });
+      }
+    }
+
+    // Submit Chaos Configuration
+    async function submitChaosConfig() {
+      const active = document.getElementById('chaos-503-toggle').checked;
+      const rate = parseFloat(document.getElementById('chaos-rate-slider').value);
+      const latency = parseInt(document.getElementById('chaos-latency-slider').value);
+
+      const start = performance.now();
+      try {
+        const res = await fetch('/chaos/inject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            active: active,
+            inject_503: active,
+            failure_rate: rate,
+            latency_ms: latency
+          })
+        });
+        const elapsed = Math.round(performance.now() - start);
+        logEvent('POST', '/chaos/inject', res.status, elapsed);
+        if (res.ok) {
+          showToast(active ? '⚡ Chaos 503 Injection Active' : 'Chaos Injections Disabled');
+        }
+      } catch (err) {
+        showToast('Failed to update chaos parameters', true);
+      }
+      pollSystemHealth();
+    }
+
+    // Force trip chaos circuit breaker
+    async function tripChaosCircuit() {
+      showToast('Simulating upstream outage failures...');
+      const start = performance.now();
+      try {
+        for (let i = 0; i < 3; i++) {
+          await fetch('/chaos/probe').catch(() => {});
+        }
+        const elapsed = Math.round(performance.now() - start);
+        logEvent('PROBE', '/chaos/probe (3x)', 503, elapsed);
+        showToast('Circuit Breaker Tripped OPEN: Failing Fast', true);
+      } catch (e) {
+        showToast('Circuit breaker probe complete');
+      }
+      pollSystemHealth();
+    }
+
+    // Reset circuit breakers and chaos
+    async function resetResilience() {
+      const start = performance.now();
+      try {
+        const res = await fetch('/resilience/reset', { method: 'POST' });
+        const elapsed = Math.round(performance.now() - start);
+        logEvent('POST', '/resilience/reset', res.status, elapsed);
+
+        document.getElementById('chaos-503-toggle').checked = false;
+        document.getElementById('chaos-rate-slider').value = 0;
+        document.getElementById('rate-val').innerText = '0%';
+        document.getElementById('chaos-latency-slider').value = 0;
+        document.getElementById('latency-val').innerText = '0 ms';
+
+        showToast('All Circuit Breakers & Chaos Reset');
+      } catch (err) {
+        showToast('Error resetting resilience', true);
+      }
+      pollSystemHealth();
+    }
+
+    // Clear semantic cache
+    async function clearCache() {
+      const start = performance.now();
+      try {
+        const res = await fetch('/cache/clear', { method: 'POST' });
+        const elapsed = Math.round(performance.now() - start);
+        logEvent('POST', '/cache/clear', res.status, elapsed);
+        showToast('Semantic Cache Flushed');
+      } catch (err) {
+        showToast('Failed to clear cache', true);
+      }
+    }
+
+    // Poll system health & circuit breakers every 3 seconds
+    async function pollSystemHealth() {
+      try {
+        const res = await fetch('/health');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Active model badge
+        if (data.active_model) {
+          document.getElementById('model-name-text').innerText = data.active_model;
+        }
+
+        // Overall status
+        const healthBadge = document.getElementById('health-badge');
+        const healthDot = document.getElementById('health-dot');
+        const healthText = document.getElementById('health-text');
+
+        if (data.status === 'healthy') {
+          healthBadge.className = 'px-2.5 py-1 rounded-full bg-emerald-950/40 border border-emerald-800/60 text-emerald-400 flex items-center space-x-1.5 font-mono';
+          healthDot.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse-slow';
+          healthText.innerText = 'HEALTHY';
+        } else {
+          healthBadge.className = 'px-2.5 py-1 rounded-full bg-amber-950/40 border border-amber-800/60 text-amber-400 flex items-center space-x-1.5 font-mono';
+          healthDot.className = 'h-2 w-2 rounded-full bg-amber-400 animate-pulse';
+          healthText.innerText = 'DEGRADED';
+        }
+
+        // Circuit status pills
+        if (data.circuits) {
+          const spState = data.circuits.statuspage || 'closed';
+          const chaosState = data.circuits.chaos || 'closed';
+
+          const spEl = document.getElementById('cb-statuspage-state');
+          const chaosEl = document.getElementById('cb-chaos-state');
+
+          spEl.innerText = spState.toUpperCase();
+          spEl.className = spState === 'open' ? 'text-red-400 font-bold animate-pulse' : 'text-emerald-400 font-semibold';
+
+          chaosEl.innerText = chaosState.toUpperCase();
+          chaosEl.className = chaosState === 'open' ? 'text-red-400 font-bold animate-pulse' : 'text-emerald-400 font-semibold';
+        }
+      } catch (e) {
+        console.debug('Health poll error:', e);
+      }
+    }
+
+    // Initial load polling
+    pollSystemHealth();
+    setInterval(pollSystemHealth, 3000);
+  </script>
+</body>
+</html>

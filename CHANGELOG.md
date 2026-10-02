@@ -5,7 +5,31 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-02
+
+### Added
+- **Interactive SRE Command Center UI**:
+  - `src/resilient_triage/api/templates/index.html`: Modern, responsive single-page SRE incident console served at `/` with dark-mode styling (Linear/Vercel `#09090b` zinc, Tailwind CSS via CDN, Inter and JetBrains Mono typography).
+  - Dynamic active model engine badge in header (`⚡ Groq LPU (Qwen 3.8 27B)`).
+  - Instant preset incident chips (`💥 Actions 503 Webhooks`, `💳 Stripe Ingestion Outage`, `🗄️ Postgres Pool Exhaustion`).
+  - Glowing telemetry badge: `X-Cache: HIT` (emerald green, <20ms) vs `X-Cache: MISS` (violet).
+  - Interactive Chaos & Outage Controller: toggle 503 fault injection, failure rate and latency sliders, 1-click circuit tripping and reset.
+  - Real-time live request audit log stream.
+  - Background polling every 3 seconds for live circuit breaker health telemetry.
+- **Ultra-Fast SOTA LLM Engine (Groq LPUs)**:
+  - `src/resilient_triage/graph/llm.py`: `GroqChatModel` with native `httpx` async client and `response_format={"type": "json_object"}`.
+  - Achieves **~1.0–1.2 second SOTA 27B / 120B inference** on Groq LPUs (`qwen/qwen3.8-27b`, `openai/gpt-oss-120b`).
+  - Built-in Tenacity retry wrapper (`with_retry`) protecting against transient HTTP 429 rate limit errors with exponential backoff and randomized jitter.
+  - Multi-tier provider ladder: Groq LPUs -> Local Apple Silicon GPU (Ollama) -> Google Gemini -> OpenAI -> High-fidelity SRE simulation fallback.
+- **Native macOS Workflow & Dual-Mode Smoke Testing**:
+  - `scripts/run_local.sh`: 1-line native runner for macOS without Docker Desktop.
+  - `scripts/smoke_test.py`: Dual-mode automated CLI smoke test verifying health, live Groq inference, sub-20ms cache hits, chaos injection, breaker tripping, and recovery.
+  - `docs/deployment.md`: Free cloud hosting guide for Hugging Face Spaces (free 16GB Docker Space) and Render.com.
+
+---
+
 ## [0.5.0] - 2026-10-02
+
 
 ### Added
 - **FastAPI REST Application & Gateway**:

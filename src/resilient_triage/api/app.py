@@ -3,14 +3,17 @@
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from resilient_triage.cache.semantic_cache import semantic_cache
 from resilient_triage.graph.builder import triage_graph
+from resilient_triage.graph.llm import get_active_model_name
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
@@ -27,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Concurrency boundary: max 10 concurrent graph executions to prevent stampedes
 GRAPH_SEMAPHORE = asyncio.Semaphore(10)
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 @asynccontextmanager
@@ -57,6 +61,15 @@ app = FastAPI(
     version="0.5.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 
 @app.middleware("http")
@@ -200,6 +213,15 @@ async def probe_chaos():
     return await client.probe()
 
 
+@app.get("/", response_class=HTMLResponse)
+async def get_sre_console():
+    """Serve the interactive SRE Incident Command Center demo UI."""
+    index_file = TEMPLATES_DIR / "index.html"
+    if not index_file.exists():
+        return HTMLResponse(content="<h1>Resilient Triage API is running. Visit /docs for OpenAPI specs.</h1>")
+    return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
+
+
 @app.get("/health", response_model=HealthResponse)
 async def get_health():
     """Health check endpoint indicating service availability and breaker status."""
@@ -212,6 +234,7 @@ async def get_health():
         version="0.5.0",
         redis_connected=semantic_cache.is_redis_connected,
         circuits=circuit_states,
+        active_model=get_active_model_name(),
     )
 
 
@@ -237,7 +260,9 @@ async def get_resilience_status():
         chaos_active=chaos_manager.get_config().active,
         cache_driver=semantic_cache.driver,
         cache_entries_count=semantic_cache.count,
+        active_model=get_active_model_name(),
     )
+
 
 
 @app.post("/resilience/reset")

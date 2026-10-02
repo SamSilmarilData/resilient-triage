@@ -77,6 +77,10 @@ class HealthResponse(BaseModel):
     circuits: dict[str, str] = Field(
         description="Current state of all registered circuit breakers ('closed', 'open', 'half-open')"
     )
+    active_model: str = Field(
+        default="Zero-Config SRE Simulation",
+        description="Name of currently active LLM inference engine",
+    )
 
 
 class ResilienceStatusResponse(BaseModel):
@@ -88,3 +92,8 @@ class ResilienceStatusResponse(BaseModel):
     chaos_active: bool
     cache_driver: str
     cache_entries_count: int
+    active_model: str = Field(
+        default="Zero-Config SRE Simulation",
+        description="Name of currently active LLM inference engine",
+    )
+

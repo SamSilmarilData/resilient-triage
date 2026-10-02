@@ -67,5 +67,13 @@ class Settings(BaseSettings):
         description="Max retries allowed for Pydantic LLM self-repair loop",
     )
 
+    # LLM Providers (Groq LPU, OpenAI, Google)
+    groq_api_key: str | None = Field(default=None, description="Groq API key for ultra-fast LPU inference")
+    groq_model: str = Field(
+        default="qwen/qwen3.8-27b",
+        description="Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
+    )
+
 
 settings = Settings()
+

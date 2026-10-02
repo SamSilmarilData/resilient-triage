@@ -1,13 +1,99 @@
 """LLM client factory and mock model for deterministic simulation and tests."""
 
 import json
+import logging
 import os
 from typing import Any, List, Optional
 
+import httpx
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+
+from resilient_triage.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class GroqChatModel(BaseChatModel):
+    """Native high-speed Groq LPU chat model client supporting structured JSON generation."""
+
+    api_key: str
+    model_name: str = "qwen/qwen3.8-27b"
+    timeout: float = 20.0
+
+    def _format_messages(self, messages: List[BaseMessage]) -> list[dict[str, str]]:
+        formatted = []
+        for m in messages:
+            if m.type == "human":
+                role = "user"
+            elif m.type == "ai":
+                role = "assistant"
+            elif m.type == "system":
+                role = "system"
+            else:
+                role = "user"
+            formatted.append({"role": role, "content": str(m.content)})
+        return formatted
+
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        payload = {
+            "model": self.model_name,
+            "messages": self._format_messages(messages),
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+        }
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+
+    async def _agenerate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        payload = {
+            "model": self.model_name,
+            "messages": self._format_messages(messages),
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+        }
+
+        from resilient_triage.resilience.retry import with_retry
+
+        @with_retry(max_attempts=3, min_wait=0.2, max_wait=2.0)
+        async def _send_request() -> str:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+
+        content = await _send_request()
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+
+
+    @property
+    def _llm_type(self) -> str:
+        return "groq-lpu-chat-model"
 
 
 class MockTriageChatModel(BaseChatModel):
@@ -102,11 +188,38 @@ def set_triage_llm(llm: BaseChatModel | None) -> None:
     _override_llm = llm
 
 
+def get_active_model_name() -> str:
+    """Return friendly display label of currently active model engine."""
+    if _override_llm is not None:
+        return f"Test Override ({getattr(_override_llm, '_llm_type', 'mock')})"
+
+    groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        return f"Groq LPU ({settings.groq_model})"
+
+    if os.environ.get("OPENAI_API_KEY"):
+        return "OpenAI GPT-4o"
+
+    if os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
+        return "Google Gemini 1.5"
+
+    return "Zero-Config SRE Simulation"
+
+
 def get_triage_llm() -> BaseChatModel:
-    """Factory returning active chat model: test override, real provider, or mock default."""
+    """Factory returning active chat model: test override, Groq, real provider, or mock default."""
     if _override_llm is not None:
         return _override_llm
 
+    # 1. Groq LPU (Sub-1.5s SOTA inference)
+    groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        return GroqChatModel(
+            api_key=groq_key,
+            model_name=settings.groq_model,
+        )
+
+    # 2. OpenAI Provider
     if os.environ.get("OPENAI_API_KEY"):
         try:
             from langchain_openai import ChatOpenAI
@@ -115,6 +228,7 @@ def get_triage_llm() -> BaseChatModel:
         except ImportError:
             pass
 
+    # 3. Google Gemini Provider
     if os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
@@ -123,5 +237,5 @@ def get_triage_llm() -> BaseChatModel:
         except ImportError:
             pass
 
-    # Default to deterministic mock model
+    # 4. Default to deterministic mock model
     return MockTriageChatModel()

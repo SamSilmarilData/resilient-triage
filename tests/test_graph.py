@@ -21,10 +21,11 @@ from resilient_triage.schemas.incident import (
 def reset_test_environment():
     """Reset registry and LLM overrides between tests."""
     circuit_breaker_registry.reset_all()
-    set_triage_llm(None)
+    set_triage_llm(MockTriageChatModel())
     yield
     circuit_breaker_registry.reset_all()
     set_triage_llm(None)
+
 
 
 def _make_valid_report_json(severity: str = "HIGH", confidence: float = 0.90) -> str:
@@ -254,3 +255,25 @@ async def test_graph_thread_checkpointing():
 
     # Message history should have accumulated across turns
     assert messages_after_call2 > messages_after_call1
+
+
+def test_groq_chat_model_formatting_and_factory():
+    """Verify GroqChatModel message formatting and active model reporting."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from resilient_triage.graph.llm import GroqChatModel, get_active_model_name
+
+    model = GroqChatModel(api_key="mock_key", model_name="qwen/qwen3.8-27b")
+    assert model._llm_type == "groq-lpu-chat-model"
+
+    msgs = [SystemMessage(content="You are SRE."), HumanMessage(content="Is Actions down?")]
+    formatted = model._format_messages(msgs)
+    assert formatted == [
+        {"role": "system", "content": "You are SRE."},
+        {"role": "user", "content": "Is Actions down?"},
+    ]
+
+    # Verify active model name reporting
+    active_name = get_active_model_name()
+    assert isinstance(active_name, str)
+    assert len(active_name) > 0
+

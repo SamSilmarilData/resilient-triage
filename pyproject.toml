@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resilient-triage"
-version = "0.1.0"
+version = "0.5.0"
 description = "Fault-tolerant incident triage agent powered by LangGraph, Tenacity, Pybreaker, and Redis Semantic Cache"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -33,6 +33,10 @@ test = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"resilient_triage.api" = ["templates/*.html"]
+
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
