@@ -52,10 +52,15 @@ def run_battery(base_url: str):
     print_pass(f"Active LLM Engine: {BOLD}{model}{RESET}")
     print_pass(f"Circuit Breakers: {data['circuits']}")
 
+    # Ensure clean slate before running tests
+    client.post("/cache/clear")
+    client.post("/resilience/reset")
+
     # 2. Triage Cache Miss (Live Inference)
     print_step("Step 2: Live Incident Triage Query (Cache MISS)")
     q1 = "GitHub Actions runner queue is stalled with 504 gateway timeout and elevated webhook latency"
     start = time.monotonic()
+
     res1 = client.post("/triage", json={"query": q1})
     elapsed1 = (time.monotonic() - start) * 1000.0
 
