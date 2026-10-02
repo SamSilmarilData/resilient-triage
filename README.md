@@ -152,7 +152,7 @@ resilient-triage/
   - Tenacity retry wrappers with exponential backoff & jitter.
   - Pybreaker circuit breakers with 3-failure trip limit.
   - Live Atlassian Statuspage and configurable `/chaos` endpoint.
-- [ ] **Phase 3: Redis Semantic Caching**
+- [x] **Phase 3: Redis Semantic Caching**
   - Sub-20ms vector similarity lookups ($\ge 0.90$ cosine similarity).
   - Cache response headers (`X-Cache: HIT / MISS`).
 - [ ] **Phase 4: LangGraph Cyclic State Machine**

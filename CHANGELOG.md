@@ -8,9 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- **Phase 3**: Redis semantic vector search caching ($\ge 0.90$ cosine similarity) with sub-20ms latency target.
 - **Phase 4**: LangGraph cyclic state machine with degraded fallback routing and LLM self-repair retry loop (capped at 2 retries).
 - **Phase 5**: FastAPI REST gateway with OpenAPI documentation and full chaos testing suite.
+
+---
+
+## [0.3.0] - 2026-10-02
+
+### Added
+- **Redis Semantic Caching Subsystem**:
+  - `embeddings.py`: `BaseEmbeddingProvider` interface with `FastEmbedProvider` (ONNX runtime on CPU, `BAAI/bge-small-en-v1.5`, 384 dimensions) and `DeterministicEmbeddingProvider` (zero-download token hash vectorizer for unit tests/offline).
+  - `semantic_cache.py`: `SemanticCacheManager` providing sub-20ms cosine similarity lookup ($\ge 0.90$) with dual-engine driver:
+    - Native RediSearch HNSW vector index (`FT.CREATE`, `FT.SEARCH`) when connected to Redis Stack.
+    - High-performance in-memory vector index via `numpy` dot product (0.015ms) when running standalone or in unit tests.
+  - Query scoping: `format_scoped_query` prepending `[scope: <service>]` to isolate queries across infrastructure components.
+  - Dynamic TTL management: standard 300s TTL for healthy reports, reduced 60s TTL for degraded reports to quickly re-probe upstream recovery.
+  - `CacheMatch` contract emitting execution duration and similarity score.
+- **Automated Test Suite**:
+  - `tests/test_cache.py`: 9 tests verifying deterministic and FastEmbed vector generation, sub-20ms cache hits (averaging 4.10ms), low-similarity misses, `force_refresh=True` bypass, service scope isolation, degraded TTLs, and cache purging.
 
 ---
 

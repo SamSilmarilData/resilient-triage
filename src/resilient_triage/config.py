@@ -26,7 +26,17 @@ class Settings(BaseSettings):
         le=1.0,
         description="Cosine similarity threshold for semantic cache HIT (>= 0.90)",
     )
-    cache_ttl_seconds: int = Field(default=3600, ge=60, description="Semantic cache TTL in seconds")
+    cache_ttl_seconds: int = Field(default=300, ge=30, description="Standard semantic cache TTL in seconds")
+    cache_degraded_ttl_seconds: int = Field(default=60, ge=10, description="Degraded report cache TTL in seconds")
+    embedding_model: str = Field(
+        default="BAAI/bge-small-en-v1.5",
+        description="FastEmbed ONNX model name",
+    )
+    vector_dimension: int = Field(default=384, description="Embedding vector dimension")
+    use_deterministic_embeddings: bool = Field(
+        default=False,
+        description="Force deterministic offline embeddings (useful for tests and airgapped environments)",
+    )
 
     # Telemetry Sources
     statuspage_url: str = Field(
