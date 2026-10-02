@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Resilient Incident Triage Gateway",
     description="High-availability LangGraph incident triage state machine with Redis semantic caching and circuit breaker telemetry.",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 

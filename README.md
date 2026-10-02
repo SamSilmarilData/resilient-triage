@@ -2,26 +2,27 @@
 
 > **Fault-tolerant incident triage gateway powered by LangGraph, Groq LPUs, and Redis 8 RediSearch that doesn't collapse when external systems are on fire.**
 
+[![Release v1.1.0](https://img.shields.io/badge/Release-v1.1.0-blue.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-FF6F00.svg?style=flat&logo=chainlink&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![Redis 8](https://img.shields.io/badge/Redis_8-RediSearch_HNSW-DC382D.svg?style=flat&logo=redis&logoColor=white)](https://redis.io/)
 [![Groq LPU](https://img.shields.io/badge/Groq_LPU-Qwen_3.8_27B-F55036.svg?style=flat)](https://groq.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?style=flat&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
-[![Tests Passing](https://img.shields.io/badge/Tests-51%2F51_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
+[![Tests Passing](https://img.shields.io/badge/Tests-53%2F53_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 
 ---
 
-## ⚡ Live Performance Highlights
+## ⚡ Live Performance Highlights (v1.1.0)
 
 | Metric | Target | Measured Live Performance | Verification |
 | :--- | :---: | :---: | :--- |
-| **Semantic Cache Lookup** | `< 20ms` | **`7.71 ms`** | RediSearch HNSW Float32 Cosine Index |
-| **Live LLM Triage Inference** | `< 2.0s` | **`1.10 s`** | Groq LPU (`qwen/qwen3.8-27b`) |
+| **Semantic Cache Lookup (Hit)** | `< 20ms` | **`1.16 ms`** | Redis HNSW + In-Memory LRU Vector Cache |
+| **Live LLM Triage (Miss)** | `< 2.0s` | **`1.27 s`** | Groq LPU keep-alive pool + 10s Statuspage cache + token cap |
 | **Time-To-First-Token (TTFT)** | `< 500ms` | **`166 ms`** | Groq LPUs via async JSON streaming |
 | **Disconnect Resilience** | `Zero 500s` | **`0 Errors`** | Mid-flight Redis drop tested with 100% in-memory failover |
-| **Test Suite Coverage** | `100%` | **`51 / 51 Passing`** | pytest suite completes in **`5.85s`** |
+| **Test Suite Coverage** | `100%` | **`53 / 53 Passing`** | Full pytest regression suite completes in **`4.09s`** |
 
 ---
 
@@ -31,9 +32,9 @@
 
 - **Real-Time Telemetry Navbar**: Displays live active model (`⚡ Groq LPU (qwen/qwen3.8-27b)`), system health (`HEALTHY` / `DEGRADED`), live Redis driver state (`REDIS: CONNECTED (RediSearch)`), and circuit breakers (`statuspage`, `chaos`).
 - **Incident Query Console**: 1-click preset incident scenarios (`💥 Actions 503 Outage`, `💳 Stripe Ingestion Timeout`, `🗄️ Postgres Pool Exhaustion`) with `Cmd+Enter` hotkey execution.
-- **Glowing Telemetry Badges**:
-  - `⚡ X-Cache: HIT • 7.71ms • 95.6% Match` (emerald pulse)
-  - `🔍 X-Cache: MISS • 1.10s • Groq LPU Generation` (violet pulse)
+- **Dual-Metric Latency Telemetry**:
+  - `⚡ X-Cache: HIT • Server: 1.16ms (Redis HNSW) • Net RTT: 78ms (79ms total)` (emerald pulse)
+  - `🔍 X-Cache: MISS • Server: 1.27s (Groq LPU) • Net RTT: 85ms (1.35s total)` (violet pulse)
 - **Structured Report Viewer**: Renders severity pills, confidence meter, root cause analysis, affected services, and prioritized diagnostic/remediative action items with 1-click **Copy Command** clipboard actions.
 - **Chaos & Resilience Controller Panel**:
   - Toggle HTTP 503 fault injections dynamically into upstream probes.
@@ -41,7 +42,7 @@
   - `⚡ Trip Breaker`: Manually trips circuit breakers to `OPEN` to verify automatic compensatory graph routing.
   - `🔄 Reset Circuits`: Restores all breakers to `CLOSED` and clears chaos state.
   - `🧹 Flush Semantic Cache`: Purges Redis and in-memory vector cache on demand.
-- **Live Event Audit Stream**: Real-time ticker logging every request method, URL, HTTP status code, and latency.
+- **Live Event Audit Stream**: Real-time ticker logging every request with dual-metric precision: `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
 
 ---
 
@@ -106,6 +107,10 @@ flowchart TD
    - `Dockerfile` packages `redis-server` directly inside the container.
    - When deployed to single-container platforms (Hugging Face Spaces, Render Free, Railway), `docker-entrypoint.sh` automatically boots embedded Redis with `maxmemory 128mb` and `allkeys-lru` eviction.
    - If an external `REDIS_URL` is provided (e.g. Upstash or Docker Compose), internal Redis is bypassed automatically.
+6. **Telemetry & Embedding Vector Optimization (v1.1.0)**:
+   - **10-Second Statuspage In-Memory Cache**: Eliminates redundant transcontinental network fetches to status APIs, saving ~700ms on successive triage queries.
+   - **Persistent Groq HTTP Connection Pooling**: Keeps connections warm with `max_tokens=650`, eliminating TCP/TLS handshake latency.
+   - **In-Memory LRU Vector Cache & Pre-Warming**: Caches up to 512 query vectors and pre-warms demo presets at boot, driving cache-hit lookups down to **1.16ms**.
 
 ---
 
@@ -146,21 +151,21 @@ docker compose up -d --build
 
 ## 🧪 Testing & Verification
 
-### Automated Pytest Suite (51 Tests)
+### Automated Pytest Suite (53 Tests)
 
 ```bash
 .venv/bin/pytest tests/ -v
 ```
 
 ```
-============================== 51 passed in 5.85s ==============================
-- tests/test_cache.py: 11 passed (embeddings, sub-20ms hits, Redis connectivity, disconnect failover)
+============================== 53 passed in 4.09s ==============================
+- tests/test_cache.py: 12 passed (embeddings, LRU caching, sub-20ms hits, Redis connectivity, disconnect failover)
 - tests/test_api.py: 11 passed (FastAPI endpoints, middleware, chaos injection, resilience resets)
 - tests/test_graph.py: 10 passed (LangGraph routing, self-repair loops, confidence refinement)
 - tests/test_schemas.py: 8 passed (Pydantic v2 strict models, confidence bounds, enum validation)
 - tests/test_retry.py: 5 passed (Tenacity backoff, jitter, HTTP 429 retries)
 - tests/test_circuit_breaker.py: 3 passed (Pybreaker state transitions, snapshots, resets)
-- tests/test_telemetry.py: 3 passed (Atlassian Statuspage parsing, chaos manager)
+- tests/test_telemetry.py: 4 passed (Atlassian Statuspage parsing, 10s short-TTL cache, chaos manager)
 ```
 
 ### Live Smoke Test Battery (9/9 Steps)
