@@ -74,6 +74,10 @@ class HealthResponse(BaseModel):
     status: Literal["healthy", "degraded"]
     version: str
     redis_connected: bool
+    cache_driver: str = Field(
+        default="in_memory",
+        description="Active cache driver: 'redisearch', 'redis_hash_fallback', or 'in_memory'",
+    )
     circuits: dict[str, str] = Field(
         description="Current state of all registered circuit breakers ('closed', 'open', 'half-open')"
     )

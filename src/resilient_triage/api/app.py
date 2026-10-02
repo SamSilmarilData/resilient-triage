@@ -228,11 +228,13 @@ async def get_health():
     statuses = circuit_breaker_registry.get_all_statuses()
     circuit_states = {name: info.state for name, info in statuses.items()}
     any_open = any(info.is_open for info in statuses.values())
+    is_redis_online = await semantic_cache.check_connection()
 
     return HealthResponse(
         status="degraded" if any_open else "healthy",
         version="0.5.0",
-        redis_connected=semantic_cache.is_redis_connected,
+        redis_connected=is_redis_online,
+        cache_driver=semantic_cache.driver,
         circuits=circuit_states,
         active_model=get_active_model_name(),
     )
@@ -241,6 +243,7 @@ async def get_health():
 @app.get("/resilience/status", response_model=ResilienceStatusResponse)
 async def get_resilience_status():
     """Detailed resilience diagnostic report for circuit breakers, chaos, and cache."""
+    await semantic_cache.check_connection()
     statuses = circuit_breaker_registry.get_all_statuses()
     snapshots = {
         name: CircuitSnapshot(

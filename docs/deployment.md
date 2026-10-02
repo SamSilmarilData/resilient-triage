@@ -1,14 +1,16 @@
 # Deployment & Free Cloud Hosting Guide
 
-This guide details how to deploy and host `resilient-triage` completely for free ($0.00 infrastructure cost) with real SOTA AI generation.
+This guide details how to deploy and host `resilient-triage` completely for free ($0.00 infrastructure cost) with **real SOTA AI generation** and **live Redis semantic caching**.
 
 ---
 
 ## Architecture Highlights for Zero-Cost Hosting
 
-1. **In-Memory Vector Search**: When Redis is not provisioned, `SemanticCacheManager` automatically runs an in-memory NumPy vector cache. You do not need to pay for or provision a cloud database.
-2. **CPU-Optimized Embeddings**: FastEmbed uses ONNX runtime (`bge-small-en-v1.5`), generating 384-dim embeddings in ~3.5ms on standard CPU with ~150MB RAM.
-3. **Ultra-Fast SOTA Generation**: Groq LPUs provide 14,400 free daily requests with sub-2s turnaround times for flagship 27B / 120B models.
+1. **Embedded Live Redis Container**: The [`Dockerfile`](../Dockerfile) packages `redis-server` alongside FastAPI. When deployed to single-container platforms (Hugging Face Spaces, Render Free, Railway), [`scripts/docker-entrypoint.sh`](../scripts/docker-entrypoint.sh) automatically boots embedded Redis with `maxmemory 128mb` and `allkeys-lru` eviction.
+2. **External Cloud Redis Override**: If `REDIS_URL` is set to an external cloud database (such as Upstash `rediss://...`), the entrypoint script automatically skips internal Redis and connects directly.
+3. **Graceful Vector Fallback**: If Redis is unreachable or crashes, `SemanticCacheManager` seamlessly falls back to sub-millisecond in-memory vectorized search with zero dropped requests.
+4. **CPU-Optimized Embeddings**: FastEmbed uses ONNX runtime (`bge-small-en-v1.5`), generating 384-dim embeddings in ~3.5ms on standard CPU with ~150MB RAM.
+5. **Ultra-Fast SOTA Generation**: Groq LPUs provide 14,400 free daily requests with sub-2s turnaround times for flagship 27B models.
 
 ---
 
@@ -36,7 +38,8 @@ git push space main
    - Key: `GROQ_API_KEY`
    - Value: `gsk_...` (your Groq key)
 3. Your Space will build and deploy automatically!
-4. Anyone visiting `https://<YOUR_USERNAME>-resilient-triage.hf.space` gets the full SRE Command Center UI with live SOTA 27B inference in ~1.5s with zero logins or keys required!
+4. **Embedded Redis boots automatically**: The container initializes `redis-server` on port 6379, and `GET /health` reports `"redis_connected": true`!
+5. Anyone visiting `https://<YOUR_USERNAME>-resilient-triage.hf.space` gets the full SRE Command Center UI with live SOTA 27B inference in ~1.5s, live Redis vector caching, and zero logins or keys required!
 
 ---
 
@@ -57,17 +60,30 @@ Under the **Environment Variables** tab, add:
 
 ### Step 3: Deploy
 Click **Create Web Service**. Render will build the container and provide a live public HTTPS URL (`https://resilient-triage.onrender.com`).
+The embedded Redis daemon automatically starts in the background and is capped at 128MB to stay well within Render's 512MB RAM ceiling.
 
 ---
 
-## Option 3: Native Local Execution on macOS (Zero Docker Desktop)
+## Option 3: Multi-Container Docker Compose
+
+For VPS, AWS EC2, or local container runtimes:
+
+```bash
+docker-compose up -d --build
+```
+- API Container: `http://localhost:8000`
+- Redis Container: `redis/redis-stack-server:latest` on port `6379`
+- Shared network connects API to `redis://redis:6379/0` automatically.
+
+---
+
+## Option 4: Native Local Execution on macOS (Zero Docker Desktop)
 
 For local development or testing on a MacBook:
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/SamSilmarilData/resilient-triage.git
-cd resilient-triage
+# 1. Install Redis via Homebrew (one-time)
+brew install redis && brew services start redis
 
 # 2. Run the native startup script
 ./scripts/run_local.sh
@@ -76,21 +92,3 @@ cd resilient-triage
 - SRE Command Center UI: `http://127.0.0.1:8000`
 - Interactive API Docs: `http://127.0.0.1:8000/docs`
 - Health Endpoint: `http://127.0.0.1:8000/health`
-
----
-
-## Option 4: Local Open-Source Models via Ollama (Zero External APIs)
-
-If you prefer to run completely offline without contacting any external cloud APIs:
-
-```bash
-# 1. Install Ollama on macOS
-brew install ollama
-
-# 2. Pull Qwen 2.5 or DeepSeek-R1
-ollama run qwen2.5:1.5b
-
-# 3. Start resilient-triage
-./scripts/run_local.sh
-```
-`resilient-triage` will automatically detect your local Ollama instance on `http://localhost:11434` and run on your Mac's Apple Silicon GPU.

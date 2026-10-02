@@ -91,54 +91,124 @@ class SemanticCacheManager:
         self._has_redisearch: bool = False
         self._initialized: bool = False
         self._lock = asyncio.Lock()
+        self._last_reconnect_attempt: float = 0.0
+        self.reconnect_cooldown_seconds: float = 5.0
 
         # In-memory vectorized store (fallback or standalone)
         self._in_memory_docs: dict[str, InMemoryVectorEntry] = {}
 
     async def initialize(self) -> None:
         """Initialize Redis connection and test for RediSearch module availability."""
-        if self._initialized:
+        if self._initialized and self._redis is not None:
             return
 
         async with self._lock:
-            if self._initialized:
+            if self._initialized and self._redis is not None:
                 return
 
-            try:
-                self._redis = aioredis.from_url(
-                    self.redis_url,
-                    decode_responses=False,
-                    socket_connect_timeout=1.0,
-                    socket_timeout=1.0,
-                )
-                # Test connection
-                await self._redis.ping()
-
-                # Check RediSearch module support
-                try:
-                    modules = await self._redis.module_list()
-                    module_names = [m.get(b"name", b"").decode("utf-8").lower() for m in modules]
-                    self._has_redisearch = "search" in module_names or "ft" in module_names
-                    if self._has_redisearch:
-                        await self._ensure_redisearch_index()
-                except Exception as mod_err:
-                    logger.debug("RediSearch module check: %s. Using in-memory vector index.", mod_err)
-                    self._has_redisearch = False
-
-                logger.info(
-                    "SemanticCacheManager connected to Redis at %s (RediSearch: %s)",
-                    self.redis_url,
-                    self._has_redisearch,
-                )
-            except Exception as conn_err:
-                logger.warning(
-                    "Redis unavailable (%s). SemanticCacheManager operating in in-memory vector mode.",
-                    conn_err,
-                )
-                self._redis = None
-                self._has_redisearch = False
-
+            await self._connect_redis()
             self._initialized = True
+
+    async def _ensure_connected(self) -> None:
+        """Throttled non-blocking auto-reconnect attempt if Redis is currently disconnected."""
+        if self._redis is not None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_reconnect_attempt < self.reconnect_cooldown_seconds:
+            return
+
+        async with self._lock:
+            if self._redis is not None:
+                return
+            self._last_reconnect_attempt = time.monotonic()
+            await self._connect_redis()
+
+    async def _connect_redis(self) -> None:
+        """Establish Redis connection, detect RediSearch capabilities, and hydrate cache."""
+        try:
+            client = aioredis.from_url(
+                self.redis_url,
+                decode_responses=False,
+                socket_connect_timeout=1.0,
+                socket_timeout=1.0,
+            )
+            # Test connection
+            await client.ping()
+
+            # Check RediSearch module or native command support
+            has_search = False
+            try:
+                modules = await client.module_list()
+                module_names = [m.get(b"name", b"").decode("utf-8").lower() for m in modules]
+                has_search = "search" in module_names or "ft" in module_names
+            except Exception as mod_err:
+                logger.debug("RediSearch module check: %s", mod_err)
+
+            if not has_search:
+                try:
+                    await client.execute_command("FT._LIST")
+                    has_search = True
+                except Exception as cmd_err:
+                    logger.debug("Native FT._LIST check: %s", cmd_err)
+
+            self._redis = client
+            self._has_redisearch = has_search
+
+            if self._has_redisearch:
+                await self._ensure_redisearch_index()
+            else:
+                await self._hydrate_from_redis()
+
+            logger.info(
+                "SemanticCacheManager connected to Redis at %s (RediSearch: %s)",
+                self.redis_url,
+                self._has_redisearch,
+            )
+        except Exception as conn_err:
+            logger.warning(
+                "Redis unavailable (%s). SemanticCacheManager operating in in-memory vector mode.",
+                conn_err,
+            )
+            self._redis = None
+            self._has_redisearch = False
+
+    async def _hydrate_from_redis(self) -> None:
+        """Hydrate in-memory vector index from persistent Redis hashes on startup/reconnect."""
+        if not self._redis:
+            return
+        try:
+            keys = await self._redis.keys(f"{self.DOC_PREFIX}*")
+            if not keys:
+                return
+
+            now = time.monotonic()
+            for key in keys:
+                try:
+                    data = await self._redis.hgetall(key)
+                    if not data or b"vector" not in data or b"report" not in data:
+                        continue
+                    doc_id = key.decode("utf-8").replace(self.DOC_PREFIX, "")
+                    query = data.get(b"query", b"").decode("utf-8")
+                    report_json = data.get(b"report", b"").decode("utf-8")
+                    vec_bytes = data[b"vector"]
+                    vec_arr = np.frombuffer(vec_bytes, dtype=np.float32)
+                    ttl = await self._redis.ttl(key)
+                    expires_at = now + (ttl if ttl > 0 else self.default_ttl)
+
+                    self._in_memory_docs[doc_id] = InMemoryVectorEntry(
+                        doc_id=doc_id,
+                        query=query,
+                        report_json=report_json,
+                        vector=vec_arr,
+                        expires_at=expires_at,
+                    )
+                except Exception as doc_err:
+                    logger.debug("Failed to hydrate document key %s: %s", key, doc_err)
+
+            logger.info("Hydrated %d cached documents from Redis into memory.", len(self._in_memory_docs))
+        except Exception as err:
+            logger.warning("Error hydrating from Redis: %s", err)
 
     async def _ensure_redisearch_index(self) -> None:
         """Create RediSearch HNSW vector index if it does not already exist."""
@@ -156,7 +226,6 @@ class SemanticCacheManager:
                 schema = (
                     TextField("query"),
                     TextField("service_scope"),
-                    TextField("report", no_index=True),
                     VectorField(
                         "vector",
                         "HNSW",
@@ -173,6 +242,21 @@ class SemanticCacheManager:
             except Exception as e:
                 logger.warning("Failed to create RediSearch index: %s. Falling back to in-memory.", e)
                 self._has_redisearch = False
+
+    async def check_connection(self) -> bool:
+        """Actively test Redis connectivity and attempt reconnection if offline."""
+        if self._redis is None:
+            await self._ensure_connected()
+            return self._redis is not None
+
+        try:
+            await self._redis.ping()
+            return True
+        except Exception as ping_err:
+            logger.warning("Redis ping failed (%s). Disconnecting.", ping_err)
+            self._redis = None
+            self._has_redisearch = False
+            return False
 
     async def lookup(
         self,
@@ -191,6 +275,8 @@ class SemanticCacheManager:
 
         if not self._initialized:
             await self.initialize()
+        elif self._redis is None:
+            await self._ensure_connected()
 
         start_time = time.monotonic()
         effective_threshold = threshold if threshold is not None else self.similarity_threshold
@@ -206,7 +292,9 @@ class SemanticCacheManager:
                 if match:
                     return match
             except Exception as e:
-                logger.warning("RediSearch lookup error: %s. Checking in-memory store.", e)
+                logger.warning("RediSearch lookup error: %s. Disconnecting and checking in-memory store.", e)
+                self._redis = None
+                self._has_redisearch = False
 
         # 3. Fallback to high-performance in-memory vector search
         return self._search_in_memory(scoped_q, query_vec, effective_threshold, start_time)
@@ -222,7 +310,6 @@ class SemanticCacheManager:
         from redis.commands.search.query import Query
 
         # Cosine distance = 1.0 - cosine_similarity
-        max_distance = 1.0 - threshold
         query_bytes = np.array(query_vec, dtype=np.float32).tobytes()
 
         q = (
@@ -309,6 +396,8 @@ class SemanticCacheManager:
         """Synchronously store triage report and vector embedding with appropriate TTL."""
         if not self._initialized:
             await self.initialize()
+        elif self._redis is None:
+            await self._ensure_connected()
 
         scoped_q = format_scoped_query(query, service_filter)
         query_vec = self.embedding_provider.embed_query(scoped_q)
@@ -351,7 +440,9 @@ class SemanticCacheManager:
                 await self._redis.hset(redis_key, mapping=mapping)
                 await self._redis.expire(redis_key, effective_ttl)
             except Exception as e:
-                logger.warning("Redis store error: %s (in-memory copy active).", e)
+                logger.warning("Redis store error: %s (in-memory copy active). Marking disconnected.", e)
+                self._redis = None
+                self._has_redisearch = False
 
     async def clear(self) -> None:
         """Clear all in-memory and Redis cache entries."""
@@ -363,6 +454,8 @@ class SemanticCacheManager:
                     await self._redis.delete(*keys)
             except Exception as e:
                 logger.warning("Redis clear error: %s", e)
+                self._redis = None
+                self._has_redisearch = False
 
     @property
     def is_redis_connected(self) -> bool:
@@ -372,9 +465,9 @@ class SemanticCacheManager:
     @property
     def driver(self) -> str:
         """Return the active vector search driver name."""
-        if self._has_redisearch:
-            return "redisearch"
         if self._redis is not None:
+            if self._has_redisearch:
+                return "redisearch"
             return "redis_hash_fallback"
         return "in_memory"
 

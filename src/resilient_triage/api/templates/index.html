@@ -90,6 +90,12 @@
         <span id="health-text">HEALTHY</span>
       </div>
 
+      <!-- Redis Cache Engine Pill -->
+      <div id="redis-badge" class="px-2.5 py-1 rounded-full bg-emerald-950/40 border border-emerald-800/60 text-emerald-400 flex items-center space-x-1.5 font-mono shadow-sm">
+        <span id="redis-dot" class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse-slow"></span>
+        <span id="redis-text">REDIS: CONNECTED (RediSearch)</span>
+      </div>
+
       <!-- Circuit Breakers Status -->
       <div class="hidden md:flex items-center space-x-2 font-mono text-[11px]">
         <div id="cb-statuspage-badge" class="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 flex items-center space-x-1">
@@ -734,6 +740,24 @@
 
           chaosEl.innerText = chaosState.toUpperCase();
           chaosEl.className = chaosState === 'open' ? 'text-red-400 font-bold animate-pulse' : 'text-emerald-400 font-semibold';
+        }
+
+        // Redis cache status badge
+        const redisBadge = document.getElementById('redis-badge');
+        const redisDot = document.getElementById('redis-dot');
+        const redisText = document.getElementById('redis-text');
+        if (redisBadge && redisDot && redisText) {
+          if (data.redis_connected) {
+            const isRediSearch = data.cache_driver === 'redisearch';
+            const driverLabel = isRediSearch ? 'RediSearch' : 'Hash Store';
+            redisBadge.className = 'px-2.5 py-1 rounded-full bg-emerald-950/40 border border-emerald-800/60 text-emerald-400 flex items-center space-x-1.5 font-mono shadow-sm';
+            redisDot.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse-slow';
+            redisText.innerText = `REDIS: CONNECTED (${driverLabel})`;
+          } else {
+            redisBadge.className = 'px-2.5 py-1 rounded-full bg-amber-950/40 border border-amber-800/60 text-amber-400 flex items-center space-x-1.5 font-mono shadow-sm';
+            redisDot.className = 'h-2 w-2 rounded-full bg-amber-400 animate-pulse';
+            redisText.innerText = 'REDIS: FALLBACK (In-Memory)';
+          }
         }
       } catch (e) {
         console.debug('Health poll error:', e);

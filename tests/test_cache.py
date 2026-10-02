@@ -206,3 +206,42 @@ async def test_cache_clear():
 
     await cache.clear()
     assert await cache.lookup("Test query") is None
+
+
+@pytest.mark.asyncio
+async def test_redis_connectivity_and_driver():
+    """Verify live Redis connection detection and RediSearch driver reporting."""
+    provider = DeterministicEmbeddingProvider()
+    cache = SemanticCacheManager(embedding_provider=provider)
+    is_connected = await cache.check_connection()
+    assert is_connected is True
+    assert cache.is_redis_connected is True
+    assert cache.driver in ("redisearch", "redis_hash_fallback")
+    await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_redis_disconnect_and_in_memory_failover():
+    """Verify that if Redis drops or is unreachable, cache seamlessly falls back to in-memory mode with zero errors."""
+    provider = DeterministicEmbeddingProvider()
+    # Point to an unreachable port
+    unreachable_cache = SemanticCacheManager(
+        redis_url="redis://127.0.0.1:59999/0",
+        embedding_provider=provider,
+    )
+    unreachable_cache.reconnect_cooldown_seconds = 0.01
+    await unreachable_cache.initialize()
+
+    assert unreachable_cache.is_redis_connected is False
+    assert unreachable_cache.driver == "in_memory"
+
+    # Store and lookup should work completely fine in in-memory mode
+    report = _make_sample_report("Incident during Redis outage")
+    await unreachable_cache.store("Database connection timeout", report)
+
+    match = await unreachable_cache.lookup("Database connection timeout")
+    assert match is not None
+    assert match.cache_hit is True
+    assert match.report.summary == "Incident during Redis outage"
+    assert match.execution_time_ms < 20.0
+
