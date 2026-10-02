@@ -1,0 +1,35 @@
+services:
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: resilient-triage-redis
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_ARGS=--save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resilient-triage-api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - STATUSPAGE_URL=https://www.githubstatus.com/api/v2/summary.json
+      - CIRCUIT_BREAKER_FAIL_MAX=3
+      - CIRCUIT_BREAKER_RESET_TIMEOUT=30
+      - CACHE_SIMILARITY_THRESHOLD=0.90
+      - MAX_SELF_REPAIR_RETRIES=2
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped

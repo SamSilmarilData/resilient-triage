@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resilient-triage"
+version = "0.1.0"
+description = "Fault-tolerant incident triage agent powered by LangGraph, Tenacity, Pybreaker, and Redis Semantic Cache"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.28.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "langgraph>=0.2.0",
+    "langchain-core>=0.2.0",
+    "tenacity>=8.2.3",
+    "pybreaker>=1.2.0",
+    "httpx>=0.27.0",
+    "redis>=5.0.0",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+    "fakeredis>=2.22.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
