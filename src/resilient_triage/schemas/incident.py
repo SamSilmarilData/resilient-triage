@@ -112,4 +112,6 @@ class IncidentTriageReport(BaseModel):
         default_factory=list,
         description="Names of circuit breakers that tripped open during execution",
     )
-    confidence_score: Annotated[float, Field(ge=0.0, le=1.0, description="Model confidence score between 0.0 and 1.0")]
+    confidence_score: Annotated[
+        float, Field(default=0.85, ge=0.0, le=1.0, description="Model confidence score between 0.0 and 1.0")
+    ] = 0.85

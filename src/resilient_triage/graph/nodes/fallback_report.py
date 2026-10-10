@@ -15,7 +15,7 @@ from resilient_triage.schemas.state import TriageState
 
 def fallback_report_node(state: TriageState) -> dict[str, Any]:
     """Emit guaranteed valid IncidentTriageReport when LLM self-repair retries are exhausted."""
-    query = state.get("query", "Incident investigation")
+    query = state.get("query") or state.get("incident_query") or "Incident investigation"
     validation_errors = state.get("validation_errors", [])
     cb_status = state.get("circuit_breaker_status", {})
     tripped = [name for name, st in cb_status.items() if st == "open"]
@@ -28,13 +28,18 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
         except Exception:
             pass
 
+    err_snippet = "; ".join(validation_errors[:2]) if validation_errors else "LLM synthesis error"
+    if "429" in err_snippet:
+        root_cause = "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis engaged."
+    elif "503" in err_snippet or "unavailable" in err_snippet.lower():
+        root_cause = "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
+    else:
+        root_cause = f"Self-repair limits reached. Diagnostic context: {err_snippet}"
+
     report = IncidentTriageReport(
         summary=f"Automated incident triage degraded for: {query[:80]}",
         severity=SeverityLevel.UNKNOWN,
-        root_cause_analysis=(
-            f"Self-repair retries exhausted after 2 attempts. "
-            f"Validation issues encountered: {'; '.join(validation_errors[:2])}"
-        ),
+        root_cause_analysis=root_cause,
         affected_services=[],
         telemetry_signals=signals,
         recommended_actions=[

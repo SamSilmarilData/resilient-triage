@@ -43,3 +43,7 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Agent skills
+.agents/
+skills-lock.json

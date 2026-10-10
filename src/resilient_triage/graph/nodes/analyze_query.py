@@ -11,7 +11,7 @@ INTERNAL_KEYWORDS = {"internal", "chaos", "auth", "database", "redis", "latency 
 
 def analyze_query_node(state: TriageState) -> dict[str, Any]:
     """Inspect query context and dynamically target relevant telemetry sources."""
-    query = state.get("query", "").strip()
+    query = (state.get("query") or state.get("incident_query") or "").strip()
     service_filter = state.get("service_filter")
     combined_text = f"{query} {service_filter or ''}".lower()
 

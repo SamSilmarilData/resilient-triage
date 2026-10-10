@@ -3,7 +3,7 @@
 import pytest
 import pytest_asyncio
 import httpx
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from resilient_triage.api.app import app
 from resilient_triage.cache.semantic_cache import semantic_cache
@@ -271,3 +271,30 @@ async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
         assert "request_id" in data
         assert "Secret internal db failure" not in str(data)
         assert resp.headers.get("x-request-id") == data["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient):
+    """Verify that when LLM inference fails (e.g., HTTP 429 or network error), the system returns 200 with a fallback report."""
+    with patch("resilient_triage.graph.nodes.generate_report.get_triage_llm") as mock_get_llm:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "429 Too Many Requests: Rate limit reached",
+                request=httpx.Request("POST", "https://api.groq.com"),
+                response=httpx.Response(429),
+            )
+        )
+        mock_get_llm.return_value = mock_llm
+
+        resp = await client.post(
+            "/triage",
+            json={"query": "High memory pressure on payment service", "force_refresh": True},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        report = data["report"]
+        assert report["degradation_status"] == "SEVERELY_DEGRADED"
+        assert "429" in report["root_cause_analysis"] or "rate limit" in report["root_cause_analysis"].lower()
+        assert len(report["recommended_actions"]) > 0

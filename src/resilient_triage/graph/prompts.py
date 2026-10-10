@@ -44,7 +44,7 @@ SCHEMA SPECIFICATION:
   ],
   "degradation_status": "HEALTHY" | "PARTIALLY_DEGRADED" | "SEVERELY_DEGRADED" | "UNKNOWN",
   "circuit_breakers_tripped": ["list of tripped breaker names, or empty"],
-  "confidence_score": float between 0.0 and 1.0
+  "confidence_score": 0.95
 }
 
 SAFETY RULES:

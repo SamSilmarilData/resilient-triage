@@ -63,7 +63,7 @@ class GroqChatModel(BaseChatModel):
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 650,
+            "max_tokens": 1200,
         }
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(
@@ -87,12 +87,12 @@ class GroqChatModel(BaseChatModel):
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 650,
+            "max_tokens": 1200,
         }
 
         from resilient_triage.resilience.retry import with_retry
 
-        @with_retry(max_attempts=3, min_wait=0.2, max_wait=2.0)
+        @with_retry(max_attempts=2, min_wait=0.5, max_wait=3.0)
         async def _send_request() -> str:
             client = get_groq_async_client(timeout=self.timeout)
             resp = await client.post(
@@ -100,6 +100,8 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
+            if resp.status_code >= 400:
+                logger.warning("Groq API returned HTTP %d: %s", resp.status_code, resp.text)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
 

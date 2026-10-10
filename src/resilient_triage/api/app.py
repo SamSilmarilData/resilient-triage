@@ -170,18 +170,24 @@ async def triage_incident(payload: TriageRequest, request: Request):
     # 2. Cache MISS: Acquire concurrency semaphore and run LangGraph
     async with GRAPH_SEMAPHORE:
         initial_state = {
+            "query": payload.query,
             "incident_query": payload.query,
             "service_filter": payload.service_filter,
         }
-        config = {"configurable": {"thread_id": thread_id}}
+        # Isolate per-execution thread to prevent previous query errors from contaminating state
+        execution_thread_id = f"{thread_id}_{uuid.uuid4().hex[:8]}"
+        config = {"configurable": {"thread_id": execution_thread_id}}
         state_result = await triage_graph.ainvoke(initial_state, config=config)
 
     final_report = state_result.get("final_report")
     if not final_report:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Triage state machine failed to produce a valid incident report",
+        from resilient_triage.graph.nodes.fallback_report import fallback_report_node
+
+        logger.warning("Graph produced no final report. Engaging emergency fallback report.")
+        fallback_state = fallback_report_node(
+            {"query": payload.query, "service_filter": payload.service_filter}
         )
+        final_report = fallback_state["final_report"]
 
     # 3. Store result in semantic cache (<2ms)
     await semantic_cache.store(
