@@ -42,10 +42,10 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
         cleaned = clean_json_string(candidate_raw)
         data = json.loads(cleaned)
         if isinstance(data, dict):
-            if not data.get("confidence_score"):
+            if data.get("confidence_score") is None:
                 data["confidence_score"] = 0.85
             if not data.get("severity"):
-                data["severity"] = "HIGH"
+                data["severity"] = "UNKNOWN"
             if not data.get("degradation_status"):
                 data["degradation_status"] = "HEALTHY"
             if not data.get("summary"):

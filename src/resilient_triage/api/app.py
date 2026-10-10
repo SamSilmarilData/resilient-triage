@@ -184,9 +184,12 @@ async def triage_incident(payload: TriageRequest, request: Request):
         from resilient_triage.graph.nodes.fallback_report import fallback_report_node
 
         logger.warning("Graph produced no final report. Engaging emergency fallback report.")
-        fallback_state = fallback_report_node(
-            {"query": payload.query, "service_filter": payload.service_filter}
-        )
+        fallback_input = dict(state_result)
+        if not fallback_input.get("query"):
+            fallback_input["query"] = payload.query
+        if not fallback_input.get("service_filter"):
+            fallback_input["service_filter"] = payload.service_filter
+        fallback_state = fallback_report_node(fallback_input)
         final_report = fallback_state["final_report"]
 
     # 3. Store result in semantic cache (<2ms)
