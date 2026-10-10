@@ -124,6 +124,12 @@
         <span id="model-name-text">Loading Model...</span>
       </div>
 
+      <!-- LLM Quota Telemetry Pill -->
+      <div id="llm-quota-badge" title="Groq Free-Tier Quota & Rate Limit Telemetry" class="hidden sm:flex px-2.5 py-0.5 rounded-full bg-indigo-950/40 border border-indigo-800/60 text-indigo-300 items-center space-x-1.5 font-mono text-[11px] shadow-sm cursor-help">
+        <span id="quota-dot" class="h-1.5 w-1.5 rounded-full bg-indigo-400"></span>
+        <span id="quota-text">QUOTA: READY</span>
+      </div>
+
       <!-- Health Status Pill -->
       <div id="health-badge" class="px-2.5 py-0.5 rounded-full bg-emerald-950/40 border border-emerald-800/60 text-emerald-400 flex items-center space-x-1.5 font-mono text-[11px]">
         <span id="health-dot" class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse-slow"></span>
@@ -165,7 +171,7 @@
         </div>
 
         <div class="flex items-center space-x-2 self-start md:self-center">
-          <button onclick="resetResilience(); showToast('Demo environment reset to baseline');" class="px-3 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700 text-zinc-300 text-xs font-mono flex items-center space-x-1.5 transition-colors border border-zinc-700/60">
+          <button onclick="resetDemoState(true)" class="px-3 py-1 rounded-lg bg-zinc-800/90 hover:bg-zinc-700 text-zinc-300 text-xs font-mono flex items-center space-x-1.5 transition-colors border border-zinc-700/60 shadow-sm" title="Reset all breakers, chaos, logs, and report views to clean baseline">
             <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
@@ -185,9 +191,9 @@
             </span>
             <span class="text-[11px] font-mono text-zinc-500 group-hover:text-purple-400 transition-colors">▶ Run</span>
           </div>
-          <p class="text-xs text-zinc-300 font-medium">Actions 503 Webhook Outage</p>
+          <p class="text-xs text-zinc-300 font-medium">Gateway 503 Outage</p>
           <p class="text-[11px] text-zinc-500 mt-0.5 leading-snug">
-            Uncached incident: AI analyzes error logs, queries healthy upstream telemetry, and synthesizes root cause.
+            Uncached incident: AI analyzes error logs, queries healthy Chaos Monkey baseline telemetry, and synthesizes root cause.
           </p>
         </div>
 
@@ -215,9 +221,9 @@
             </span>
             <span class="text-[11px] font-mono text-zinc-500 group-hover:text-red-400 transition-colors">▶ Run</span>
           </div>
-          <p class="text-xs text-zinc-300 font-medium">Cloud API Failure & Fallback</p>
+          <p class="text-xs text-zinc-300 font-medium">Chaos Monkey Outage & Fallback</p>
           <p class="text-[11px] text-zinc-500 mt-0.5 leading-snug">
-            Simulates 503 errors; circuit breaker trips OPEN, shielding the gateway and serving via graceful degradation.
+            Chaos Monkey injects 503s; circuit breaker trips OPEN, shielding the gateway and serving via graceful degradation.
           </p>
         </div>
       </div>
@@ -247,17 +253,20 @@
             rows="3"
             class="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 rounded-xl p-3 text-xs sm:text-sm text-zinc-100 placeholder-zinc-500 resize-none font-sans outline-none transition-all"
             placeholder="Describe the incident symptoms, errors, or affected microservices..."
-          >GitHub Actions workflows are failing with 503 and high webhook latency</textarea>
+          >Internal API gateway service failing with 503 outage and elevated probe latency</textarea>
         </div>
 
         <!-- Presets -->
         <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
           <span class="text-[11px] text-zinc-400 font-medium mr-1">Presets:</span>
-          <button onclick="setQuery('GitHub Actions workflows are failing with 503 and high webhook latency', 'actions')" class="text-[11px] px-2.5 py-0.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
-            💥 Actions 503
+          <button onclick="setQuery('Internal API gateway service failing with 503 outage and elevated probe latency', 'internal')" class="text-[11px] px-2.5 py-0.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
+            💥 Gateway 503
           </button>
-          <button onclick="setQuery('Stripe webhook ingestion failing with 504 gateway timeout', 'billing')" class="text-[11px] px-2.5 py-0.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
-            💳 Stripe Timeout
+          <button onclick="setQuery('Internal API gateway cluster failing with 503 outage and elevated probe latency', 'internal')" class="text-[11px] px-2.5 py-0.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors" title="Test synonymous semantic vector recall (~94% similarity)">
+            ⚡ Synonymous Gateway
+          </button>
+          <button onclick="setQuery('Internal payment processing failing with 503 service unavailable', 'internal')" class="text-[11px] px-2.5 py-0.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
+            💳 Payment 503
           </button>
           <button onclick="setQuery('PostgreSQL primary connection pool exhausted under spike', 'database')" class="text-[11px] px-2.5 py-0.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 transition-colors">
             🗄️ Postgres Pool
@@ -274,20 +283,30 @@
             <input type="text" id="service-filter" placeholder="Service filter (opt)" class="w-32 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs text-zinc-200 outline-none focus:border-zinc-600 font-mono hidden sm:block">
           </div>
 
-          <button
-            id="run-triage-btn"
-            onclick="executeTriage()"
-            class="px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-xs shadow-lg shadow-purple-950/60 flex items-center space-x-2 transition-all active:scale-[0.98]"
-          >
-            <svg id="run-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            <svg id="spinner-icon" class="w-4 h-4 animate-spin hidden" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <span id="btn-text">Run Triage</span>
-          </button>
+          <div class="flex items-center space-x-2">
+            <button
+              type="button"
+              onclick="resetReportState(); document.getElementById('incident-query').value = ''; showToast('Query and report view cleared');"
+              class="px-3 py-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 text-xs font-mono transition-colors"
+              title="Clear input query & report"
+            >
+              Clear
+            </button>
+            <button
+              id="run-triage-btn"
+              onclick="executeTriage()"
+              class="px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-xs shadow-lg shadow-purple-950/60 flex items-center space-x-2 transition-all active:scale-[0.98]"
+            >
+              <svg id="run-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              <svg id="spinner-icon" class="w-4 h-4 animate-spin hidden" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span id="btn-text">Run Triage</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -331,12 +350,19 @@
                 HEALTHY
               </span>
             </div>
-            <div class="flex items-center space-x-2 font-mono text-xs text-zinc-400">
-              <span>Confidence:</span>
-              <div class="w-20 bg-zinc-800 h-2 rounded-full overflow-hidden">
-                <div id="confidence-bar" class="bg-gradient-to-r from-purple-500 to-emerald-400 h-full w-[90%]"></div>
+            <div class="flex items-center space-x-3">
+              <div class="flex items-center space-x-2 font-mono text-xs text-zinc-400">
+                <span>Confidence:</span>
+                <div class="w-20 bg-zinc-800 h-2 rounded-full overflow-hidden">
+                  <div id="confidence-bar" class="bg-gradient-to-r from-purple-500 to-emerald-400 h-full w-[90%]"></div>
+                </div>
+                <span id="rep-confidence" class="font-bold text-zinc-200">95%</span>
               </div>
-              <span id="rep-confidence" class="font-bold text-zinc-200">95%</span>
+              <button onclick="resetReportState(); showToast('Report view closed');" title="Dismiss incident report" class="text-zinc-500 hover:text-zinc-300 text-xs p-1 rounded hover:bg-zinc-800 transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           </div>
 
@@ -434,7 +460,7 @@
               </div>
               <div class="mt-1.5">
                 <div class="text-xs font-semibold text-zinc-200">Upstream Telemetry</div>
-                <div id="node-upstream-detail" class="text-[10px] text-zinc-500 font-mono">GitHub / Status APIs</div>
+                <div id="node-upstream-detail" class="text-[10px] text-zinc-500 font-mono">Chaos & Cluster Telemetry</div>
               </div>
             </div>
           </div>
@@ -475,7 +501,7 @@
                 <span id="node-agent-badge" class="text-[8px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400">STANDBY</span>
               </div>
               <div class="text-[11px] font-semibold text-zinc-200 truncate">AI Agent</div>
-              <div class="text-[9px] text-zinc-500 font-mono truncate">Groq Llama 3.3</div>
+              <div id="node-agent-detail" class="text-[9px] text-zinc-500 font-mono truncate">Groq LPU</div>
             </div>
 
             <!-- Node 4: Circuit Breaker Sentinel -->
@@ -751,7 +777,11 @@
     }
 
     function clearAuditLog() {
-      document.getElementById('audit-log').innerHTML = '<div class="text-zinc-600 italic">Audit log cleared.</div>';
+      const log = document.getElementById('audit-log');
+      if (log) {
+        log.innerHTML = '<div class="text-zinc-600 italic">Audit log cleared. Listening for incident triage & chaos events...</div>';
+      }
+      showToast('Live Request Audit Log cleared');
     }
 
     // Set Preset Query
@@ -789,35 +819,161 @@
       document.getElementById('latency-val').innerText = val + ' ms';
       const detail = document.getElementById('node-upstream-detail');
       if (parseInt(val) > 0) {
-        detail.innerText = `GitHub / APIs (+${val}ms lag)`;
+        detail.innerText = `Chaos Probe (+${val}ms lag)`;
       } else {
-        detail.innerText = 'GitHub / Status APIs';
+        detail.innerText = 'Chaos & Cluster Telemetry';
       }
+    }
+
+    // Reset Report State & Telemetry Banner
+    function resetReportState() {
+      const content = document.getElementById('report-content');
+      const empty = document.getElementById('empty-state');
+      const banner = document.getElementById('telemetry-banner');
+      const cacheSim = document.getElementById('node-cache-sim');
+      if (content) content.classList.add('hidden');
+      if (empty) empty.classList.remove('hidden');
+      if (banner) banner.classList.add('hidden');
+      if (cacheSim) cacheSim.innerText = '';
+      activeThreadId = null;
+    }
+
+    // Reset All Visual Nodes in Architecture Diagram
+    function resetTopologyVisuals() {
+      const ingestNode = document.getElementById('node-ingest');
+      const ingestBadge = document.getElementById('node-ingest-badge');
+      const cacheNode = document.getElementById('node-cache');
+      const cacheBadge = document.getElementById('node-cache-badge');
+      const cacheSim = document.getElementById('node-cache-sim');
+      const agentNode = document.getElementById('node-agent');
+      const agentBadge = document.getElementById('node-agent-badge');
+      const cbNode = document.getElementById('node-cb');
+      const cbBadge = document.getElementById('node-cb-badge');
+      const cbIcon = document.getElementById('cb-icon');
+      const cbDetail = document.getElementById('node-cb-detail');
+      const outputNode = document.getElementById('node-output');
+      const outputBadge = document.getElementById('node-output-badge');
+      const upstreamNode = document.getElementById('node-upstream');
+      const upstreamBadge = document.getElementById('node-upstream-badge');
+      const upstreamDetail = document.getElementById('node-upstream-detail');
+      const packet = document.getElementById('sim-packet');
+      const cbLine = document.getElementById('line-cb-upstream');
+      const fallbackPath = document.getElementById('path-cb-fallback');
+      const shortcutPath = document.getElementById('path-cache-shortcut');
+
+      if (ingestNode) {
+        ingestNode.className = 'node-card p-2.5 sm:p-3 rounded-xl bg-zinc-900 border border-zinc-800 shadow-sm flex flex-col justify-between';
+      }
+      if (ingestBadge) {
+        ingestBadge.className = 'text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400';
+        ingestBadge.innerText = 'READY';
+      }
+
+      if (cacheNode) {
+        cacheNode.className = 'node-card p-2.5 sm:p-3 rounded-xl bg-zinc-900 border border-zinc-800 shadow-sm w-[230px] sm:w-[260px]';
+      }
+      if (cacheBadge) {
+        cacheBadge.className = 'text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400';
+        cacheBadge.innerText = 'READY';
+      }
+      if (cacheSim) cacheSim.innerText = '';
+
+      if (agentNode) {
+        agentNode.className = 'node-card p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 shadow-sm';
+      }
+      if (agentBadge) {
+        agentBadge.className = 'text-[8px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400';
+        agentBadge.innerText = 'STANDBY';
+      }
+
+      if (cbNode) {
+        cbNode.className = 'node-card p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 shadow-sm';
+      }
+      if (cbBadge) {
+        cbBadge.className = 'text-[8px] font-mono px-1 py-0.2 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold';
+        cbBadge.innerText = 'CLOSED';
+      }
+      if (cbIcon) cbIcon.innerText = '🛡️';
+      if (cbDetail) cbDetail.innerText = 'Pass-through';
+      if (cbLine) {
+        cbLine.setAttribute('stroke', '#52525b');
+        cbLine.setAttribute('stroke-width', '2');
+      }
+      if (fallbackPath) {
+        fallbackPath.setAttribute('stroke', '#78350f');
+        fallbackPath.setAttribute('stroke-width', '2');
+      }
+      if (shortcutPath) {
+        shortcutPath.setAttribute('stroke', '#059669');
+        shortcutPath.setAttribute('stroke-width', '2');
+      }
+
+      if (outputNode) {
+        outputNode.className = 'node-card p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 shadow-sm';
+      }
+      if (outputBadge) {
+        outputBadge.className = 'text-[8px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400';
+        outputBadge.innerText = 'READY';
+      }
+
+      if (upstreamNode) {
+        upstreamNode.className = 'node-card p-2.5 sm:p-3 rounded-xl bg-zinc-900 border border-zinc-800 shadow-sm flex flex-col justify-between';
+      }
+      if (upstreamBadge) {
+        upstreamBadge.className = 'text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold';
+        upstreamBadge.innerText = '100% HEALTHY';
+      }
+      if (upstreamDetail) upstreamDetail.innerText = 'Chaos & Cluster Telemetry';
+
+      if (packet) packet.style.opacity = '0';
+      updateConduits();
+    }
+
+    // Comprehensive Demo State Reset
+    async function resetDemoState(full = true) {
+      await resetResilience();
+      resetTopologyVisuals();
+      resetReportState();
+
+      const queryEl = document.getElementById('incident-query');
+      if (queryEl) queryEl.value = 'Internal API gateway service failing with 503 outage and elevated probe latency';
+      const forceRefreshEl = document.getElementById('force-refresh');
+      if (forceRefreshEl) forceRefreshEl.checked = false;
+      const filterEl = document.getElementById('service-filter');
+      if (filterEl) filterEl.value = '';
+
+      if (full) {
+        clearAuditLog();
+      }
+
+      showToast('Demo environment fully reset to baseline');
+      pollSystemHealth();
     }
 
     // Interactive 3-Step Story Scenarios
     async function runScenario(step) {
       if (step === 1) {
-        // Cold Triage
+        // Cold Triage (Cache Miss)
         await resetResilience();
-        setQuery('GitHub Actions workflows are failing with 503 and high webhook latency', 'actions');
+        resetReportState();
+        setQuery('Internal API gateway service failing with 503 outage and elevated probe latency', 'internal');
         document.getElementById('force-refresh').checked = true;
         showToast('Story 1: Running Cold AI Triage (Forcing Cache Miss)...');
         await executeTriage();
       } else if (step === 2) {
-        // Instant Cache Hit
+        // Instant Semantic Recall (Vector Hit)
         document.getElementById('force-refresh').checked = false;
-        setQuery('GitHub Actions workflows are failing with 503 and high webhook latency', 'actions');
-        showToast('Story 2: Running Instant Semantic Recall (Expecting Cache Hit)...');
+        setQuery('Internal API gateway cluster failing with 503 outage and elevated probe latency', 'internal');
+        showToast('Story 2: Running Instant Semantic Recall (Expecting ~94% Vector Hit)...');
         await executeTriage();
       } else if (step === 3) {
         // Upstream Outage & Circuit Breaker Trip
-        showToast('Story 3: Injecting 503 Outage & Tripping Circuit Breaker...');
+        showToast('Story 3: Injecting Chaos Outage & Tripping Circuit Breaker...');
         document.getElementById('chaos-503-toggle').checked = true;
         await submitChaosConfig();
         await tripChaosCircuit();
-        setQuery('Stripe webhook ingestion failing with 504 gateway timeout', 'billing');
-        document.getElementById('force-refresh').checked = false;
+        setQuery('Internal payment processing failing with 503 service unavailable', 'internal');
+        document.getElementById('force-refresh').checked = true;
         await executeTriage();
       }
     }
@@ -1183,6 +1339,11 @@
       showToast('Triggering upstream outage failures to trip breaker...');
       const start = performance.now();
       try {
+        const toggle = document.getElementById('chaos-503-toggle');
+        if (toggle && !toggle.checked) {
+          toggle.checked = true;
+          await submitChaosConfig();
+        }
         for (let i = 0; i < 3; i++) {
           await fetch('/chaos/probe').catch(() => {});
         }
@@ -1203,19 +1364,18 @@
         const elapsed = Math.round(performance.now() - start);
         logEvent('POST', '/resilience/reset', res.status, elapsed);
 
-        document.getElementById('chaos-503-toggle').checked = false;
-        document.getElementById('chaos-rate-slider').value = 0;
-        document.getElementById('rate-val').innerText = '0%';
-        document.getElementById('chaos-latency-slider').value = 0;
-        document.getElementById('latency-val').innerText = '0 ms';
+        const toggle = document.getElementById('chaos-503-toggle');
+        if (toggle) toggle.checked = false;
+        const rateSlider = document.getElementById('chaos-rate-slider');
+        if (rateSlider) rateSlider.value = 0;
+        const rateVal = document.getElementById('rate-val');
+        if (rateVal) rateVal.innerText = '0%';
+        const latencySlider = document.getElementById('chaos-latency-slider');
+        if (latencySlider) latencySlider.value = 0;
+        const latencyVal = document.getElementById('latency-val');
+        if (latencyVal) latencyVal.innerText = '0 ms';
 
-        // Reset visual nodes
-        const upstream = document.getElementById('node-upstream');
-        upstream.className = 'node-card p-2.5 sm:p-3 rounded-xl bg-zinc-900 border border-zinc-800 shadow-sm flex flex-col justify-between';
-        document.getElementById('node-upstream-badge').className = 'text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold';
-        document.getElementById('node-upstream-badge').innerText = '100% HEALTHY';
-        document.getElementById('node-upstream-detail').innerText = 'GitHub / Status APIs';
-
+        resetTopologyVisuals();
         showToast('All Circuit Breakers & Chaos Parameters Reset');
       } catch (err) {
         showToast('Error resetting resilience', true);
@@ -1248,7 +1408,54 @@
 
         // Active model badge
         if (data.active_model) {
-          document.getElementById('model-name-text').innerText = data.active_model;
+          const modelEl = document.getElementById('model-name-text');
+          if (modelEl) modelEl.innerText = data.active_model;
+          const agentDetailEl = document.getElementById('node-agent-detail');
+          if (agentDetailEl) agentDetailEl.innerText = data.active_model;
+        }
+
+        // LLM Quota & Rate Limit Badge
+        const quotaBadge = document.getElementById('llm-quota-badge');
+        const quotaDot = document.getElementById('quota-dot');
+        const quotaText = document.getElementById('quota-text');
+        if (quotaBadge && quotaDot && quotaText && data.llm_quota) {
+          const q = data.llm_quota;
+          let tooltip = `Provider: ${q.provider} | Model: ${q.active_model} | Fallback: ${q.fallback_model || 'none'}\nTotal Calls: ${q.total_calls} | 429 Hits: ${q.rate_limit_hits} | Fallbacks: ${q.failover_events}`;
+          if (q.remaining_tokens !== null && q.limit_tokens) {
+            tooltip += `\nTokens: ${q.remaining_tokens}/${q.limit_tokens} (Reset: ${q.reset_tokens || 'N/A'})`;
+          }
+          if (q.remaining_requests !== null && q.limit_requests) {
+            tooltip += `\nRequests: ${q.remaining_requests}/${q.limit_requests} (Reset: ${q.reset_requests || 'N/A'})`;
+          }
+          if (q.last_error) {
+            tooltip += `\nLast Warning: ${q.last_error}`;
+          }
+          quotaBadge.title = tooltip;
+
+          if (q.rate_limit_hits > 0) {
+            quotaBadge.className = 'hidden sm:flex px-2.5 py-0.5 rounded-full bg-red-950/50 border border-red-800 text-red-300 items-center space-x-1.5 font-mono text-[11px] shadow-sm cursor-help';
+            quotaDot.className = 'h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse';
+            quotaText.innerText = `429 HIT (${q.rate_limit_hits})`;
+          } else if (q.failover_events > 0) {
+            quotaBadge.className = 'hidden sm:flex px-2.5 py-0.5 rounded-full bg-amber-950/50 border border-amber-800 text-amber-300 items-center space-x-1.5 font-mono text-[11px] shadow-sm cursor-help';
+            quotaDot.className = 'h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse';
+            quotaText.innerText = `FALLBACK ACTIVE (${q.failover_events})`;
+          } else if (q.remaining_tokens !== null && q.limit_tokens) {
+            const pct = Math.round((q.remaining_tokens / q.limit_tokens) * 100);
+            if (pct < 20) {
+              quotaBadge.className = 'hidden sm:flex px-2.5 py-0.5 rounded-full bg-amber-950/40 border border-amber-800 text-amber-300 items-center space-x-1.5 font-mono text-[11px] shadow-sm cursor-help';
+              quotaDot.className = 'h-1.5 w-1.5 rounded-full bg-amber-400';
+              quotaText.innerText = `QUOTA: ${q.remaining_tokens} TOK (${pct}%)`;
+            } else {
+              quotaBadge.className = 'hidden sm:flex px-2.5 py-0.5 rounded-full bg-indigo-950/40 border border-indigo-800/60 text-indigo-300 items-center space-x-1.5 font-mono text-[11px] shadow-sm cursor-help';
+              quotaDot.className = 'h-1.5 w-1.5 rounded-full bg-indigo-400';
+              quotaText.innerText = `QUOTA: ${pct}% (${q.remaining_tokens} TOK)`;
+            }
+          } else {
+            quotaBadge.className = 'hidden sm:flex px-2.5 py-0.5 rounded-full bg-indigo-950/40 border border-indigo-800/60 text-indigo-300 items-center space-x-1.5 font-mono text-[11px] shadow-sm cursor-help';
+            quotaDot.className = 'h-1.5 w-1.5 rounded-full bg-indigo-400';
+            quotaText.innerText = `QUOTA: 100% (READY)`;
+          }
         }
 
         // Overall status

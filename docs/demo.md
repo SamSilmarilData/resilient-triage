@@ -15,27 +15,27 @@ This guide provides the complete narrative, technical depth, and step-by-step pr
 ## ⏱️ Step-by-Step Presentation Script (The 5 Acts)
 
 ### Act 1: The Cold Incident Triage (Live Groq LPU Generation) — ~30s
-* **Goal**: Demonstrate autonomous telemetry synthesis and structured root-cause analysis on a live cache miss.
+* **Goal**: Demonstrate autonomous telemetry synthesis and structured root-cause analysis on a live cache miss without relying on volatile external websites.
 * **Action**:
   1. Open the demo dashboard at `/` (or your live Render Singapore URL).
-  2. Click the quick preset **💥 Actions 503 Outage** (or press `Cmd+Enter`).
+  2. Click the quick preset **💥 Gateway 503** (or press `Cmd+Enter`).
 * **What Happens**:
-  - The status machine queries the in-memory 10s Statuspage cache.
+  - The status machine queries the internal Chaos Monkey baseline telemetry.
   - LangGraph compiles telemetry signals and dispatches to Groq LPU (`qwen/qwen3.8-27b`).
   - Output strictly validates against Pydantic schema in **~1.2 seconds**.
   - Telemetry Banner pulses violet: `🔍 X-Cache: MISS • Server: 1.27s (Groq LPU) • Net RTT: ~80ms`.
 * **What to Say**:
-  > *"Notice the violet badge: `X-Cache: MISS`. The agent synthesized status signals, inferred downstream pipeline impact, and produced prioritized remediative action items with 1-click copyable bash commands in 1.2 seconds on Groq LPUs."*
+  > *"Notice the violet badge: `X-Cache: MISS`. The agent synthesized internal service telemetry, inferred downstream pipeline impact, and produced prioritized remediative action items with 1-click copyable bash commands in 1.2 seconds on Groq LPUs without depending on flaky external websites."*
 
 ---
 
 ### Act 2: The Instant Semantic Cache Hit (<2ms Turnaround) — ~20s
 * **Goal**: Demonstrate instant semantic offloading using Redis 8 RediSearch HNSW vector search.
 * **Action**:
-  1. Without refreshing, click **Run Triage** again (or ask a synonymous query like *"GitHub Actions workflows are timing out and failing with 503 errors"*).
+  1. Without refreshing, click the **⚡ Synonymous Gateway** preset (or ask a synonymous query like *"Internal API gateway cluster failing with 503 outage and elevated probe latency"*), then click **Run Triage** (or run **Story 2: Instant Recall**).
 * **What Happens**:
   - Dense 384-dimensional query vector is retrieved from the in-memory LRU cache in **0.001ms**.
-  - Redis HNSW KNN index matches the previous incident report with $\ge 95\%$ cosine similarity.
+  - Redis HNSW KNN index matches the previous incident report with $\ge 94\%$ cosine similarity.
   - Telemetry Banner turns emerald green: `⚡ X-Cache: HIT • Server: 1.16ms (Redis HNSW) • Net RTT: ~78ms (79ms total)`.
 * **What to Say**:
   > *"When an incident strikes, hundreds of engineers flood Slack asking the exact same question. Look at the banner now: `X-Cache: HIT` in **1.16 milliseconds**. Redis HNSW vector caching intercepts redundant traffic instantly, offloading 100% of LLM compute costs."*
@@ -78,7 +78,7 @@ This guide provides the complete narrative, technical depth, and step-by-step pr
   1. Click **`🔄 Reset Circuits`** in the chaos controller.
   2. Point to the navbar returning to `HEALTHY` and `CLOSED`.
 * **What to Say**:
-  > *"When upstream systems recover, resetting the circuit immediately restores full state machine capabilities. The entire system is backed by **53 automated unit and integration tests** passing in 4 seconds.*
+  > *"When upstream systems recover, resetting the circuit immediately restores full state machine capabilities. The entire system is backed by **58 automated unit and integration tests** passing in 4 seconds.*
   > 
   > *Thanks for watching, and I'd love to answer any questions about the architecture!"*
 
