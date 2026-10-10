@@ -120,7 +120,11 @@ class AsyncCircuitBreaker:
         return self.breaker.fail_max
 
     def get_info(self) -> CircuitBreakerInfo:
-        """Produce a diagnostic snapshot of breaker status."""
+        """Produce a diagnostic snapshot of breaker status and metrics.
+
+        Returns:
+            CircuitBreakerInfo: Pydantic model with breaker state, fail counts, and timestamps.
+        """
         return CircuitBreakerInfo(
             name=self.name,
             state=self.current_state,
@@ -133,7 +137,20 @@ class AsyncCircuitBreaker:
         )
 
     async def call(self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
-        """Execute async function guarded by circuit breaker rules."""
+        """Execute async function guarded by circuit breaker rules.
+
+        Args:
+            func: Asynchronous callable to guard.
+            *args: Positional arguments forwarded to func.
+            **kwargs: Keyword arguments forwarded to func.
+
+        Returns:
+            T: Value returned by func.
+
+        Raises:
+            pybreaker.CircuitBreakerError: If breaker is in OPEN state.
+            BaseException: Any unhandled exception raised by func during execution.
+        """
         # 1. Check state before execution (raises CircuitBreakerError if OPEN and timeout not elapsed)
         with self.breaker._lock:
             self.breaker.state.before_call(func, *args, **kwargs)
@@ -172,7 +189,16 @@ class CircuitBreakerRegistry:
         fail_max: int | None = None,
         reset_timeout: int | None = None,
     ) -> AsyncCircuitBreaker:
-        """Retrieve existing circuit breaker by name or create a new one."""
+        """Retrieve existing circuit breaker by name or create a new one.
+
+        Args:
+            name: Unique name for the circuit breaker.
+            fail_max: Optional failure threshold override before tripping.
+            reset_timeout: Optional cooldown duration in seconds before HALF_OPEN probe.
+
+        Returns:
+            AsyncCircuitBreaker: Active or newly instantiated breaker instance.
+        """
         with self._lock:
             if name in self._breakers:
                 return self._breakers[name]
@@ -194,12 +220,23 @@ class CircuitBreakerRegistry:
             return async_breaker
 
     def get(self, name: str) -> AsyncCircuitBreaker | None:
-        """Get an existing circuit breaker by name."""
+        """Get an existing circuit breaker by name.
+
+        Args:
+            name: Circuit breaker identifier.
+
+        Returns:
+            AsyncCircuitBreaker | None: Breaker instance if found, else None.
+        """
         with self._lock:
             return self._breakers.get(name)
 
     def get_all_statuses(self) -> dict[str, CircuitBreakerInfo]:
-        """Get snapshots of all registered circuit breakers."""
+        """Get snapshots of all registered circuit breakers.
+
+        Returns:
+            dict[str, CircuitBreakerInfo]: Mapping of breaker name to diagnostic info.
+        """
         with self._lock:
             return {name: cb.get_info() for name, cb in self._breakers.items()}
 

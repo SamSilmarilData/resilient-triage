@@ -59,6 +59,15 @@ def with_retry(
     """Decorator applying Tenacity exponential backoff with randomized jitter to async functions.
 
     Defaults are loaded from application settings.
+
+    Args:
+        max_attempts: Maximum retry attempts (defaults to settings.retry_max_attempts).
+        min_wait: Minimum wait boundary in seconds (defaults to settings.retry_min_wait_seconds).
+        max_wait: Maximum wait boundary in seconds (defaults to settings.retry_max_wait_seconds).
+        multiplier: Tenacity exponential multiplier for randomized wait calculation.
+
+    Returns:
+        Callable: Wrapped asynchronous function guarded with retries.
     """
     effective_max_attempts = max_attempts if max_attempts is not None else settings.retry_max_attempts
     effective_min_wait = min_wait if min_wait is not None else settings.retry_min_wait_seconds
@@ -98,7 +107,20 @@ async def execute_with_retry(
     multiplier: float = 0.1,
     **kwargs: Any,
 ) -> T:
-    """Execute an async callable directly with Tenacity exponential backoff and jitter."""
+    """Execute an async callable directly with Tenacity exponential backoff and jitter.
+
+    Args:
+        coro_func: Async callable to execute.
+        *args: Positional arguments forwarded to coro_func.
+        max_attempts: Max retry attempts.
+        min_wait: Minimum backoff sleep in seconds.
+        max_wait: Maximum backoff sleep in seconds.
+        multiplier: Exponential multiplier.
+        **kwargs: Keyword arguments forwarded to coro_func.
+
+    Returns:
+        T: Coroutine return value upon success.
+    """
     decorated = with_retry(
         max_attempts=max_attempts,
         min_wait=min_wait,

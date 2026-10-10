@@ -371,13 +371,21 @@ _override_llm: BaseChatModel | None = None
 
 
 def set_triage_llm(llm: BaseChatModel | None) -> None:
-    """Set global override LLM (primarily for test execution)."""
+    """Set global override LLM (primarily for test execution and mock injection).
+
+    Args:
+        llm: Custom BaseChatModel instance to use globally, or None to revert to auto-discovery.
+    """
     global _override_llm
     _override_llm = llm
 
 
 def get_active_model_name() -> str:
-    """Return friendly display label of currently active model engine."""
+    """Return friendly display label of currently active model engine.
+
+    Returns:
+        str: Human-readable model label (e.g., 'Groq LPU (qwen/qwen3.8-27b)', 'OpenAI GPT-4o').
+    """
     if _override_llm is not None:
         return f"Test Override ({getattr(_override_llm, '_llm_type', 'mock')})"
 
@@ -395,7 +403,11 @@ def get_active_model_name() -> str:
 
 
 def get_triage_llm() -> BaseChatModel:
-    """Factory returning active chat model: test override, Groq, real provider, or mock default."""
+    """Factory returning active chat model: test override, Groq, real provider, or mock default.
+
+    Returns:
+        BaseChatModel: LangChain-compatible chat model configured for incident triage.
+    """
     if _override_llm is not None:
         return _override_llm
 

@@ -94,13 +94,28 @@ class ChaosClient:
         )
 
     async def probe(self) -> ChaosTelemetryResponse:
-        """Execute probe wrapped with Tenacity retries inside the circuit breaker."""
+        """Execute probe wrapped with Tenacity retries inside the circuit breaker.
+
+        Returns:
+            ChaosTelemetryResponse: Evaluated probe result with status and latency.
+
+        Raises:
+            pybreaker.CircuitBreakerError: If the chaos circuit breaker is OPEN.
+            httpx.HTTPStatusError: If injected 503 or transient failure persists after retries.
+        """
         # Tenacity retry sits INSIDE the circuit breaker call
         retry_fn = with_retry()(self._execute_probe)
         return await self.circuit_breaker.call(retry_fn)
 
     async def fetch_signals(self) -> list[TelemetrySignal]:
-        """Fetch telemetry signals with safe fallback for tripped circuit breakers."""
+        """Fetch telemetry signals with safe fallback for tripped circuit breakers.
+
+        Never raises uncaught network errors; catches CircuitBreakerError or unexpected
+        exceptions and returns degraded TelemetrySignal instances to protect the agent.
+
+        Returns:
+            list[TelemetrySignal]: Normalized signal observations.
+        """
         start_time = time.monotonic()
         try:
             resp = await self.probe()

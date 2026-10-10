@@ -26,7 +26,14 @@ logger = logging.getLogger(__name__)
 
 
 def route_after_telemetry(state: TriageState) -> Literal["compensate", "synthesize"]:
-    """Route to compensatory degraded branch if any targeted circuit breaker is OPEN."""
+    """Route to compensatory degraded branch if any targeted circuit breaker is OPEN.
+
+    Args:
+        state: Current LangGraph execution state.
+
+    Returns:
+        Literal["compensate", "synthesize"]: Next destination node key.
+    """
     target_tools = state.get("target_tools", [])
     cb_status = state.get("circuit_breaker_status", {})
 
@@ -41,7 +48,14 @@ def route_after_telemetry(state: TriageState) -> Literal["compensate", "synthesi
 def route_after_validation(
     state: TriageState,
 ) -> Literal["finalize", "repair", "refine", "fallback"]:
-    """Route based on Pydantic validation status, confidence score, and retry limits."""
+    """Route based on Pydantic validation status, confidence score, and retry limits.
+
+    Args:
+        state: Current LangGraph execution state.
+
+    Returns:
+        Literal["finalize", "repair", "refine", "fallback"]: Next destination node key.
+    """
     final_report = state.get("final_report")
 
     if final_report is not None:
@@ -73,7 +87,14 @@ def route_after_validation(
 
 
 def build_triage_graph(enable_checkpointing: bool = True):
-    """Build and compile the LangGraph cyclic state graph with MemorySaver checkpointing."""
+    """Build and compile the LangGraph cyclic state graph with MemorySaver checkpointing.
+
+    Args:
+        enable_checkpointing: If True, attaches a MemorySaver checkpointer to preserve thread state.
+
+    Returns:
+        CompiledStateGraph: Runnable LangGraph workflow engine.
+    """
     graph = StateGraph(TriageState)
 
     # 1. Register nodes

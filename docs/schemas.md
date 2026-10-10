@@ -76,6 +76,35 @@ Typed dictionary carrying execution state across graph nodes:
 - `cache_similarity: float | None`: Cosine similarity score if matched in cache.
 - `execution_time_ms: float`: Request turnaround time in milliseconds.
 
+### `CircuitSnapshot`
+Snapshot representation of an individual circuit breaker's operational state:
+- `name: str`: Unique breaker identifier (e.g., `"statuspage"`, `"chaos"`).
+- `state: str`: Current state (`"closed"`, `"open"`, or `"half-open"`).
+- `fail_counter: int`: Consecutive failure count.
+- `fail_max: int`: Failure threshold required to trip the breaker.
+- `is_open: bool`: Boolean indicating if the breaker is open.
+- `last_failure_time: datetime | None`: Timestamp of the most recent failure.
+- `last_state_change: datetime | None`: Timestamp of the most recent state transition.
+- `last_failure_reason: str | None`: Error message or reason for the latest failure.
+
+### `LLMQuotaSnapshot`
+Real-time quota, rate limit, and failover telemetry for the active LLM provider (specifically Groq free tier):
+- `provider: str`: Provider name (`"groq"`).
+- `active_model: str`: Active primary model (`"llama-3.3-70b-versatile"` or simulation).
+- `fallback_model: str | None`: Active fallback model (`"openai/gpt-oss-20b"`).
+- `remaining_requests: int | None`: Requests remaining in current rate-limit window.
+- `limit_requests: int | None`: Total request limit for current window.
+- `remaining_tokens: int | None`: Tokens remaining in current rate-limit window.
+- `limit_tokens: int | None`: Total token limit for current window.
+- `reset_requests: str | None`: Duration until request quota window resets (e.g., `"12.4s"`).
+- `reset_tokens: str | None`: Duration until token quota window resets (e.g., `"8.1s"`).
+- `total_calls: int`: Total LLM API calls executed since process start.
+- `rate_limit_hits: int`: Total HTTP 429 rate limit events encountered.
+- `failover_events: int`: Total successful fallback model invocations.
+- `last_status: int | None`: HTTP status code of the most recent LLM API response.
+- `last_error: str | None`: Most recent error message or rate limit description.
+- `last_updated: datetime | None`: Timestamp of the most recent telemetry update.
+
 ### `HealthResponse`
 - `status`: Service status (`"healthy"` or `"degraded"`).
 - `version`: API release version string (`"1.1.0"`).
@@ -83,10 +112,13 @@ Typed dictionary carrying execution state across graph nodes:
 - `cache_driver`: Active vector driver (`"redisearch"`, `"redis_hash_fallback"`, or `"in_memory"`).
 - `circuits`: Dictionary mapping breaker names to states (`{"statuspage": "closed", "chaos": "closed"}`).
 - `active_model`: Identifier of the active LLM inference engine.
+- `llm_quota`: Optional `LLMQuotaSnapshot` of active provider rate limits and failover stats.
 
 ### `ResilienceStatusResponse`
-- `circuits`: Dictionary mapping breaker names to deep diagnostic `CircuitSnapshot` models (state, failure counts, last state change, last failure reason).
+- `circuits`: Dictionary mapping breaker names to deep diagnostic `CircuitSnapshot` models.
 - `chaos_active`: Boolean flag indicating if runtime chaos simulation is active.
 - `cache_driver`: Name of the active vector search driver.
 - `cache_entries_count`: Count of documents cached in memory.
 - `active_model`: Active LLM engine name.
+- `llm_quota`: Optional `LLMQuotaSnapshot` detailing rate limits, failover counts, and remaining quotas.
+

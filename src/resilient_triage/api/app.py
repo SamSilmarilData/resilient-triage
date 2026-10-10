@@ -222,26 +222,45 @@ async def triage_incident(payload: TriageRequest, request: Request):
 
 @app.post("/chaos/inject", response_model=ChaosConfig)
 async def inject_chaos(payload: ChaosTriggerRequest):
-    """Dynamically update runtime chaos injection parameters."""
+    """Dynamically update runtime chaos injection parameters.
+
+    Args:
+        payload: New ChaosTriggerRequest parameters (latency, 503 injection, failure rate).
+
+    Returns:
+        ChaosConfig: Updated active configuration snapshot.
+    """
     return chaos_manager.update_config(payload)
 
 
 @app.get("/chaos/config", response_model=ChaosConfig)
 async def get_chaos_config():
-    """Retrieve active runtime chaos configuration."""
+    """Retrieve active runtime chaos configuration.
+
+    Returns:
+        ChaosConfig: Current chaos settings including latency, error toggles, and status.
+    """
     return chaos_manager.get_config()
 
 
 @app.get("/chaos/probe", response_model=ChaosTelemetryResponse)
 async def probe_chaos():
-    """Execute live diagnostic probe through Tenacity retries and circuit breaker."""
+    """Execute live diagnostic probe through Tenacity retries and circuit breaker.
+
+    Returns:
+        ChaosTelemetryResponse: Diagnostic outcome from the internal chaos service.
+    """
     client = ChaosClient()
     return await client.probe()
 
 
 @app.get("/", response_class=HTMLResponse)
 async def get_sre_console():
-    """Serve the interactive SRE Incident Command Center demo UI."""
+    """Serve the interactive SRE Incident Command Center demo UI.
+
+    Returns:
+        HTMLResponse: Rendered single-page SRE management console.
+    """
     index_file = TEMPLATES_DIR / "index.html"
     if not index_file.exists():
         return HTMLResponse(content="<h1>Resilient Triage API is running. Visit /docs for OpenAPI specs.</h1>")
@@ -250,7 +269,11 @@ async def get_sre_console():
 
 @app.get("/health", response_model=HealthResponse)
 async def get_health():
-    """Health check endpoint indicating service availability and breaker status."""
+    """Health check endpoint indicating service availability and breaker status.
+
+    Returns:
+        HealthResponse: Status indicator, Redis connection state, active driver, and LLM quota.
+    """
     statuses = circuit_breaker_registry.get_all_statuses()
     circuit_states = {name: info.state for name, info in statuses.items()}
     any_open = any(info.is_open for info in statuses.values())
@@ -269,7 +292,11 @@ async def get_health():
 
 @app.get("/resilience/status", response_model=ResilienceStatusResponse)
 async def get_resilience_status():
-    """Detailed resilience diagnostic report for circuit breakers, chaos, and cache."""
+    """Detailed resilience diagnostic report for circuit breakers, chaos, and cache.
+
+    Returns:
+        ResilienceStatusResponse: Comprehensive diagnostics on circuit breakers, cache, and LLM quotas.
+    """
     await semantic_cache.check_connection()
     statuses = circuit_breaker_registry.get_all_statuses()
     snapshots = {
@@ -297,13 +324,21 @@ async def get_resilience_status():
 
 @app.get("/llm/quota", response_model=LLMQuotaSnapshot)
 async def get_llm_quota():
-    """Retrieve real-time rate limit headers, token budgets, and failover metrics for LLM providers."""
+    """Retrieve real-time rate limit headers, token budgets, and failover metrics for LLM providers.
+
+    Returns:
+        LLMQuotaSnapshot: Token budgets, rate limits, and fallback statistics.
+    """
     return groq_quota_tracker.get_snapshot()
 
 
 @app.post("/resilience/reset")
 async def reset_resilience():
-    """Reset all circuit breakers back to closed, reset chaos configuration, and reset LLM quota counters."""
+    """Reset all circuit breakers back to closed, reset chaos configuration, and reset LLM quota counters.
+
+    Returns:
+        dict[str, str]: Operation confirmation status dictionary.
+    """
     circuit_breaker_registry.reset_all()
     chaos_manager.reset()
     groq_quota_tracker.reset_counters()
@@ -312,6 +347,10 @@ async def reset_resilience():
 
 @app.post("/cache/clear")
 async def clear_cache():
-    """Flush all semantic cache entries."""
+    """Flush all semantic cache entries.
+
+    Returns:
+        dict[str, str]: Operation confirmation status dictionary.
+    """
     await semantic_cache.clear()
     return {"status": "ok", "message": "Semantic cache successfully cleared"}

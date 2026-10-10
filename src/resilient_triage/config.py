@@ -5,7 +5,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Centralized configuration loaded from environment variables or .env."""
+    """Centralized application configuration loaded from environment variables or .env.
+
+    Provides strongly-typed settings with automatic coercion and validation
+    for Redis caching, telemetry endpoints, resilience policies (circuit breakers
+    and exponential backoff retries), LangGraph self-repair iterations, and LLM inference.
+    """
 
     model_config = SettingsConfigDict(
         env_file=".env",

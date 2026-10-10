@@ -29,21 +29,39 @@ class BaseEmbeddingProvider(ABC):
     @property
     @abstractmethod
     def dimension(self) -> int:
-        """Vector dimensionality."""
+        """Vector dimensionality.
+
+        Returns:
+            int: Dimension size of the dense embedding vector.
+        """
         pass
 
     @abstractmethod
     def embed_query(self, text: str) -> list[float]:
-        """Embed a single query string into a normalized dense vector."""
+        """Embed a single query string into a normalized dense vector.
+
+        Args:
+            text: Query string to encode.
+
+        Returns:
+            list[float]: Unit L2-normalized float embedding vector.
+        """
         pass
 
     @abstractmethod
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of document strings into normalized dense vectors."""
+        """Embed a batch of document strings into normalized dense vectors.
+
+        Args:
+            texts: List of document strings to encode.
+
+        Returns:
+            list[list[float]]: List of unit L2-normalized float embedding vectors.
+        """
         pass
 
     def warmup(self) -> None:
-        """Optional pre-warming of model weights."""
+        """Optional pre-warming of model weights and runtime caches."""
         pass
 
 
@@ -79,6 +97,14 @@ class FastEmbedProvider(BaseEmbeddingProvider):
         return self._dim
 
     def embed_query(self, text: str) -> list[float]:
+        """Embed a single query string into a normalized dense vector using FastEmbed ONNX.
+
+        Args:
+            text: Incident query or text string to embed.
+
+        Returns:
+            list[float]: Unit L2-normalized float embedding vector.
+        """
         cache_key = text.strip()
         with self._lock:
             if cache_key in self._cache:
@@ -98,6 +124,14 @@ class FastEmbedProvider(BaseEmbeddingProvider):
         return normalized
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of document strings into normalized dense vectors.
+
+        Args:
+            texts: List of document strings to embed.
+
+        Returns:
+            list[list[float]]: List of unit L2-normalized float embedding vectors.
+        """
         if not texts:
             return []
         model = self._ensure_model()
@@ -151,6 +185,14 @@ class DeterministicEmbeddingProvider(BaseEmbeddingProvider):
         return _normalize_vector(vec)
 
     def embed_query(self, text: str) -> list[float]:
+        """Embed a single query string using offline deterministic hashing.
+
+        Args:
+            text: Query string to encode.
+
+        Returns:
+            list[float]: Unit L2-normalized float embedding vector.
+        """
         cache_key = text.strip()
         with self._lock:
             if cache_key in self._cache:
@@ -165,6 +207,14 @@ class DeterministicEmbeddingProvider(BaseEmbeddingProvider):
         return vec_list
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of document strings using offline deterministic hashing.
+
+        Args:
+            texts: List of document strings to encode.
+
+        Returns:
+            list[list[float]]: List of unit L2-normalized float embedding vectors.
+        """
         return [self.embed_query(t) for t in texts]
 
 
@@ -173,7 +223,14 @@ _global_embedding_provider: BaseEmbeddingProvider | None = None
 
 
 def get_embedding_provider(force_deterministic: bool | None = None) -> BaseEmbeddingProvider:
-    """Retrieve process-level embedding provider singleton."""
+    """Retrieve process-level embedding provider singleton.
+
+    Args:
+        force_deterministic: Optional override flag to force deterministic hashing provider.
+
+    Returns:
+        BaseEmbeddingProvider: The active embedding provider instance.
+    """
     global _global_embedding_provider
 
     use_deterministic = (
@@ -194,7 +251,10 @@ def get_embedding_provider(force_deterministic: bool | None = None) -> BaseEmbed
 
 
 def reset_embedding_provider() -> None:
-    """Reset singleton provider (primarily for test fixture configuration)."""
+    """Reset singleton provider instance.
+    
+    Primarily utilized by test fixtures to clear provider state between tests.
+    """
     global _global_embedding_provider
     with _singleton_lock:
         _global_embedding_provider = None

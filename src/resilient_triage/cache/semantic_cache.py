@@ -22,7 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 def format_scoped_query(query: str, service_filter: str | None = None) -> str:
-    """Prepend service scope to incident query to contextualize vector search."""
+    """Prepend service scope to incident query to contextualize vector search.
+
+    Args:
+        query: Raw incident symptoms or inquiry string.
+        service_filter: Optional component or service name to constrain scope.
+
+    Returns:
+        str: Scope-prefixed string (e.g. '[scope: internal] query') or original query.
+    """
     clean_q = query.strip()
     if service_filter and service_filter.strip():
         scope = service_filter.strip().lower()
@@ -244,7 +252,11 @@ class SemanticCacheManager:
                 self._has_redisearch = False
 
     async def check_connection(self) -> bool:
-        """Actively test Redis connectivity and attempt reconnection if offline."""
+        """Actively test Redis connectivity and attempt reconnection if offline.
+
+        Returns:
+            bool: True if Redis is reachable and responsive to PING; False otherwise.
+        """
         if self._redis is None:
             await self._ensure_connected()
             return self._redis is not None
@@ -267,7 +279,14 @@ class SemanticCacheManager:
     ) -> CacheMatch | None:
         """Perform semantic similarity search against cached triage reports.
 
-        Returns CacheMatch in sub-20ms if cosine similarity >= threshold, else None.
+        Args:
+            query: Incident query or symptom description.
+            service_filter: Optional component scope to prepend to query.
+            threshold: Cosine similarity cutoff (defaults to settings.cache_similarity_threshold).
+            force_refresh: If True, bypasses cache lookup entirely.
+
+        Returns:
+            CacheMatch | None: Cached report and metadata if similarity >= threshold; None on MISS.
         """
         if force_refresh:
             logger.debug("force_refresh=True: bypassing semantic cache lookup.")
@@ -393,7 +412,18 @@ class SemanticCacheManager:
         service_filter: str | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
-        """Synchronously store triage report and vector embedding with appropriate TTL."""
+        """Store triage report and its vector embedding in memory and Redis.
+
+        Automatically selects TTL: healthy reports receive settings.cache_ttl_seconds (300s),
+        while degraded reports receive settings.cache_degraded_ttl_seconds (60s) to allow
+        rapid re-evaluation once upstream systems recover.
+
+        Args:
+            query: Raw incident query string.
+            report: Validated IncidentTriageReport to persist.
+            service_filter: Optional component or service filter string.
+            ttl_seconds: Optional explicit TTL override in seconds.
+        """
         if not self._initialized:
             await self.initialize()
         elif self._redis is None:
@@ -477,7 +507,7 @@ class SemanticCacheManager:
         return len(self._in_memory_docs)
 
     async def close(self) -> None:
-        """Gracefully close Redis client connection."""
+        """Gracefully close Redis client connection and reset state."""
         if self._redis:
             try:
                 await self._redis.aclose()

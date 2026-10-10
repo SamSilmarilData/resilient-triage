@@ -163,3 +163,26 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
    - Recruiter/reviewer consoles display: `Server: 1.16ms (Redis HNSW) • Net RTT: 78ms (79ms total)`.
    - Audit log ticker records `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
 
+---
+
+### 8. Real-Time Groq Quota Monitoring & Model Failover (v1.2.0)
+- **Problem**: Groq free tier imposes a strict 1,000 output tokens/minute limit on `qwen/qwen3.8-27b`. Bursts of incident triage requests can hit HTTP 429 mid-incident.
+- **Header Telemetry (`GroqQuotaTracker`)**:
+  - Thread-safe singleton inspects response headers (`x-ratelimit-remaining-tokens`, `x-ratelimit-limit-tokens`, `x-ratelimit-reset-tokens`, etc.).
+  - Tracks rolling metrics: total calls, 429 rate limit hits, and fallback invocations.
+  - Returns strict typed snapshot [`LLMQuotaSnapshot`](schemas.md#llmquotasnapshot) via `GET /llm/quota` and embeds into `GET /health`.
+- **Secondary Model Failover**:
+  - On HTTP 429, `GroqChatModel` immediately falls back to `openai/gpt-oss-20b`, which possesses an independent quota bucket.
+  - SRE incident response continues without interruptions or gateway timeouts.
+- **Diagnostic Logging**:
+  - Fallback errors log exact HTTP status codes and full response body (`fb_resp.text`) for rapid upstream root-cause diagnosis.
+
+---
+
+### 9. Unified Interactive State Management
+- **Demo State Reset**: `resetDemoState(full=true)` restores circuit breakers, clears chaos injections, resets visual topology cards, wipes previous report cards, clears thread IDs, and purges the live audit stream.
+- **Fine-Tuned Stories**:
+  - **Story 1 (Cold Triage)**: Enforces `force_refresh=True` on Gateway 503 incident to demonstrate live AI synthesis.
+  - **Story 2 (Instant Semantic Recall)**: Submits synonymous query (`Internal API gateway cluster...`), achieving **94.2% cosine similarity hit** in $<20\text{ms}$.
+  - **Story 3 (Chaos Outage & Fallback)**: Injects 503s, trips circuit breaker to `OPEN`, and forces live degraded routing with circuit breaker annotation.
+

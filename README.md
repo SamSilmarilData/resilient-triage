@@ -9,7 +9,7 @@
 [![Redis 8](https://img.shields.io/badge/Redis_8-RediSearch_HNSW-DC382D.svg?style=flat&logo=redis&logoColor=white)](https://redis.io/)
 [![Groq LPU](https://img.shields.io/badge/Groq_LPU-Qwen_3.8_27B-F55036.svg?style=flat)](https://groq.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?style=flat&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
-[![Tests Passing](https://img.shields.io/badge/Tests-53%2F53_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
+[![Tests Passing](https://img.shields.io/badge/Tests-58%2F58_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 
 ---
@@ -22,7 +22,7 @@
 | **Live LLM Triage (Miss)** | `< 2.0s` | **`1.27 s`** | Groq LPU keep-alive pool + 10s Statuspage cache + token cap |
 | **Time-To-First-Token (TTFT)** | `< 500ms` | **`166 ms`** | Groq LPUs via async JSON streaming |
 | **Disconnect Resilience** | `Zero 500s` | **`0 Errors`** | Mid-flight Redis drop tested with 100% in-memory failover |
-| **Test Suite Coverage** | `100%` | **`53 / 53 Passing`** | Full pytest regression suite completes in **`4.09s`** |
+| **Test Suite Coverage** | `100%` | **`58 / 58 Passing`** | Full pytest regression suite completes in **`4.3s`** |
 
 ---
 
@@ -180,17 +180,39 @@ Executes an automated end-to-end verification against the running server or an e
 
 ---
 
+## 📚 Documentation Hub
+
+Explore the architecture, resilience engineering, API specifications, and architectural decision records:
+
+- 📖 **[REST API Reference](docs/api.md)**: Complete OpenAPI specification for all 8 endpoints with request/response schemas and `curl` examples.
+- 🛡️ **[Resilience Engineering Deep-Dive](docs/resilience.md)**: Finite state machines, full jitter exponential backoff formulas, and zero-downtime cache failovers.
+- 🏛️ **[System Architecture](docs/architecture.md)**: State machine topology, cyclic bounds, dynamic tool dispatch, and unified state management.
+- 📋 **[Data Contracts & Schemas](docs/schemas.md)**: Strict Pydantic v2 data models (`extra="forbid"`), enums, and state models.
+- 🎬 **[Interactive SRE Demo Guide](docs/demo.md)**: 5-Act presentation script and walkthrough instructions for live demonstrations.
+- ☁️ **[Free Cloud Deployment](docs/deployment.md)**: 100% free hosting recipes on Hugging Face Spaces and Render.com.
+- ⚖️ **[Architecture Decision Records (MADR)](docs/decisions/)**:
+  - [ADR 0001: LangGraph Cyclic State Machine](docs/decisions/0001-langgraph-cyclic-state-machine.md)
+  - [ADR 0002: Dual-Engine Semantic Caching](docs/decisions/0002-dual-engine-semantic-caching.md)
+  - [ADR 0003: Pybreaker & Tenacity for Resilience](docs/decisions/0003-pybreaker-and-tenacity-for-resilience.md)
+  - [ADR 0004: Strict Pydantic Contracts & Self-Repair Loop](docs/decisions/0004-strict-pydantic-contracts-and-self-repair.md)
+  - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md)
+
+---
+
 ## 🌐 API Reference
+
+See the full [REST API Reference](docs/api.md) for detailed JSON schemas, headers, and request flows.
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `POST` | `/triage` | Triage an incident through semantic cache (`<20ms`) or LangGraph state machine. |
 | `GET` | `/health` | Health check reporting service status, active model, and Redis connection. |
 | `GET` | `/resilience/status` | Deep diagnostics: circuit breaker states, fail counters, active cache driver. |
+| `GET` | `/llm/quota` | Real-time rate limit headers, token budgets, and failover metrics for Groq free tier. |
 | `POST` | `/chaos/inject` | Dynamically update runtime chaos parameters (`inject_503`, `failure_rate`, `latency_ms`). |
 | `GET` | `/chaos/config` | Inspect active runtime chaos simulation configuration. |
 | `GET` | `/chaos/probe` | Trigger live diagnostic probe through Tenacity retries and circuit breaker. |
-| `POST` | `/resilience/reset` | Administratively reset all tripped circuit breakers back to `CLOSED`. |
+| `POST` | `/resilience/reset` | Administratively reset all tripped circuit breakers, chaos state, and LLM counters. |
 | `POST` | `/cache/clear` | Flush all entries from Redis and in-memory semantic cache. |
 | `GET` | `/` | Serve the interactive SRE Incident Command Center UI. |
 
@@ -208,10 +230,13 @@ resilient-triage/
 │   ├── run_local.sh                # 1-click native macOS local runner
 │   └── smoke_test.py               # 9-step automated end-to-end smoke test suite
 ├── docs/
-│   ├── demo.md                     # Interactive 5-Act presentation script & demo guide
+│   ├── api.md                      # Complete OpenAPI REST API reference & examples
+│   ├── resilience.md               # Fault tolerance, circuit breakers & jitter backoff deep dive
 │   ├── architecture.md             # Deep-dive system design & resilience state machine
 │   ├── schemas.md                  # Strict Pydantic contracts and schemas
-│   └── deployment.md               # 100% Free cloud hosting guide (Hugging Face Spaces / Render)
+│   ├── demo.md                     # Interactive 5-Act presentation script & demo guide
+│   ├── deployment.md               # 100% Free cloud hosting guide (Hugging Face Spaces / Render)
+│   └── decisions/                  # MADR Architecture Decision Records (0001 - 0005)
 ├── src/resilient_triage/
 │   ├── config.py                   # Centralized pydantic-settings configuration
 │   ├── schemas/                    # Pydantic v2 data contracts (incident, telemetry, state, api)
@@ -220,7 +245,7 @@ resilient-triage/
 │   ├── cache/                      # Redis 8 RediSearch & NumPy vector caching engine
 │   ├── graph/                      # LangGraph cyclic state machine and self-repair nodes
 │   └── api/                        # FastAPI gateway, middleware, and SRE console UI
-└── tests/                          # 53 unit, integration, and chaos resilience tests
+└── tests/                          # 58 unit, integration, and chaos resilience tests
 ```
 
 ---

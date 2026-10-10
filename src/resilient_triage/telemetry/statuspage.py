@@ -90,12 +90,27 @@ class StatuspageClient:
         return summary
 
     async def fetch_summary(self) -> StatuspageSummary:
-        """Fetch status summary with Tenacity retries nested inside circuit breaker."""
+        """Fetch status summary with Tenacity retries nested inside circuit breaker.
+
+        Returns:
+            StatuspageSummary: Validated summary payload model.
+
+        Raises:
+            pybreaker.CircuitBreakerError: If the statuspage circuit breaker is OPEN.
+            httpx.HTTPStatusError: If upstream returns 5xx or transient errors after retries.
+        """
         retry_fn = with_retry()(self._fetch_raw)
         return await self.circuit_breaker.call(retry_fn)
 
     async def fetch_signals(self) -> list[TelemetrySignal]:
-        """Fetch status signals with graceful degraded fallback on failure or tripped breaker."""
+        """Fetch status signals with graceful degraded fallback on failure or tripped breaker.
+
+        Never throws network exceptions into graph execution; captures failures and returns
+        degraded TelemetrySignal entries denoting CIRCUIT_OPEN or UNAVAILABLE status.
+
+        Returns:
+            list[TelemetrySignal]: List of telemetry signals gathered from the Statuspage.
+        """
         start_time = time.monotonic()
         try:
             summary = await self.fetch_summary()

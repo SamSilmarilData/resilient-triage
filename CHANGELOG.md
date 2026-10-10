@@ -5,6 +5,28 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-10 — Comprehensive Documentation, MADR ADRs, API Reference, & Groq Quota Tracking
+
+### Added
+- **Architecture Decision Records (MADRs)** in `docs/decisions/`:
+  - `0001-langgraph-cyclic-state-machine.md`: Decision rationale, alternatives considered, and validation guarantees for LangGraph state machine.
+  - `0002-dual-engine-semantic-caching.md`: Sub-20ms Redis 8 RediSearch HNSW indexing with instant in-memory NumPy fallback.
+  - `0003-pybreaker-and-tenacity-for-resilience.md`: Inverted nesting of Tenacity exponential backoff retries with randomized jitter inside Pybreaker circuit breakers.
+  - `0004-strict-pydantic-contracts-and-self-repair.md`: Strict Pydantic v2 schemas (`extra="forbid"`) and self-repair feedback loop.
+  - `0005-free-tier-groq-quota-monitoring-and-failover.md`: Real-time tracking of Groq free-tier rate limit headers, token budgets, and 429 failover to `openai/gpt-oss-20b`.
+- **Standalone REST API Reference (`docs/api.md`)**:
+  - Full OpenAPI specification detailing all 8 API endpoints, HTTP methods, headers, schemas, and curl examples.
+- **Resilience Engineering Deep-Dive (`docs/resilience.md`)**:
+  - Deep-dive guide explaining finite state machines, full jitter exponential backoff formulas, and zero-downtime cache failovers.
+- **Documentation Hub in `README.md`**:
+  - Centralized index referencing architecture, API specs, resilience mechanics, schemas, and ADRs.
+- **Codebase Docstring Augmentation**:
+  - Standardized Google/PEP-257 docstrings with typed `Args:`, `Returns:`, and `Raises:` blocks across all modules in `src/resilient_triage/`.
+- **Expanded Test Battery**:
+  - Added test coverage for Groq quota tracking, reset endpoints, and model failovers, bringing suite to 58/58 passing tests.
+
+---
+
 ## [1.1.0] - 2026-10-03 — Performance & Dual-Metric Observability
 
 ### Highlights

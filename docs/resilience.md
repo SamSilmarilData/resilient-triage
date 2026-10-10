@@ -1,0 +1,161 @@
+# Resilience & Fault Tolerance Deep-Dive Guide
+
+This document provides a comprehensive technical breakdown of the resilience mechanisms, fail-fast patterns, and graceful degradation paths implemented across `resilient-triage`.
+
+---
+
+## 1. The Core Resilience Philosophy
+
+Standard LLM applications are fragile because they treat external dependencies as reliably available. During severe production incidents:
+- Upstream telemetry sources fail simultaneously.
+- Sockets hang on unmaintained connections.
+- LLM token quotas deplete.
+- Responses drop into unparseable schemas.
+
+`resilient-triage` is built on the principle of **Zero-Downtime Compensatory Routing**:
+> *Every component must have a deterministic fallback path. No upstream timeout, socket drop, rate limit, or invalid model output is permitted to crash the service or return an HTTP 500 error to users.*
+
+```mermaid
+flowchart TD
+    Req([Incident Request Ingested]) --> Cache{Semantic Cache Hit?}
+    Cache -->|Yes <20ms| ReturnHit[Serve from Redis HNSW Cache]
+    Cache -->|No| StateMachine[LangGraph State Machine]
+
+    subgraph DependencyResilience ["External Telemetry Layer"]
+        StateMachine --> CB{"Circuit Breaker State?"}
+        CB -->|CLOSED| NetCall["Fetch Telemetry (@with_retry)"]
+        NetCall -->|Failures >= 3| TripOpen["Trip Breaker to OPEN"]
+        TripOpen --> FallbackNode["DegradedFallbackNode"]
+        CB -->|OPEN| FallbackNode
+        FallbackNode --> Compensate["CompensateBlindspotsNode\n(Attach Historical Cache Signals)"]
+    end
+
+    subgraph LLMResilience ["Inference Layer"]
+        Compensate --> PromptGen["Synthesize Context & Prompt"]
+        PromptGen --> GroqCall["Invoke Primary Model (qwen3.8-27b)"]
+        GroqCall -->|HTTP 429 Rate Limit| ModelFailover["Failover to openai/gpt-oss-20b"]
+        GroqCall -->|Success 200| Validate["ValidateReportNode (Pydantic extra='forbid')"]
+        ModelFailover --> Validate
+        
+        Validate -->|ValidationError & Retries < 2| Repair["SelfRepairNode (Feed Traceback)"]
+        Repair --> GroqCall
+        Validate -->|Retries >= 2 Exhausted| SafeFallback["FallbackReportNode (Guaranteed Schema)"]
+    end
+
+    SafeFallback --> Finalize["FinalizeNode & Cache Store"]
+    Validate -->|Valid 200| Finalize
+    Finalize --> Done([Deliver Verified SRE Report])
+```
+
+---
+
+## 2. Circuit Breakers (Pybreaker)
+
+### Finite State Machine
+Circuit breakers guard external HTTP integrations (`statuspage`, `chaos`). They implement a 3-state finite state machine managed by `CircuitBreakerRegistry`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+    CLOSED --> OPEN : 3 consecutive failures within 60s
+    OPEN --> HALF_OPEN : reset_timeout = 30.0s elapsed
+    HALF_OPEN --> CLOSED : Single trial probe succeeds
+    HALF_OPEN --> OPEN : Trial probe fails
+```
+
+1. **`CLOSED` (Normal Operation)**:
+   - External requests pass through normally.
+   - Failure counter increments on exceptions matching `is_transient_error()`.
+   - If failures reach `fail_max = 3`, the breaker transitions to `OPEN`.
+2. **`OPEN` (Failing Fast)**:
+   - Calls immediately raise `pybreaker.CircuitBreakerError` in $<0.01\text{ms}$ without executing network I/O.
+   - Protects the failing dependency from retry storms.
+   - Triggers `DegradedFallbackNode` in LangGraph.
+3. **`HALF_OPEN` (Trial Probe)**:
+   - After `reset_timeout = 30` seconds, the breaker enters `HALF_OPEN`.
+   - Allows a single test request through.
+   - If successful, resets `fail_counter = 0` and restores state to `CLOSED`.
+   - If it fails, resets the 30-second timer and returns to `OPEN`.
+
+---
+
+## 3. Exponential Backoff with Randomized Jitter (Tenacity)
+
+All network calls are wrapped with `@with_retry` using Tenacity:
+
+### Formula
+To prevent the "thundering herd" problem where multiple workers retry on identical synchronized intervals, we employ **Randomized Exponential Backoff with Full Jitter**:
+
+$$T_{\text{wait}} = \text{random.uniform}\left(T_{\text{min}}, \min\left(T_{\text{max}}, T_{\text{multiplier}} \times 2^{\text{attempt}}\right)\right)$$
+
+- Default parameters: `max_attempts = 3`, `min_wait = 0.5s`, `max_wait = 2.0s`, `multiplier = 1.0`.
+
+### Transient Error Classification
+Only genuinely transient exceptions trigger retries:
+- `httpx.TimeoutException`
+- `httpx.NetworkError`
+- `httpx.HTTPStatusError` with status codes: `429`, `502`, `503`, `504`
+- Non-transient exceptions (such as `400 Bad Request`, `401 Unauthorized`, `404 Not Found`) fail fast without wasting retry cycles.
+
+---
+
+## 4. Zero-Downtime Dual-Engine Vector Caching
+
+The `SemanticCacheManager` guarantees zero downtime by abstracting two underlying vector storage backends:
+
+```mermaid
+flowchart LR
+    Query([Query Vector: 384-dim]) --> DriverCheck{Redis Connected?}
+    DriverCheck -->|Yes| RedisHNSW["Redis 8 RediSearch HNSW Index\nKNN Cosine Search (~1-7ms)"]
+    DriverCheck -->|No / Socket Drop| InMemory["NumPy Vector Matrix\nVectorized dot product (~0.5ms)"]
+    RedisHNSW --> ScoreCheck{Cosine Similarity >= 0.90?}
+    InMemory --> ScoreCheck
+    ScoreCheck -->|Yes| CacheHit[Return X-Cache: HIT]
+    ScoreCheck -->|No| CacheMiss[Proceed to State Machine]
+```
+
+### Auto-Reconnection & Recovery
+- When Redis drops, operations fall back to the in-memory store without throwing unhandled exceptions.
+- `SemanticCacheManager.check_connection()` executes periodic non-blocking ping checks.
+- When Redis comes back online, the manager transparently switches the active driver back to `redisearch`.
+
+---
+
+## 5. Pydantic Self-Repair & Guaranteed Fallback
+
+Large Language Models frequently emit JSON with minor syntax or schema defects. The self-repair loop ensures 100% schema compliance:
+
+1. **Cycle Limit**: Hard-bounded to a maximum of 2 self-repair attempts per incident query.
+2. **Traceback Extraction**:
+   ```python
+   errors = [f"{e['loc']}: {e['msg']}" for e in validation_error.errors()]
+   ```
+3. **Corrective Feedback**: Appends human message containing the exact error fields back into `TriageState["messages"]`.
+4. **Retry Exhaustion (`FallbackReportNode`)**:
+   - If the model fails after 2 repair attempts, execution routes to `fallback_report_node`.
+   - Synthesizes a deterministic `IncidentTriageReport`:
+     - Severity: `UNKNOWN` or inferred from query keywords.
+     - Degradation Status: `SEVERELY_DEGRADED`.
+     - Root Cause: Explicitly notes model generation exhaustion and includes raw query signals.
+     - Recommended Actions: Supplies baseline diagnostic commands (`kubectl logs`, `kubectl top`, `systemctl status`).
+
+---
+
+## 6. Real-Time Groq Quota Tracking & Secondary Failover
+
+To operate safely within Groq free-tier constraints (1,000 output tokens/minute ceiling):
+
+1. **Header Extraction**:
+   Every response through `GroqChatModel` is recorded by `GroqQuotaTracker`:
+   - `x-ratelimit-remaining-tokens` / `x-ratelimit-limit-tokens`
+   - `x-ratelimit-remaining-requests` / `x-ratelimit-limit-requests`
+2. **Automated Secondary Failover**:
+   ```python
+   if resp.status_code == 429 and self.fallback_model:
+       # Automatically retries using secondary model openai/gpt-oss-20b
+   ```
+   - Primary: `qwen/qwen3.8-27b`
+   - Fallback: `openai/gpt-oss-20b` (independent rate-limit quota bucket)
+3. **Logging & Observability**:
+   - Success on fallback logged at `INFO`.
+   - Failure on fallback logs exact status code and raw response body (`fb_resp.text`) at `WARNING`.
