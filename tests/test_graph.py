@@ -277,3 +277,30 @@ def test_groq_chat_model_formatting_and_factory():
     assert isinstance(active_name, str)
     assert len(active_name) > 0
 
+
+@pytest.mark.asyncio
+async def test_groq_chat_model_429_failover(mocker):
+    """Verify GroqChatModel automatically fails over to fallback_model on HTTP 429."""
+    import httpx
+    from langchain_core.messages import HumanMessage
+    from resilient_triage.graph.llm import GroqChatModel
+
+    mock_client = mocker.AsyncMock()
+    resp_429 = mocker.MagicMock(status_code=429, text="Rate limit exceeded")
+    resp_429.raise_for_status.side_effect = httpx.HTTPStatusError("429", request=mocker.MagicMock(), response=resp_429)
+    resp_200 = mocker.MagicMock(
+        status_code=200,
+        json=lambda: {"choices": [{"message": {"content": '{"summary": "Fallback OK"}'}}]},
+    )
+    mock_client.post.side_effect = [resp_429, resp_200]
+    mocker.patch("resilient_triage.graph.llm.get_groq_async_client", return_value=mock_client)
+
+    model = GroqChatModel(
+        api_key="test_key",
+        model_name="qwen/qwen3.8-27b",
+        fallback_model="openai/gpt-oss-20b",
+    )
+    res = await model.ainvoke([HumanMessage(content="test")])
+    assert res.content == '{"summary": "Fallback OK"}'
+    assert mock_client.post.call_count == 2
+

@@ -30,11 +30,126 @@ def get_groq_async_client(timeout: float = 20.0) -> httpx.AsyncClient:
     return _groq_async_client
 
 
+import threading
+from datetime import datetime, timezone
+
+from resilient_triage.schemas.api import LLMQuotaSnapshot
+
+
+class GroqQuotaTracker:
+    """Thread-safe tracker recording Groq rate limit headers, token budgets, and failover metrics."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.provider: str = "groq"
+        self.active_model: str = settings.groq_model
+        self.fallback_model: str = "openai/gpt-oss-20b"
+        self.remaining_requests: int | None = None
+        self.limit_requests: int | None = None
+        self.remaining_tokens: int | None = None
+        self.limit_tokens: int | None = None
+        self.reset_requests: str | None = None
+        self.reset_tokens: str | None = None
+        self.total_calls: int = 0
+        self.rate_limit_hits: int = 0
+        self.failover_events: int = 0
+        self.last_status: int | None = None
+        self.last_error: str | None = None
+        self.last_updated: datetime | None = None
+
+    def record_response(
+        self,
+        resp: httpx.Response,
+        model_name: str,
+        is_failover: bool = False,
+    ) -> None:
+        with self._lock:
+            self.total_calls += 1
+            self.last_status = resp.status_code
+            self.last_updated = datetime.now(timezone.utc)
+            self.active_model = model_name
+
+            if is_failover and resp.status_code < 400:
+                self.failover_events += 1
+
+            if resp.status_code == 429:
+                self.rate_limit_hits += 1
+                try:
+                    data = resp.json()
+                    self.last_error = data.get("error", {}).get("message", resp.text)
+                except Exception:
+                    self.last_error = resp.text
+            elif resp.status_code >= 400:
+                try:
+                    data = resp.json()
+                    self.last_error = data.get("error", {}).get("message", resp.text)
+                except Exception:
+                    self.last_error = resp.text
+
+            # Parse standard Groq rate limit headers
+            headers = resp.headers
+            if "x-ratelimit-remaining-requests" in headers:
+                try:
+                    self.remaining_requests = int(headers["x-ratelimit-remaining-requests"])
+                except (ValueError, TypeError):
+                    pass
+            if "x-ratelimit-limit-requests" in headers:
+                try:
+                    self.limit_requests = int(headers["x-ratelimit-limit-requests"])
+                except (ValueError, TypeError):
+                    pass
+            if "x-ratelimit-remaining-tokens" in headers:
+                try:
+                    self.remaining_tokens = int(headers["x-ratelimit-remaining-tokens"])
+                except (ValueError, TypeError):
+                    pass
+            if "x-ratelimit-limit-tokens" in headers:
+                try:
+                    self.limit_tokens = int(headers["x-ratelimit-limit-tokens"])
+                except (ValueError, TypeError):
+                    pass
+            if "x-ratelimit-reset-requests" in headers:
+                self.reset_requests = headers["x-ratelimit-reset-requests"]
+            if "x-ratelimit-reset-tokens" in headers:
+                self.reset_tokens = headers["x-ratelimit-reset-tokens"]
+
+    def reset_counters(self) -> None:
+        with self._lock:
+            self.total_calls = 0
+            self.rate_limit_hits = 0
+            self.failover_events = 0
+            self.last_error = None
+
+    def get_snapshot(self) -> LLMQuotaSnapshot:
+        with self._lock:
+            return LLMQuotaSnapshot(
+                provider=self.provider,
+                active_model=self.active_model,
+                fallback_model=self.fallback_model,
+                remaining_requests=self.remaining_requests,
+                limit_requests=self.limit_requests,
+                remaining_tokens=self.remaining_tokens,
+                limit_tokens=self.limit_tokens,
+                reset_requests=self.reset_requests,
+                reset_tokens=self.reset_tokens,
+                total_calls=self.total_calls,
+                rate_limit_hits=self.rate_limit_hits,
+                failover_events=self.failover_events,
+                last_status=self.last_status,
+                last_error=self.last_error,
+                last_updated=self.last_updated,
+            )
+
+
+groq_quota_tracker = GroqQuotaTracker()
+
+
 class GroqChatModel(BaseChatModel):
     """Native high-speed Groq LPU chat model client supporting structured JSON generation."""
 
     api_key: str
     model_name: str = "qwen/qwen3.8-27b"
+    fallback_model: str = "openai/gpt-oss-20b"
     timeout: float = 20.0
 
     def _format_messages(self, messages: List[BaseMessage]) -> list[dict[str, str]]:
@@ -63,7 +178,7 @@ class GroqChatModel(BaseChatModel):
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 1200,
+            "max_tokens": 750,
         }
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(
@@ -71,6 +186,34 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
+            groq_quota_tracker.record_response(resp, model_name=self.model_name)
+
+            if resp.status_code == 429 and self.fallback_model:
+                logger.warning(
+                    "Groq rate limit (429) hit for %s; failing over to %s",
+                    self.model_name,
+                    self.fallback_model,
+                )
+                fb_payload = dict(payload)
+                fb_payload["model"] = self.fallback_model
+                fb_resp = client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=fb_payload,
+                )
+                groq_quota_tracker.record_response(fb_resp, model_name=self.fallback_model, is_failover=True)
+                if fb_resp.status_code < 400:
+                    logger.info("Groq fallback model '%s' succeeded (HTTP %d).", self.fallback_model, fb_resp.status_code)
+                    content = fb_resp.json()["choices"][0]["message"]["content"]
+                    return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+                else:
+                    logger.warning(
+                        "Groq fallback model '%s' also failed with HTTP %d: %s",
+                        self.fallback_model,
+                        fb_resp.status_code,
+                        fb_resp.text,
+                    )
+
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
@@ -87,7 +230,7 @@ class GroqChatModel(BaseChatModel):
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 1200,
+            "max_tokens": 750,
         }
 
         from resilient_triage.resilience.retry import with_retry
@@ -100,6 +243,33 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
+            groq_quota_tracker.record_response(resp, model_name=self.model_name)
+
+            if resp.status_code == 429 and self.fallback_model:
+                logger.warning(
+                    "Groq rate limit (429) hit for %s; failing over to %s",
+                    self.model_name,
+                    self.fallback_model,
+                )
+                fb_payload = dict(payload)
+                fb_payload["model"] = self.fallback_model
+                fb_resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=fb_payload,
+                )
+                groq_quota_tracker.record_response(fb_resp, model_name=self.fallback_model, is_failover=True)
+                if fb_resp.status_code < 400:
+                    logger.info("Groq fallback model '%s' succeeded (HTTP %d).", self.fallback_model, fb_resp.status_code)
+                    return fb_resp.json()["choices"][0]["message"]["content"]
+                else:
+                    logger.warning(
+                        "Groq fallback model '%s' also failed with HTTP %d: %s",
+                        self.fallback_model,
+                        fb_resp.status_code,
+                        fb_resp.text,
+                    )
+
             if resp.status_code >= 400:
                 logger.warning("Groq API returned HTTP %d: %s", resp.status_code, resp.text)
             resp.raise_for_status()

@@ -7,21 +7,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from resilient_triage.api.app import app
 from resilient_triage.cache.semantic_cache import semantic_cache
-from resilient_triage.graph.llm import MockTriageChatModel, set_triage_llm
+from resilient_triage.graph.llm import MockTriageChatModel, groq_quota_tracker, set_triage_llm
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
 from resilient_triage.telemetry.chaos import chaos_manager
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def reset_api_environment():
-    """Reset circuit breakers, chaos manager, cache, and LLM override between tests."""
+    """Reset circuit breakers, chaos manager, cache, quota tracker, and LLM override between tests."""
     circuit_breaker_registry.reset_all()
     chaos_manager.reset()
+    groq_quota_tracker.reset_counters()
     await semantic_cache.clear()
     set_triage_llm(MockTriageChatModel())
     yield
     circuit_breaker_registry.reset_all()
     chaos_manager.reset()
+    groq_quota_tracker.reset_counters()
     await semantic_cache.clear()
     set_triage_llm(None)
 
@@ -298,3 +300,67 @@ async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient)
         assert report["degradation_status"] == "SEVERELY_DEGRADED"
         assert "429" in report["root_cause_analysis"] or "rate limit" in report["root_cause_analysis"].lower()
         assert len(report["recommended_actions"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_llm_quota_endpoint(client: httpx.AsyncClient):
+    """Verify /llm/quota returns 200 with LLMQuotaSnapshot structure."""
+    resp = await client.get("/llm/quota")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["provider"] == "groq"
+    assert "active_model" in data
+    assert "fallback_model" in data
+    assert "total_calls" in data
+    assert "rate_limit_hits" in data
+    assert "failover_events" in data
+    assert data["total_calls"] == 0
+    assert data["rate_limit_hits"] == 0
+    assert data["failover_events"] == 0
+
+
+@pytest.mark.asyncio
+async def test_health_and_resilience_status_contain_llm_quota(client: httpx.AsyncClient):
+    """Verify both /health and /resilience/status embed active LLM quota telemetry."""
+    # Health endpoint
+    h_resp = await client.get("/health")
+    assert h_resp.status_code == 200
+    h_data = h_resp.json()
+    assert "llm_quota" in h_data
+    assert h_data["llm_quota"]["provider"] == "groq"
+
+    # Resilience status endpoint
+    r_resp = await client.get("/resilience/status")
+    assert r_resp.status_code == 200
+    r_data = r_resp.json()
+    assert "llm_quota" in r_data
+    assert r_data["llm_quota"]["provider"] == "groq"
+
+
+@pytest.mark.asyncio
+async def test_resilience_reset_clears_llm_quota_counters(client: httpx.AsyncClient):
+    """Verify POST /resilience/reset resets LLM quota tracker metrics."""
+    # Simulate some tracked calls
+    mock_resp = httpx.Response(
+        429,
+        headers={
+            "x-ratelimit-remaining-tokens": "500",
+            "x-ratelimit-limit-tokens": "8000",
+        },
+        request=httpx.Request("POST", "https://api.groq.com"),
+    )
+    groq_quota_tracker.record_response(mock_resp, model_name="qwen/qwen3.8-27b")
+    snap_before = groq_quota_tracker.get_snapshot()
+    assert snap_before.total_calls == 1
+    assert snap_before.rate_limit_hits == 1
+
+    # Reset via API
+    reset_resp = await client.post("/resilience/reset")
+    assert reset_resp.status_code == 200
+
+    snap_after = groq_quota_tracker.get_snapshot()
+    assert snap_after.total_calls == 0
+    assert snap_after.rate_limit_hits == 0
+    assert snap_after.failover_events == 0
+

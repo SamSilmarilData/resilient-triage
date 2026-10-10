@@ -14,12 +14,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from resilient_triage import __version__
 from resilient_triage.cache.semantic_cache import semantic_cache
 from resilient_triage.graph.builder import triage_graph
-from resilient_triage.graph.llm import get_active_model_name
+from resilient_triage.graph.llm import get_active_model_name, groq_quota_tracker
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
     CircuitSnapshot,
     HealthResponse,
+    LLMQuotaSnapshot,
     ResilienceStatusResponse,
     TriageRequest,
     TriageResponse,
@@ -43,6 +44,10 @@ async def lifespan(app: FastAPI):
         # Pre-warm embedding model weights and 3 quick presets so initial demo requests run in 0.001ms
         presets = [
             "warmup telemetry query",
+            "Internal API gateway service failing with 503 outage and elevated probe latency",
+            "[scope: internal] Internal API gateway service failing with 503 outage and elevated probe latency",
+            "Internal payment processing failing with 503 service unavailable",
+            "[scope: internal] Internal payment processing failing with 503 service unavailable",
             "GitHub Actions workflows are failing with 503 and high webhook latency",
             "[scope: actions] GitHub Actions workflows are failing with 503 and high webhook latency",
             "Stripe webhook ingestion failing with 504 gateway timeout",
@@ -258,6 +263,7 @@ async def get_health():
         cache_driver=semantic_cache.driver,
         circuits=circuit_states,
         active_model=get_active_model_name(),
+        llm_quota=groq_quota_tracker.get_snapshot(),
     )
 
 
@@ -285,16 +291,23 @@ async def get_resilience_status():
         cache_driver=semantic_cache.driver,
         cache_entries_count=semantic_cache.count,
         active_model=get_active_model_name(),
+        llm_quota=groq_quota_tracker.get_snapshot(),
     )
 
+
+@app.get("/llm/quota", response_model=LLMQuotaSnapshot)
+async def get_llm_quota():
+    """Retrieve real-time rate limit headers, token budgets, and failover metrics for LLM providers."""
+    return groq_quota_tracker.get_snapshot()
 
 
 @app.post("/resilience/reset")
 async def reset_resilience():
-    """Reset all circuit breakers back to closed and reset chaos configuration."""
+    """Reset all circuit breakers back to closed, reset chaos configuration, and reset LLM quota counters."""
     circuit_breaker_registry.reset_all()
     chaos_manager.reset()
-    return {"status": "ok", "message": "Circuit breakers and chaos state successfully reset"}
+    groq_quota_tracker.reset_counters()
+    return {"status": "ok", "message": "Circuit breakers, chaos state, and LLM counters successfully reset"}
 
 
 @app.post("/cache/clear")

@@ -66,6 +66,28 @@ class CircuitSnapshot(BaseModel):
     last_failure_reason: str | None = None
 
 
+class LLMQuotaSnapshot(BaseModel):
+    """Real-time quota, rate limit, and failover telemetry for active LLM provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(default="groq", description="LLM provider name")
+    active_model: str = Field(..., description="Active primary model name")
+    fallback_model: str | None = Field(default=None, description="Active fallback model name")
+    remaining_requests: int | None = Field(default=None, description="Requests remaining in current window")
+    limit_requests: int | None = Field(default=None, description="Total request limit for current window")
+    remaining_tokens: int | None = Field(default=None, description="Tokens remaining in current window")
+    limit_tokens: int | None = Field(default=None, description="Total token limit for current window")
+    reset_requests: str | None = Field(default=None, description="Time until request quota window resets")
+    reset_tokens: str | None = Field(default=None, description="Time until token quota window resets")
+    total_calls: int = Field(default=0, description="Total LLM API calls executed")
+    rate_limit_hits: int = Field(default=0, description="Total HTTP 429 rate limit events encountered")
+    failover_events: int = Field(default=0, description="Total successful fallback model invocations")
+    last_status: int | None = Field(default=None, description="HTTP status code of most recent LLM response")
+    last_error: str | None = Field(default=None, description="Most recent error message or rate limit description")
+    last_updated: datetime | None = Field(default=None, description="Timestamp of most recent update")
+
+
 class HealthResponse(BaseModel):
     """System health check and component availability status."""
 
@@ -85,10 +107,14 @@ class HealthResponse(BaseModel):
         default="Zero-Config SRE Simulation",
         description="Name of currently active LLM inference engine",
     )
+    llm_quota: LLMQuotaSnapshot | None = Field(
+        default=None,
+        description="Active LLM quota, token budget, and failover metrics snapshot",
+    )
 
 
 class ResilienceStatusResponse(BaseModel):
-    """Deep resilience diagnostics for circuit breakers, chaos, and cache."""
+    """Deep resilience diagnostics for circuit breakers, chaos, cache, and LLM quotas."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -99,5 +125,9 @@ class ResilienceStatusResponse(BaseModel):
     active_model: str = Field(
         default="Zero-Config SRE Simulation",
         description="Name of currently active LLM inference engine",
+    )
+    llm_quota: LLMQuotaSnapshot | None = Field(
+        default=None,
+        description="Active LLM quota and rate limit telemetry snapshot",
     )
 
