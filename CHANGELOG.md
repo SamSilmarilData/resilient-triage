@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/resilience.md`: Replaced overview Mermaid flowchart in Section 1 with the complete state machine lifecycle diagram while preserving the 3-state Pybreaker finite state machine as a micro-spec in Section 2.
   - `docs/demo.md`: Added direct visual architecture schematic links in the executive pitch section.
 
+### Fixed
+- **SVG XML Parsing & Markdown Image Embedding Compatibility**:
+  - Replaced non-predefined HTML character entities (`&bull;`, `&rarr;`, `&middot;`, `&ge;`) with numeric XML character entities (`&#8226;`, `&#8594;`, `&#183;`, `&#8805;`) across `docs/architecture-diagram.svg` and `docs/state-machine-diagram.svg` to satisfy strict XML parsing requirements (`image/svg+xml`).
+  - Added explicit intrinsic `width="1040"` and `height="540"` attributes to root `<svg>` elements to guarantee proper aspect ratio scaling and avoid zero-height collapsing across markdown previewers and browsers.
+
 ---
 
 ## [1.2.0] - 2026-10-10 — Comprehensive Documentation, MADR ADRs, API Reference, & Groq Quota Tracking
