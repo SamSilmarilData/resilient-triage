@@ -15,37 +15,14 @@ Standard LLM applications are fragile because they treat external dependencies a
 `resilient-triage` is built on the principle of **Zero-Downtime Compensatory Routing**:
 > *Every component must have a deterministic fallback path. No upstream timeout, socket drop, rate limit, or invalid model output is permitted to crash the service or return an HTTP 500 error to users.*
 
-```mermaid
-flowchart TD
-    Req([Incident Request Ingested]) --> Cache{Semantic Cache Hit?}
-    Cache -->|Yes <20ms| ReturnHit[Serve from Redis HNSW Cache]
-    Cache -->|No| StateMachine[LangGraph State Machine]
-
-    subgraph DependencyResilience ["External Telemetry Layer"]
-        StateMachine --> CB{"Circuit Breaker State?"}
-        CB -->|CLOSED| NetCall["Fetch Telemetry (@with_retry)"]
-        NetCall -->|Failures >= 3| TripOpen["Trip Breaker to OPEN"]
-        TripOpen --> FallbackNode["DegradedFallbackNode"]
-        CB -->|OPEN| FallbackNode
-        FallbackNode --> Compensate["CompensateBlindspotsNode\n(Attach Historical Cache Signals)"]
-    end
-
-    subgraph LLMResilience ["Inference Layer"]
-        Compensate --> PromptGen["Synthesize Context & Prompt"]
-        PromptGen --> GroqCall["Invoke Primary Model (qwen3.8-27b)"]
-        GroqCall -->|HTTP 429 Rate Limit| ModelFailover["Failover to openai/gpt-oss-20b"]
-        GroqCall -->|Success 200| Validate["ValidateReportNode (Pydantic extra='forbid')"]
-        ModelFailover --> Validate
-        
-        Validate -->|ValidationError & Retries < 2| Repair["SelfRepairNode (Feed Traceback)"]
-        Repair --> GroqCall
-        Validate -->|Retries >= 2 Exhausted| SafeFallback["FallbackReportNode (Guaranteed Schema)"]
-    end
-
-    SafeFallback --> Finalize["FinalizeNode & Cache Store"]
-    Validate -->|Valid 200| Finalize
-    Finalize --> Done([Deliver Verified SRE Report])
-```
+<p align="center">
+  <a href="state-machine-diagram.html">
+    <img src="state-machine-diagram.svg" alt="Zero-Downtime Resilience & State Machine Lifecycle" width="100%">
+  </a>
+</p>
+<p align="center">
+  <em>Figure 1: Complete resilience lifecycle showing guarded telemetry probing, adaptive blindspot bridging, 1-shot self-repair loops, and deterministic fallback. <a href="state-machine-diagram.html">Interactive Lifecycle View</a> &middot; <a href="architecture-diagram.html">System Topology View</a></em>
+</p>
 
 ---
 

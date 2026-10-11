@@ -50,43 +50,25 @@
 
 ## 🏛️ System Architecture
 
-```mermaid
-flowchart TD
-    User([SRE / Incident Commander]) -->|POST /triage| API[FastAPI Gateway\nProcessTime & Correlation Middleware]
-    
-    subgraph CachingLayer [Redis 8 Semantic Cache Layer - Sub-20ms Target]
-        API --> CacheCheck{Cosine Sim >= 0.90?}
-        CacheCheck -->|Cache HIT 7.7ms| ReturnCached[Return Cached Report\nX-Cache: HIT\nX-Cache-Similarity: 0.95+]
-        ReturnCached --> User
-        CacheCheck -->|Cache MISS| GraphEntry[Proceed to State Machine\nX-Cache: MISS]
-    end
+<p align="center">
+  <a href="docs/architecture-diagram.html">
+    <img src="docs/architecture-diagram.svg" alt="Resilient Incident Triage Architecture" width="100%">
+  </a>
+</p>
+<p align="center">
+  <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation. <a href="docs/architecture-diagram.html">Open interactive view &rarr;</a></em>
+</p>
 
-    subgraph LangGraphSM [LangGraph Cyclic State Machine]
-        GraphEntry --> AnalyzeNode[Analyze Incident Request\nDynamic Tool Targeting]
-        AnalyzeNode --> TelemetryNode[Collect Telemetry\nConcurrent async gather]
-        
-        subgraph ResilienceGuards [Resilience Guard Layer]
-            TelemetryNode -->|Tenacity Backoff + Pybreaker| StatuspageAPI[Atlassian Statuspage API]
-            TelemetryNode -->|Tenacity Backoff + Pybreaker| ChaosAPI[Runtime Chaos Probe Endpoint]
-        end
-        
-        TelemetryNode -->|Breaker OPEN / 3 Failures| DegradedNode[Degraded Fallback Node\nAnnotate Blind Spots]
-        TelemetryNode -->|Breaker CLOSED / Success| SynthesizeNode[Synthesize Telemetry]
-        
-        DegradedNode --> SynthesizeNode
-        SynthesizeNode --> ReportGen[Generate Candidate Report\nGroq LPU qwen3.8-27b]
-        
-        ReportGen --> ValidateNode{Pydantic Validation}
-        ValidateNode -->|Valid Schema| CompleteNode[Finalize State\nProgrammatic Breaker Audit]
-        ValidateNode -->|Invalid & Retries < 2| RepairNode[Self-Repair Loop\nFeed Traceback back to LLM]
-        RepairNode --> ReportGen
-        ValidateNode -->|Invalid & Retries >= 2| FallbackReport[Guaranteed Fallback Report]
-        FallbackReport --> CompleteNode
-    end
+### 🔄 LangGraph State Machine & Resilience Lifecycle
 
-    CompleteNode --> StoreCache[Store in Redis 8 RediSearch\ntriage:doc:* HNSW Index]
-    StoreCache --> User
-```
+<p align="center">
+  <a href="docs/state-machine-diagram.html">
+    <img src="docs/state-machine-diagram.svg" alt="LangGraph State Machine Lifecycle" width="100%">
+  </a>
+</p>
+<p align="center">
+  <em>Figure 2: LangGraph cyclic state machine lifecycle showing the primary execution rail, adaptive recovery detours (blindspot compensation & self-repair), and terminal resolution outcomes. <a href="docs/state-machine-diagram.html">Open interactive view &rarr;</a></em>
+</p>
 
 ---
 

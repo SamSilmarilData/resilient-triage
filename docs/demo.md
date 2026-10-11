@@ -10,6 +10,10 @@ This guide provides the complete narrative, technical depth, and step-by-step pr
 > 
 > *`resilient-triage` is an autonomous SRE incident triage gateway engineered to **never hang, never crash, and gracefully compensate** when upstream systems are on fire. It combines **LangGraph cyclic state machines**, **Groq LPUs**, **Redis 8 RediSearch HNSW vector caching**, and **Pybreaker circuit breakers** to deliver sub-2ms cache hits and guaranteed sub-1.3s fault-tolerant incident reports."*
 
+> 🗺️ **Interactive Visual Schematics**:
+> - [System Architecture Map (Dual-Engine Cache & Probes)](architecture-diagram.html)
+> - [LangGraph Resilience Lifecycle (Compensatory Detours & Self-Repair)](state-machine-diagram.html)
+
 ---
 
 ## ⏱️ Step-by-Step Presentation Script (The 5 Acts)

@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Resilient Triage System Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --color-paper:       #09090b;
+      --color-paper-2:     #18181b;
+      --color-ink:         #fafafa;
+      --color-ink-strong:  #ffffff;
+      --color-muted:       #a1a1aa;
+      --color-soft:        #858591;
+      --color-rule:        rgba(250, 250, 250, 0.12);
+      --color-rule-solid:  #27272a;
+      --color-accent:      #a78bfa;
+      --color-accent-tint: rgba(167, 139, 250, 0.10);
+      --color-link:        #818cf8;
+      --font-sans:   'Inter', system-ui, sans-serif;
+      --font-serif:  'Instrument Serif', Georgia, serif;
+      --font-mono:   'JetBrains Mono', monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      min-height: 100vh;
+      padding: 3rem 2rem;
+      color: var(--color-ink);
+    }
+
+    .container { max-width: 1120px; margin: 0 auto; }
+
+    .nav-tabs {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+
+    .nav-tab {
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .nav-tab.active {
+      background: rgba(167, 139, 250, 0.15);
+      border: 1px solid var(--color-accent);
+      color: var(--color-ink-strong);
+      font-weight: 500;
+    }
+
+    .nav-tab.inactive {
+      background: var(--color-paper-2);
+      border: 1px solid var(--color-rule);
+      color: var(--color-muted);
+    }
+    .nav-tab.inactive:hover {
+      border-color: var(--color-accent);
+      color: var(--color-ink-strong);
+    }
+
+    .header { margin-bottom: 2rem; }
+
+    .header-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: 2.85rem;
+      font-weight: 400;
+      color: var(--color-ink-strong);
+      line-height: 1.1;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      color: var(--color-muted);
+      max-width: 74ch;
+    }
+
+    .diagram-container {
+      background: transparent;
+      border: none;
+      padding: 0;
+      overflow-x: auto;
+    }
+
+    svg {
+      width: 100%;
+      min-width: 1040px;
+      display: block;
+    }
+
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 0.9fr;
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    @media (max-width: 768px) {
+      .cards { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--color-paper-2);
+      border: 1px solid var(--color-rule);
+      border-radius: 6px;
+      padding: 1.25rem;
+    }
+
+    .card-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .card-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .card-dot.accent { background: var(--color-accent); }
+    .card-dot.link { background: var(--color-link); }
+    .card-dot.muted { background: var(--color-muted); }
+
+    .card h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--color-ink-strong);
+    }
+
+    .card ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+
+    .card li {
+      font-size: 0.8rem;
+      line-height: 1.45;
+      color: var(--color-muted);
+    }
+
+    .card li strong {
+      color: var(--color-ink);
+      font-weight: 500;
+    }
+
+    .footer {
+      margin-top: 2.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--color-rule);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--color-soft);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="nav-tabs">
+      <span class="nav-tab active">System Topology Overview</span>
+      <a href="state-machine-diagram.html" class="nav-tab inactive">LangGraph State Machine &amp; Recovery Lifecycle &rarr;</a>
+    </div>
+
+    <div class="header">
+      <p class="header-eyebrow">Architecture System Map · Diagram Design</p>
+      <h1>Resilient Incident Triage Architecture</h1>
+      <p class="subtitle">Complete fault-tolerant topology: dual-engine semantic vector caching (Redis 8 &amp; NumPy fallback), dynamic 300s/60s TTLs, post-probe blindspot bridging, and self-repairing LangGraph inference.</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1040 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="triage-arch-title triage-arch-desc">
+        <title id="triage-arch-title">Resilient Triage System Architecture</title>
+        <desc id="triage-arch-desc">Architecture diagram showing incident ingestion routing to a fast Redis semantic cache highway or falling through to a LangGraph cyclic agent guarded by circuit breakers and Pydantic validation.</desc>
+
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#a1a1aa"/>
+          </marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#a78bfa"/>
+          </marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#818cf8"/>
+          </marker>
+        </defs>
+
+        <!-- Canvas Background -->
+        <rect width="100%" height="100%" fill="#09090b"/>
+
+        <!-- ── Tier Zones (painted before arrows & nodes) ─────────────── -->
+        <!-- Zone 1: Cache & Vector Tier -->
+        <rect x="32" y="96" width="368" height="280" rx="8" fill="rgba(250, 250, 250, 0.02)" stroke="rgba(250, 250, 250, 0.10)" stroke-width="0.8"/>
+        <rect x="44" y="100" width="136" height="12" rx="2" fill="#09090b"/>
+        <text x="112" y="109" fill="#858591" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.14em">CACHE &amp; VECTOR TIER</text>
+
+        <!-- Zone 2: Resilient Orchestration & Telemetry Tier -->
+        <rect x="428" y="96" width="368" height="280" rx="8" fill="rgba(250, 250, 250, 0.02)" stroke="rgba(250, 250, 250, 0.10)" stroke-width="0.8"/>
+        <rect x="440" y="100" width="168" height="12" rx="2" fill="#09090b"/>
+        <text x="524" y="109" fill="#858591" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.14em">RESILIENT ORCHESTRATION</text>
+
+        <!-- Zone 3: Contract & Validation Tier -->
+        <rect x="828" y="96" width="176" height="280" rx="8" fill="rgba(250, 250, 250, 0.02)" stroke="rgba(250, 250, 250, 0.10)" stroke-width="0.8"/>
+        <rect x="840" y="100" width="152" height="12" rx="2" fill="#09090b"/>
+        <text x="916" y="109" fill="#858591" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.14em">CONTRACT &amp; VALIDATION</text>
+
+        <!-- ── Connectors (painted before nodes) ──────────────────────── -->
+        <!-- 1. Gateway -> FastEmbed -->
+        <line x1="180" y1="176" x2="244" y2="176" stroke="#818cf8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+        <!-- 2. FastEmbed -> Redis 8 Cache -->
+        <line x1="312" y1="212" x2="312" y2="284" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- 3. Fast Path Highway: Redis 8 -> SRE Report (<20ms hit) -->
+        <line x1="244" y1="320" x2="180" y2="320" stroke="#a78bfa" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+
+        <!-- 4. Cache Miss -> LangGraph Machine (Clean straight horizontal) -->
+        <line x1="380" y1="320" x2="444" y2="320" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- 5. LangGraph Machine -> Circuit Sentinel (Guarded probe request) -->
+        <line x1="488" y1="284" x2="488" y2="212" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- 6. Circuit Sentinel -> Upstream Probes -->
+        <line x1="580" y1="176" x2="644" y2="176" stroke="#818cf8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+        <!-- 7. Upstream Probes -> LangGraph Machine (Telemetry signals return) -->
+        <path d="M 696,212 V 240 Q 696,248 688,248 H 544 Q 536,248 536,256 V 284" fill="none" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- 8. LangGraph Machine -> Groq LPU Engine (Inference call) -->
+        <line x1="580" y1="320" x2="644" y2="320" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- 9. Groq LPU Engine -> Pydantic Guard (Raw JSON payload) -->
+        <line x1="780" y1="320" x2="844" y2="320" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- 10. Pydantic Guard -> Groq LPU Engine (1-Shot Self-Repair Loop) -->
+        <path d="M 900,284 V 256 Q 900,248 892,248 H 732 Q 724,248 724,256 V 284" fill="none" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrow-accent)"/>
+
+        <!-- 11. Validated Report Egress & Cache Persistence -->
+        <path d="M 900,356 V 384 Q 900,392 892,392 H 120 Q 112,392 112,384 V 356" fill="none" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <!-- Cache Commit Branch: upward tap into Redis 8 -->
+        <line x1="312" y1="392" x2="312" y2="360" stroke="#a1a1aa" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- ── Arrow Labels (with opaque mask & visible gap) ───────────── -->
+        <!-- Label 1: INGEST -->
+        <rect x="194" y="156" width="36" height="12" rx="2" fill="#09090b"/>
+        <text x="212" y="165" fill="#818cf8" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">INGEST</text>
+
+        <!-- Label 2: 384D EMBED -->
+        <rect x="324" y="242" width="60" height="12" rx="2" fill="#09090b"/>
+        <text x="354" y="251" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">384D EMBED</text>
+
+        <!-- Label 3: <20MS HIT (Focal Accent) -->
+        <rect x="186" y="300" width="52" height="12" rx="2" fill="#09090b"/>
+        <text x="212" y="309" fill="#a78bfa" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">&lt;20MS HIT</text>
+
+        <!-- Label 4: CACHE MISS -->
+        <rect x="386" y="300" width="52" height="12" rx="2" fill="#09090b"/>
+        <text x="412" y="309" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">MISS</text>
+
+        <!-- Label 5: GUARDED -->
+        <rect x="436" y="242" width="46" height="12" rx="2" fill="#09090b"/>
+        <text x="459" y="251" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">GUARDED</text>
+
+        <!-- Label 6: HTTP PROBE -->
+        <rect x="586" y="156" width="52" height="12" rx="2" fill="#09090b"/>
+        <text x="612" y="165" fill="#818cf8" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PROBE</text>
+
+        <!-- Label 7: TELEMETRY -->
+        <rect x="586" y="242" width="58" height="12" rx="2" fill="#09090b"/>
+        <text x="615" y="251" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">TELEMETRY</text>
+
+        <!-- Label 8: INFER -->
+        <rect x="592" y="300" width="40" height="12" rx="2" fill="#09090b"/>
+        <text x="612" y="309" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">INFER</text>
+
+        <!-- Label 9: RAW JSON -->
+        <rect x="786" y="300" width="52" height="12" rx="2" fill="#09090b"/>
+        <text x="812" y="309" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RAW JSON</text>
+
+        <!-- Label 10: RETRY < 2 (Self-Repair Loop) -->
+        <rect x="778" y="242" width="60" height="12" rx="2" fill="#09090b"/>
+        <text x="808" y="251" fill="#a78bfa" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RETRY &lt; 2</text>
+
+        <!-- Label 11: VALIDATED & PERSIST (300S/60S TTL) -->
+        <rect x="236" y="402" width="140" height="12" rx="2" fill="#09090b"/>
+        <text x="306" y="411" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PERSIST (300S/60S TTL)</text>
+
+        <rect x="556" y="386" width="96" height="12" rx="2" fill="#09090b"/>
+        <text x="604" y="395" fill="#858591" font-size="8" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.06em">VALIDATED EGRESS</text>
+
+        <!-- ── Node 1: FastAPI Gateway ───────────────────────────────── -->
+        <rect x="44" y="140" width="136" height="72" rx="6" fill="#09090b"/>
+        <rect x="44" y="140" width="136" height="72" rx="6" fill="#18181b" stroke="#fafafa" stroke-width="1"/>
+        <rect x="52" y="148" width="36" height="12" rx="2" fill="transparent" stroke="rgba(250, 250, 250, 0.40)" stroke-width="0.8"/>
+        <text x="70" y="157" fill="#fafafa" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATEWAY</text>
+        <text x="112" y="176" fill="#fafafa" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">FastAPI Gateway</text>
+        <text x="112" y="194" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">POST /triage · Ingress</text>
+
+        <!-- ── Node 2: FastEmbed Engine ──────────────────────────────── -->
+        <rect x="244" y="140" width="136" height="72" rx="6" fill="#09090b"/>
+        <rect x="244" y="140" width="136" height="72" rx="6" fill="#18181b" stroke="#fafafa" stroke-width="1"/>
+        <rect x="252" y="148" width="30" height="12" rx="2" fill="transparent" stroke="rgba(250, 250, 250, 0.40)" stroke-width="0.8"/>
+        <text x="267" y="157" fill="#fafafa" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ONNX</text>
+        <text x="312" y="176" fill="#fafafa" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">FastEmbed Engine</text>
+        <text x="312" y="194" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">384d · Scope Prefixing</text>
+
+        <!-- ── Node 3: Redis 8 RediSearch (FOCAL ACCENT 1) ───────────── -->
+        <rect x="244" y="284" width="136" height="76" rx="6" fill="#09090b"/>
+        <rect x="244" y="284" width="136" height="76" rx="6" fill="rgba(167, 139, 250, 0.10)" stroke="#a78bfa" stroke-width="1"/>
+        <rect x="252" y="292" width="36" height="12" rx="2" fill="transparent" stroke="rgba(167, 139, 250, 0.50)" stroke-width="0.8"/>
+        <text x="270" y="301" fill="#a78bfa" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CACHE</text>
+        <text x="372" y="348" fill="rgba(167, 139, 250, 0.12)" font-size="28" font-weight="600" font-family="'JetBrains Mono', monospace" text-anchor="end">01</text>
+        <text x="312" y="322" fill="#ffffff" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Redis 8 / NumPy</text>
+        <text x="312" y="340" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">HNSW &ge;0.90 · Dual Engine</text>
+
+        <!-- ── Node 4: SRE Incident Report (STORE / EGRESS) ───────────── -->
+        <rect x="44" y="284" width="136" height="72" rx="6" fill="#09090b"/>
+        <rect x="44" y="284" width="136" height="72" rx="6" fill="rgba(250, 250, 250, 0.05)" stroke="#a1a1aa" stroke-width="1"/>
+        <rect x="52" y="292" width="36" height="12" rx="2" fill="transparent" stroke="rgba(161, 161, 170, 0.40)" stroke-width="0.8"/>
+        <text x="70" y="301" fill="#a1a1aa" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">REPORT</text>
+        <text x="112" y="320" fill="#fafafa" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">SRE Triage Report</text>
+        <text x="112" y="338" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">Structured Action Plan</text>
+
+        <!-- ── Node 5: Circuit Sentinel (SECURITY TREATMENT) ──────────── -->
+        <rect x="444" y="140" width="136" height="72" rx="6" fill="#09090b"/>
+        <rect x="444" y="140" width="136" height="72" rx="6" fill="rgba(167, 139, 250, 0.05)" stroke="rgba(167, 139, 250, 0.50)" stroke-width="1" stroke-dasharray="4,4"/>
+        <rect x="452" y="148" width="44" height="12" rx="2" fill="transparent" stroke="rgba(167, 139, 250, 0.40)" stroke-width="0.8"/>
+        <text x="474" y="157" fill="#a78bfa" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">BREAKER</text>
+        <text x="512" y="176" fill="#fafafa" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Circuit Sentinel</text>
+        <text x="512" y="194" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">Pybreaker + Jitter</text>
+
+        <!-- ── Node 6: Upstream Probes (EXTERNAL TREATMENT) ───────────── -->
+        <rect x="644" y="140" width="136" height="72" rx="6" fill="#09090b"/>
+        <rect x="644" y="140" width="136" height="72" rx="6" fill="rgba(250, 250, 250, 0.03)" stroke="rgba(250, 250, 250, 0.30)" stroke-width="1"/>
+        <rect x="652" y="148" width="36" height="12" rx="2" fill="transparent" stroke="rgba(250, 250, 250, 0.25)" stroke-width="0.8"/>
+        <text x="670" y="157" fill="#858591" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROBES</text>
+        <text x="712" y="176" fill="#fafafa" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Upstream Probes</text>
+        <text x="712" y="194" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">Statuspage · Chaos API</text>
+
+        <!-- ── Callout Card in Col 5 Top (EDITORIAL ANNOTATION) ───────── -->
+        <rect x="844" y="140" width="144" height="72" rx="6" fill="#18181b" stroke="rgba(250, 250, 250, 0.15)" stroke-width="0.8"/>
+        <rect x="852" y="148" width="44" height="12" rx="2" fill="transparent" stroke="rgba(250, 250, 250, 0.30)" stroke-width="0.8"/>
+        <text x="874" y="157" fill="#858591" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">POLICY</text>
+        <text x="852" y="174" fill="#ffffff" font-size="10.5" font-weight="600" font-family="'Inter', sans-serif">Strict Validation</text>
+        <text x="852" y="190" fill="#a1a1aa" font-size="8" font-family="'JetBrains Mono', monospace">&bull; extra="forbid" contract</text>
+        <text x="852" y="202" fill="#a1a1aa" font-size="8" font-family="'JetBrains Mono', monospace">&bull; 2 repair loops &rarr; P0</text>
+
+        <!-- ── Node 7: LangGraph Machine (FOCAL ACCENT 2) ─────────────── -->
+        <rect x="444" y="284" width="136" height="76" rx="6" fill="#09090b"/>
+        <rect x="444" y="284" width="136" height="76" rx="6" fill="rgba(167, 139, 250, 0.10)" stroke="#a78bfa" stroke-width="1"/>
+        <rect x="452" y="292" width="40" height="12" rx="2" fill="transparent" stroke="rgba(167, 139, 250, 0.50)" stroke-width="0.8"/>
+        <text x="472" y="301" fill="#a78bfa" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GRAPH</text>
+        <text x="572" y="348" fill="rgba(167, 139, 250, 0.12)" font-size="28" font-weight="600" font-family="'JetBrains Mono', monospace" text-anchor="end">02</text>
+        <text x="512" y="322" fill="#ffffff" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">LangGraph Machine</text>
+        <text x="512" y="340" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">Cyclic State Machine</text>
+
+        <!-- ── Node 8: Groq LPU Engine (EXTERNAL INFERENCE) ───────────── -->
+        <rect x="644" y="284" width="136" height="76" rx="6" fill="#09090b"/>
+        <rect x="644" y="284" width="136" height="76" rx="6" fill="rgba(250, 250, 250, 0.03)" stroke="rgba(250, 250, 250, 0.30)" stroke-width="1"/>
+        <rect x="652" y="292" width="44" height="12" rx="2" fill="transparent" stroke="rgba(250, 250, 250, 0.25)" stroke-width="0.8"/>
+        <text x="674" y="301" fill="#858591" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">LPUS</text>
+        <text x="712" y="322" fill="#fafafa" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Groq LPU Engine</text>
+        <text x="712" y="340" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">qwen3.8-27b · Failover</text>
+
+        <!-- ── Node 9: Pydantic Guard (BACKEND CONTRACT) ──────────────── -->
+        <rect x="844" y="284" width="144" height="76" rx="6" fill="#09090b"/>
+        <rect x="844" y="284" width="144" height="76" rx="6" fill="#18181b" stroke="#fafafa" stroke-width="1"/>
+        <rect x="852" y="292" width="48" height="12" rx="2" fill="transparent" stroke="rgba(250, 250, 250, 0.40)" stroke-width="0.8"/>
+        <text x="876" y="301" fill="#fafafa" font-size="7" font-family="'JetBrains Mono', monospace" text-anchor="middle" letter-spacing="0.08em">VALIDATE</text>
+        <text x="916" y="322" fill="#fafafa" font-size="12" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Pydantic Guard</text>
+        <text x="916" y="340" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace" text-anchor="middle">extra="forbid" · 4-Way</text>
+
+        <!-- ── Legend Strip (horizontal bottom strip) ────────────────── -->
+        <line x1="40" y1="472" x2="1000" y2="472" stroke="rgba(250, 250, 250, 0.12)" stroke-width="0.8"/>
+        <text x="48" y="498" fill="#a1a1aa" font-size="8" font-family="'JetBrains Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+        <!-- Item 1: Focal Core -->
+        <rect x="120" y="490" width="14" height="10" rx="2" fill="rgba(167, 139, 250, 0.15)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="142" y="498" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace">Focal Core</text>
+
+        <!-- Item 2: Backend / Contract -->
+        <rect x="238" y="490" width="14" height="10" rx="2" fill="#18181b" stroke="#fafafa" stroke-width="1"/>
+        <text x="260" y="498" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace">Internal Engine</text>
+
+        <!-- Item 3: Resilience Boundary -->
+        <rect x="388" y="490" width="14" height="10" rx="2" fill="transparent" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="410" y="498" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace">Resilience Boundary</text>
+
+        <!-- Item 4: External / Probe -->
+        <rect x="562" y="490" width="14" height="10" rx="2" fill="rgba(250, 250, 250, 0.05)" stroke="rgba(250, 250, 250, 0.30)" stroke-width="1"/>
+        <text x="584" y="498" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace">External Service</text>
+
+        <!-- Item 5: Sub-20ms Shortcut Flow -->
+        <line x1="710" y1="495" x2="736" y2="495" stroke="#a78bfa" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+        <text x="746" y="498" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace">&lt;20ms Fast Route</text>
+
+        <!-- Item 6: External HTTP Conduit -->
+        <line x1="880" y1="495" x2="906" y2="495" stroke="#818cf8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+        <text x="916" y="498" fill="#a1a1aa" font-size="9" font-family="'JetBrains Mono', monospace">HTTP / Probe API</text>
+
+      </svg>
+    </div>
+
+    <!-- ── Summary Cards Pattern ───────────────────────────────────── -->
+    <div class="cards">
+      <div class="card">
+        <p class="card-eyebrow">Tier 1 · Cache Interceptor</p>
+        <div class="card-header">
+          <span class="card-dot accent"></span>
+          <h3>Sub-20ms Dual-Engine Cache</h3>
+        </div>
+        <ul>
+          <li><strong>Contextual Scope:</strong> Prepend <code>[scope: service]</code> before FastEmbed ONNX 384d vectorization.</li>
+          <li><strong>Dual Engine:</strong> Primary Redis 8 RediSearch HNSW (sim &ge; 0.90); fallback NumPy dot-product (0.015ms).</li>
+          <li><strong>Differential TTL:</strong> 300s healthy TTL; 60s degraded TTL for rapid upstream recovery re-evaluation.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="card-eyebrow">Tier 2 · Orchestration &amp; Guards</p>
+        <div class="card-header">
+          <span class="card-dot link"></span>
+          <h3>Post-Probe Blindspot Bridging</h3>
+        </div>
+        <ul>
+          <li><strong>Pybreaker Sentinels:</strong> Concurrent <code>asyncio.gather</code> isolates failing Statuspage/Chaos probes.</li>
+          <li><strong>Historical Compensation:</strong> Tripped breakers query cache at 0.70 similarity to inject prior resolutions.</li>
+          <li><strong>Degraded Marking:</strong> Flags <code>is_degraded = True</code> and appends <code>CIRCUIT_BREAKER_OPEN</code> signal.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="card-eyebrow">Tier 3 · Reasoning &amp; Contracts</p>
+        <div class="card-header">
+          <span class="card-dot muted"></span>
+          <h3>Strict Schema &amp; 4-Way Routing</h3>
+        </div>
+        <ul>
+          <li><strong>Groq Quota Failover:</strong> Intercepts HTTP 429 and fails over to secondary models automatically.</li>
+          <li><strong>Pydantic v2 Contract:</strong> Enforces <code>extra="forbid"</code>; extracts tracebacks for 1-shot self-repair.</li>
+          <li><strong>4-Way Routing:</strong> Routes to Pass, Confidence Reflection (&lt;0.60), Self-Repair (&lt;2 retries), or Fallback P0.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>Resilient Triage · Profile: resilient-triage</span>
+      <span>Engine: LangGraph 0.2+ · FastAPI · Redis 8</span>
+    </div>
+  </div>
+</body>
+</html>

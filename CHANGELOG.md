@@ -5,6 +5,27 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-12 — Editorial Vector Visualizations & Documentation Upgrade
+
+### Added
+- **System Architecture Visual Schematics**:
+  - `docs/architecture-diagram.svg` & `docs/architecture-diagram.html`: High-fidelity, skinnable 5-column, 3-tier system topology map illustrating sub-20ms dual-engine vector caching highway, guarded telemetry probing loop, Groq LPU inference with quota failover, and strict contract validation.
+- **LangGraph State Machine & Resilience Lifecycle Map**:
+  - `docs/state-machine-diagram.svg` & `docs/state-machine-diagram.html`: 3-band Lifecycle Phase Map capturing the primary execution rail (happy path), adaptive recovery detours (Cache 0.70 blindspot compensation and Pydantic self-repair loops), and terminal resolution outcomes (`finalize_report`, `fallback_report`).
+- **Interactive Navigation & Responsive Summary Cards**:
+  - Standalone HTML views with responsive navigation tabs, editorial summary cards, and dark console styling matching the SRE console theme (`#09090b` canvas, `#18181b` containers, `#fafafa` ink, `#a78bfa` accent).
+- **Client Design Profile**:
+  - `.diagram-design`: Configured project profile marker pointing to `resilient-triage` design tokens.
+
+### Changed
+- **Documentation Overhaul**:
+  - `README.md`: Replaced generic Mermaid flowchart with native SVG embed of the system architecture topology and added a dedicated LangGraph lifecycle diagram section.
+  - `docs/architecture.md`: Replaced Mermaid blocks in Section 2 and Section 5 with vector diagram embeddings and interactive view links.
+  - `docs/resilience.md`: Replaced overview Mermaid flowchart in Section 1 with the complete state machine lifecycle diagram while preserving the 3-state Pybreaker finite state machine as a micro-spec in Section 2.
+  - `docs/demo.md`: Added direct visual architecture schematic links in the executive pitch section.
+
+---
+
 ## [1.2.0] - 2026-10-10 — Comprehensive Documentation, MADR ADRs, API Reference, & Groq Quota Tracking
 
 ### Added
