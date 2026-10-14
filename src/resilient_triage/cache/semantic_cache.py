@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -33,8 +34,9 @@ def format_scoped_query(query: str, service_filter: str | None = None) -> str:
     """
     clean_q = query.strip()
     if service_filter and service_filter.strip():
-        scope = service_filter.strip().lower()
-        return f"[scope: {scope}] {clean_q}"
+        scope = re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
+        if scope:
+            return f"[scope: {scope}] {clean_q}"
     return clean_q
 
 
@@ -58,12 +60,14 @@ class InMemoryVectorEntry:
         report_json: str,
         vector: np.ndarray,
         expires_at: float,
+        service_scope: str = "",
     ) -> None:
         self.doc_id = doc_id
         self.query = query
         self.report_json = report_json
         self.vector = vector
         self.expires_at = expires_at
+        self.service_scope = service_scope
 
 
 class SemanticCacheManager:
@@ -82,6 +86,7 @@ class SemanticCacheManager:
         default_ttl: int | None = None,
         degraded_ttl: int | None = None,
         embedding_provider: BaseEmbeddingProvider | None = None,
+        max_capacity: int = 10000,
     ) -> None:
         self.redis_url = redis_url or settings.redis_url
         self.similarity_threshold = (
@@ -94,6 +99,7 @@ class SemanticCacheManager:
             degraded_ttl if degraded_ttl is not None else settings.cache_degraded_ttl_seconds
         )
         self.embedding_provider = embedding_provider or get_embedding_provider()
+        self.max_capacity = max_capacity
 
         self._redis: aioredis.Redis | None = None
         self._has_redisearch: bool = False
@@ -186,7 +192,7 @@ class SemanticCacheManager:
         if not self._redis:
             return
         try:
-            keys = await self._redis.keys(f"{self.DOC_PREFIX}*")
+            keys = [k async for k in self._redis.scan_iter(match=f"{self.DOC_PREFIX}*", count=100)]
             if not keys:
                 return
 
@@ -199,6 +205,7 @@ class SemanticCacheManager:
                     doc_id = key.decode("utf-8").replace(self.DOC_PREFIX, "")
                     query = data.get(b"query", b"").decode("utf-8")
                     report_json = data.get(b"report", b"").decode("utf-8")
+                    service_scope = data.get(b"service_scope", b"").decode("utf-8")
                     vec_bytes = data[b"vector"]
                     vec_arr = np.frombuffer(vec_bytes, dtype=np.float32)
                     ttl = await self._redis.ttl(key)
@@ -210,6 +217,7 @@ class SemanticCacheManager:
                         report_json=report_json,
                         vector=vec_arr,
                         expires_at=expires_at,
+                        service_scope=service_scope,
                     )
                 except Exception as doc_err:
                     logger.debug("Failed to hydrate document key %s: %s", key, doc_err)
@@ -223,7 +231,7 @@ class SemanticCacheManager:
         if not self._redis or not self._has_redisearch:
             return
 
-        from redis.commands.search.field import TextField, VectorField
+        from redis.commands.search.field import TagField, TextField, VectorField
         from redis.commands.search.index_definition import IndexDefinition, IndexType
 
         try:
@@ -233,7 +241,7 @@ class SemanticCacheManager:
             try:
                 schema = (
                     TextField("query"),
-                    TextField("service_scope"),
+                    TagField("service_scope"),
                     VectorField(
                         "vector",
                         "HNSW",
@@ -299,6 +307,7 @@ class SemanticCacheManager:
 
         start_time = time.monotonic()
         effective_threshold = threshold if threshold is not None else self.similarity_threshold
+        target_scope = re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower()) if service_filter and service_filter.strip() else ""
         scoped_q = format_scoped_query(query, service_filter)
 
         # 1. Generate query embedding
@@ -307,16 +316,22 @@ class SemanticCacheManager:
         # 2. Search RediSearch index if available
         if self._redis and self._has_redisearch:
             try:
-                match = await self._search_redisearch(scoped_q, query_vec, effective_threshold, start_time)
+                match = await self._search_redisearch(
+                    scoped_q, query_vec, effective_threshold, start_time, target_scope=target_scope
+                )
                 if match:
                     return match
-            except Exception as e:
-                logger.warning("RediSearch lookup error: %s. Disconnecting and checking in-memory store.", e)
+            except (aioredis.ConnectionError, aioredis.TimeoutError, ConnectionRefusedError, OSError) as conn_err:
+                logger.warning("RediSearch connection failure: %s. Disconnecting and checking in-memory store.", conn_err)
                 self._redis = None
                 self._has_redisearch = False
+            except Exception as e:
+                logger.warning("RediSearch query execution error: %s. Query falling back to in-memory store without disconnecting Redis.", e)
 
         # 3. Fallback to high-performance in-memory vector search
-        return self._search_in_memory(scoped_q, query_vec, effective_threshold, start_time)
+        return self._search_in_memory(
+            scoped_q, query_vec, effective_threshold, start_time, target_scope=target_scope
+        )
 
     async def _search_redisearch(
         self,
@@ -324,15 +339,24 @@ class SemanticCacheManager:
         query_vec: list[float],
         threshold: float,
         start_time: float,
+        target_scope: str = "",
     ) -> CacheMatch | None:
-        """Query native RediSearch HNSW vector index."""
+        """Query native RediSearch HNSW vector index with strict scope isolation."""
         from redis.commands.search.query import Query
 
         # Cosine distance = 1.0 - cosine_similarity
         query_bytes = np.array(query_vec, dtype=np.float32).tobytes()
 
+        # Strict scope filter: sanitize scope with regex to prevent grammar parsing errors
+        clean_scope = re.sub(r"[^a-zA-Z0-9_\-]", "", target_scope)
+        if clean_scope:
+            safe_scope = clean_scope.replace("-", "\\-")
+            filter_query = f"(@service_scope:{{{safe_scope}}})=>[KNN 1 @vector $vec AS score]"
+        else:
+            filter_query = "*=>[KNN 1 @vector $vec AS score]"
+
         q = (
-            Query(f"*=>[KNN 1 @vector $vec AS score]")
+            Query(filter_query)
             .sort_by("score")
             .return_fields("query", "report", "score")
             .paging(0, 1)
@@ -367,21 +391,34 @@ class SemanticCacheManager:
         query_vec: list[float],
         threshold: float,
         start_time: float,
+        target_scope: str = "",
     ) -> CacheMatch | None:
-        """Query in-memory numpy matrix with vectorized dot product (0.015ms)."""
+        """Query in-memory numpy matrix with vectorized dot product and strict scope filtering."""
         now = time.monotonic()
 
-        # Purge expired entries
-        expired_keys = [k for k, v in self._in_memory_docs.items() if v.expires_at < now]
+        # Purge expired entries safely
+        expired_keys = [k for k, v in list(self._in_memory_docs.items()) if v.expires_at < now]
         for k in expired_keys:
-            del self._in_memory_docs[k]
+            self._in_memory_docs.pop(k, None)
 
         if not self._in_memory_docs:
             return None
 
+        # Filter candidate documents matching requested scope
+        if target_scope:
+            matching_items = [
+                (k, v) for k, v in list(self._in_memory_docs.items())
+                if v.service_scope.lower() == target_scope.lower()
+            ]
+        else:
+            matching_items = list(self._in_memory_docs.items())
+
+        if not matching_items:
+            return None
+
         # Build matrix and compute similarities
-        doc_ids = list(self._in_memory_docs.keys())
-        vectors = np.array([self._in_memory_docs[d].vector for d in doc_ids], dtype=np.float32)
+        doc_ids = [item[0] for item in matching_items]
+        vectors = np.array([item[1].vector for item in matching_items], dtype=np.float32)
         q_arr = np.array(query_vec, dtype=np.float32)
 
         # In normalized vector space, dot product is exact cosine similarity
@@ -429,6 +466,7 @@ class SemanticCacheManager:
         elif self._redis is None:
             await self._ensure_connected()
 
+        target_scope = re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower()) if service_filter and service_filter.strip() else ""
         scoped_q = format_scoped_query(query, service_filter)
         query_vec = self.embedding_provider.embed_query(scoped_q)
 
@@ -447,14 +485,19 @@ class SemanticCacheManager:
         report_json = report.model_dump_json()
         now = time.monotonic()
 
-        # 1. Update in-memory store
+        # 1. Update in-memory store with LRU capacity protection
         vec_arr = np.array(query_vec, dtype=np.float32)
+        if len(self._in_memory_docs) >= self.max_capacity:
+            oldest_key = next(iter(self._in_memory_docs))
+            self._in_memory_docs.pop(oldest_key, None)
+
         self._in_memory_docs[doc_id] = InMemoryVectorEntry(
             doc_id=doc_id,
             query=scoped_q,
             report_json=report_json,
             vector=vec_arr,
             expires_at=now + effective_ttl,
+            service_scope=target_scope,
         )
 
         # 2. Update Redis if connected
@@ -463,7 +506,7 @@ class SemanticCacheManager:
                 redis_key = f"{self.DOC_PREFIX}{doc_id}"
                 mapping = {
                     "query": scoped_q,
-                    "service_scope": service_filter or "",
+                    "service_scope": target_scope,
                     "report": report_json,
                     "vector": vec_arr.tobytes(),
                 }
@@ -479,9 +522,10 @@ class SemanticCacheManager:
         self._in_memory_docs.clear()
         if self._redis:
             try:
-                keys = await self._redis.keys(f"{self.DOC_PREFIX}*")
+                keys = [k async for k in self._redis.scan_iter(match=f"{self.DOC_PREFIX}*", count=100)]
                 if keys:
-                    await self._redis.delete(*keys)
+                    for i in range(0, len(keys), 500):
+                        await self._redis.delete(*keys[i : i + 500])
             except Exception as e:
                 logger.warning("Redis clear error: %s", e)
                 self._redis = None
