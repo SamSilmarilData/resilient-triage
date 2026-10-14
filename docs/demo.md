@@ -82,7 +82,7 @@ This guide provides the complete narrative, technical depth, and step-by-step pr
   1. Click **`🔄 Reset Circuits`** in the chaos controller.
   2. Point to the navbar returning to `HEALTHY` and `CLOSED`.
 * **What to Say**:
-  > *"When upstream systems recover, resetting the circuit immediately restores full state machine capabilities. The entire system is backed by **58 automated unit and integration tests** passing in 4 seconds.*
+  > *"When upstream systems recover, resetting the circuit immediately restores full state machine capabilities. The entire system is backed by **65 automated unit and integration tests** passing in 5 seconds.*
   > 
   > *Thanks for watching, and I'd love to answer any questions about the architecture!"*
 

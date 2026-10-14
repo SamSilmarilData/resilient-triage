@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 import uuid
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -50,6 +51,8 @@ async def lifespan(app: FastAPI):
             "[scope: internal] Internal payment processing failing with 503 service unavailable",
             "GitHub Actions workflows are failing with 503 and high webhook latency",
             "[scope: actions] GitHub Actions workflows are failing with 503 and high webhook latency",
+            "GitHub Actions workflows failing with 503 service unavailable",
+            "GitHub Actions jobs are failing with 503 service unavailable errors",
             "Stripe webhook ingestion failing with 504 gateway timeout",
             "[scope: billing] Stripe webhook ingestion failing with 504 gateway timeout",
             "PostgreSQL primary connection pool exhausted under spike",
@@ -251,7 +254,18 @@ async def probe_chaos():
         ChaosTelemetryResponse: Diagnostic outcome from the internal chaos service.
     """
     client = ChaosClient()
-    return await client.probe()
+    try:
+        return await client.probe()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=f"Chaos probe injected failure: {exc}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chaos probe failed or circuit open: {exc}",
+        )
 
 
 @app.get("/", response_class=HTMLResponse)

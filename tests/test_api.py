@@ -9,7 +9,7 @@ from resilient_triage.api.app import app
 from resilient_triage.cache.semantic_cache import semantic_cache
 from resilient_triage.graph.llm import MockTriageChatModel, groq_quota_tracker, set_triage_llm
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
-from resilient_triage.telemetry.chaos import chaos_manager
+from resilient_triage.telemetry.chaos import ChaosClient, chaos_manager
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -363,4 +363,73 @@ async def test_resilience_reset_clears_llm_quota_counters(client: httpx.AsyncCli
     assert snap_after.total_calls == 0
     assert snap_after.rate_limit_hits == 0
     assert snap_after.failover_events == 0
+
+
+@pytest.mark.asyncio
+async def test_chaos_probe_latency_via_api(client: httpx.AsyncClient):
+    """Verify that POST /chaos/inject with latency_ms slows down GET /chaos/probe."""
+    import time
+
+    # Configure 80ms artificial latency
+    resp = await client.post(
+        "/chaos/inject",
+        json={"active": True, "latency_ms": 80, "inject_503": False, "failure_rate": 0.0},
+    )
+    assert resp.status_code == 200
+
+    start = time.monotonic()
+    probe_resp = await client.get("/chaos/probe")
+    elapsed_ms = (time.monotonic() - start) * 1000.0
+
+    assert probe_resp.status_code == 200
+    data = probe_resp.json()
+    assert data["status"] == "OK"
+    assert data["latency_injected_ms"] == 80
+    assert elapsed_ms >= 70.0
+
+
+@pytest.mark.asyncio
+async def test_chaos_probe_failure_rate_via_api(client: httpx.AsyncClient):
+    """Verify that POST /chaos/inject with failure_rate=1.0 causes GET /chaos/probe to fail with 503."""
+    resp = await client.post(
+        "/chaos/inject",
+        json={"active": True, "failure_rate": 1.0, "inject_503": False, "latency_ms": 0},
+    )
+    assert resp.status_code == 200
+
+    probe_resp = await client.get("/chaos/probe")
+    assert probe_resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_triage_internal_scope_only_targets_chaos(client: httpx.AsyncClient):
+    """Verify that triage requests with service_filter='internal' only target internal chaos telemetry and exclude external Statuspage."""
+    with patch("resilient_triage.telemetry.statuspage.StatuspageClient.fetch_signals") as mock_sp, \
+         patch("resilient_triage.telemetry.chaos.ChaosClient.fetch_signals", wraps=ChaosClient().fetch_signals) as mock_chaos:
+        resp = await client.post(
+            "/triage",
+            json={
+                "query": "Internal API gateway cluster failing with 503 outage and elevated probe latency",
+                "service_filter": "internal",
+                "force_refresh": True,
+            },
+        )
+        assert resp.status_code == 200
+        # StatuspageClient must never be invoked for internal scope
+        mock_sp.assert_not_called()
+        # ChaosClient must be invoked for internal scope
+        assert mock_chaos.called
+
+
+@pytest.mark.asyncio
+async def test_sre_console_renders_html(client: httpx.AsyncClient):
+    """Verify that GET / serves the interactive SRE command center single-page console."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "Resilient Triage" in resp.text
+    assert "Live Architecture Pipeline Simulation" in resp.text
+    assert "CACHE &amp; VECTOR TIER" in resp.text or "CACHE & VECTOR TIER" in resp.text
+    assert "RESILIENT ORCHESTRATION" in resp.text
+    assert "Fast-Path Highway" in resp.text
 
