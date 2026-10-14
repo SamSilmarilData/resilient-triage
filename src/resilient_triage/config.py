@@ -79,6 +79,12 @@ class Settings(BaseSettings):
         description="Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
     )
 
+    # Security & Administration
+    admin_api_key: str | None = Field(
+        default=None,
+        description="Optional secret key required for mutating admin endpoints (X-Admin-Key)",
+    )
+
 
 settings = Settings()
 

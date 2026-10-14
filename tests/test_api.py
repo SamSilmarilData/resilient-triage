@@ -192,9 +192,12 @@ async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient):
     """Verify system degrades gracefully and delivers report when circuit breaker trips."""
     # 1. Force chaos circuit breaker to trip OPEN
     chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    async def _failing_task():
+        raise RuntimeError("Injected downstream failure to trip breaker")
+
     for _ in range(chaos_cb.fail_max):
         with pytest.raises(Exception):
-            await chaos_cb.call(httpx.AsyncClient().get, "http://invalid-url-to-fail")
+            await chaos_cb.call(_failing_task)
     assert chaos_cb.is_open is True
 
     # 2. Trigger triage request through API
@@ -216,9 +219,12 @@ async def test_resilience_status_and_reset(client: httpx.AsyncClient):
     """Verify /resilience/status diagnostics and /resilience/reset recovery."""
     # Trip chaos breaker
     chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    async def _failing_task():
+        raise RuntimeError("Injected downstream failure to trip breaker")
+
     for _ in range(chaos_cb.fail_max):
         with pytest.raises(Exception):
-            await chaos_cb.call(httpx.AsyncClient().get, "http://invalid-url-to-fail")
+            await chaos_cb.call(_failing_task)
 
     # Inspect resilience status
     status_resp = await client.get("/resilience/status")
@@ -432,4 +438,130 @@ async def test_sre_console_renders_html(client: httpx.AsyncClient):
     assert "CACHE &amp; VECTOR TIER" in resp.text or "CACHE & VECTOR TIER" in resp.text
     assert "RESILIENT ORCHESTRATION" in resp.text
     assert "Fast-Path Highway" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_prometheus_metrics_endpoint(client: httpx.AsyncClient):
+    """Verify that GET /metrics returns standard Prometheus exposition format."""
+    resp = await client.get("/metrics")
+    assert resp.status_code == 200
+    assert "text/plain" in resp.headers.get("content-type", "")
+    content = resp.text
+    assert "resilient_triage_requests_total" in content
+    assert "resilient_triage_circuit_breaker_state" in content
+    assert "resilient_triage_cache_entries" in content
+    assert "resilient_triage_llm_rate_limit_hits_total" in content
+
+
+@pytest.mark.asyncio
+async def test_concurrency_semaphore_shedding(client: httpx.AsyncClient, monkeypatch):
+    """Verify that semaphore exhaustion triggers 503 load shedding."""
+    import asyncio
+    import sys
+    import resilient_triage.api.app
+    app_module = sys.modules["resilient_triage.api.app"]
+
+    # Temporarily set semaphore to 0 to simulate full saturation
+    saturated_sem = asyncio.Semaphore(0)
+    monkeypatch.setattr(app_module, "GRAPH_SEMAPHORE", saturated_sem)
+
+    # Patch wait_for timeout to 0.02s for fast test execution
+    orig_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(fut, timeout):
+        return await orig_wait_for(fut, timeout=0.02)
+
+    monkeypatch.setattr(asyncio, "wait_for", fast_wait_for)
+
+    resp = await client.post(
+        "/triage",
+        json={"query": "Sudden traffic spike causing saturating concurrency"},
+    )
+    assert resp.status_code == 503
+    assert "saturated" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_triage_request_payload_bounds_rejection(client: httpx.AsyncClient):
+    """Verify TriageRequest rejects oversized queries or invalid service_filter characters with 422."""
+    # 1. Query too long (>2000 chars)
+    oversized_query = "A" * 2001
+    resp_over = await client.post("/triage", json={"query": oversized_query})
+    assert resp_over.status_code == 422
+
+    # 2. Query too short (<3 chars)
+    resp_under = await client.post("/triage", json={"query": "ab"})
+    assert resp_under.status_code == 422
+
+    # 3. Invalid characters in service_filter
+    resp_bad_filter = await client.post(
+        "/triage",
+        json={"query": "Database connection drop", "service_filter": "db;DROP/TABLE*"},
+    )
+    assert resp_bad_filter.status_code == 422
+
+    # 4. Valid query and clean service_filter succeeds
+    resp_ok = await client.post(
+        "/triage",
+        json={"query": "Database connection drop", "service_filter": "postgres_db-1"},
+    )
+    assert resp_ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
+    """Verify mutating control-plane endpoints enforce X-Admin-Key authentication when configured."""
+    from resilient_triage.config import settings
+
+    # Configure secret admin key
+    monkeypatch.setattr(settings, "admin_api_key", "super_secret_token_42")
+
+    # /chaos/inject rejected without key
+    r1 = await client.post("/chaos/inject", json={"active": True})
+    assert r1.status_code == 401
+    assert "unauthorized" in r1.json()["detail"].lower()
+
+    # /chaos/inject rejected with wrong key
+    r2 = await client.post("/chaos/inject", json={"active": True}, headers={"X-Admin-Key": "wrong"})
+    assert r2.status_code == 401
+
+    # /chaos/inject accepted with valid key
+    r3 = await client.post("/chaos/inject", json={"active": False}, headers={"X-Admin-Key": "super_secret_token_42"})
+    assert r3.status_code == 200
+
+    # /resilience/reset rejected without key
+    r4 = await client.post("/resilience/reset")
+    assert r4.status_code == 401
+
+    # /resilience/reset accepted with valid key
+    r5 = await client.post("/resilience/reset", headers={"X-Admin-Key": "super_secret_token_42"})
+    assert r5.status_code == 200
+
+    # /cache/clear rejected without key
+    r6 = await client.post("/cache/clear")
+    assert r6.status_code == 401
+
+    # /cache/clear accepted with valid key
+    r7 = await client.post("/cache/clear", headers={"X-Admin-Key": "super_secret_token_42"})
+    assert r7.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_telemetry_and_llm_clients():
+    """Verify close_statuspage_client and close_groq_async_client execute safely without error."""
+    from resilient_triage.graph.llm import close_groq_async_client, get_groq_async_client
+    from resilient_triage.telemetry.statuspage import _get_statuspage_client, close_statuspage_client
+
+    # Instantiate clients
+    c1 = _get_statuspage_client()
+    assert not c1.is_closed
+    c2 = get_groq_async_client()
+    assert not c2.is_closed
+
+    # Teardown
+    await close_statuspage_client()
+    assert c1.is_closed
+    await close_groq_async_client()
+    assert c2.is_closed
+
 

@@ -16,11 +16,14 @@ class TriageRequest(BaseModel):
     query: str = Field(
         ...,
         min_length=3,
+        max_length=2000,
         description="Incident description, symptoms, or triage question",
         examples=["GitHub Actions workflows failing with 503 and high webhook latency"],
     )
     service_filter: str | None = Field(
         default=None,
+        max_length=100,
+        pattern=r"^[a-zA-Z0-9_\-\s]+$",
         description="Optional filter for specific service component",
     )
     force_refresh: bool = Field(
