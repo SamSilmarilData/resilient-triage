@@ -42,6 +42,14 @@ def clear_statuspage_cache() -> None:
     _SUMMARY_CACHE.clear()
 
 
+async def close_statuspage_client() -> None:
+    """Close the shared persistent httpx.AsyncClient connection pool."""
+    global _statuspage_async_client
+    if _statuspage_async_client is not None and not _statuspage_async_client.is_closed:
+        await _statuspage_async_client.aclose()
+        _statuspage_async_client = None
+
+
 class StatuspageClient:
     """Async Atlassian Statuspage consumer guarded against network and upstream failures."""
 

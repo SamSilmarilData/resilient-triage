@@ -26,15 +26,11 @@ def analyze_query_node(state: TriageState) -> dict[str, Any]:
     else:
         target_tools = ["statuspage", "chaos"]
 
-    messages = list(state.get("messages", []))
-    if not messages:
-        messages = [HumanMessage(content=f"Triage request: {query}")]
-
     return {
         "query": query,
         "service_filter": service_filter,
         "target_tools": target_tools,
-        "messages": messages,
+        "messages": [],
         "telemetry_signals": [],
         "circuit_breaker_status": {},
         "is_degraded": False,

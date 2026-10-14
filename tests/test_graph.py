@@ -299,7 +299,7 @@ async def test_groq_chat_model_429_failover(mocker):
     model = GroqChatModel(
         api_key="test_key",
         model_name="qwen/qwen3.8-27b",
-        fallback_model="openai/gpt-oss-20b",
+        fallback_model="llama-3.1-8b-instant",
     )
     res = await model.ainvoke([HumanMessage(content="test")])
     assert res.content == '{"summary": "Fallback OK"}'
@@ -330,5 +330,143 @@ async def test_collect_telemetry_dynamic_probe_routing():
     signals_gw = res_gw.get("telemetry_signals", [])
     assert len(signals_gw) == 1
     assert signals_gw[0]["source"] == "api_gateway_probe"
+
+
+def test_validate_report_enforces_remediation_approval_safety():
+    """Verify validate_report_node programmatically overrides mutating actions to requires_approval=True."""
+    from resilient_triage.graph.nodes.validate_report import validate_report_node
+
+    candidate_with_unapproved_remediation = json.dumps({
+        "summary": "Kubernetes worker node pool CPU saturation",
+        "severity": "CRITICAL",
+        "root_cause_analysis": "OOM killer terminating runner processes",
+        "affected_services": [{"service_name": "worker-pool", "impact_level": "Total Outage", "details": "Pods crashing"}],
+        "telemetry_signals": [],
+        "recommended_actions": [
+            {
+                "priority": "P0",
+                "action": "kubectl drain node-pool-primary --delete-emptydir-data --force",
+                "target_system": "Kubelet",
+                "action_type": "remediative",
+                "requires_approval": False,  # Safety violation from LLM
+            },
+            {
+                "priority": "P1",
+                "action": "kubectl top nodes",
+                "target_system": "Monitoring",
+                "action_type": "diagnostic",
+                "requires_approval": False,
+            }
+        ],
+        "degradation_status": "HEALTHY",
+        "circuit_breakers_tripped": [],
+        "confidence_score": 0.95,
+    })
+
+    state = {
+        "candidate_report_raw": candidate_with_unapproved_remediation,
+        "repair_attempts": 0,
+        "circuit_breaker_status": {},
+    }
+
+    result = validate_report_node(state)
+    report = result["final_report"]
+    assert report is not None
+    # Remediative action must be programmatically forced to requires_approval=True
+    assert report.recommended_actions[0].action_type == "remediative"
+    assert report.recommended_actions[0].requires_approval is True
+    # Diagnostic action remains requires_approval=False
+    assert report.recommended_actions[1].action_type == "diagnostic"
+    assert report.recommended_actions[1].requires_approval is False
+
+
+def test_bounded_memory_saver_eviction():
+    """Verify BoundedMemorySaver evicts oldest thread checkpoints when capacity is reached."""
+    from resilient_triage.graph.builder import BoundedMemorySaver
+
+    saver = BoundedMemorySaver(max_threads=2)
+    # Add checkpoints for 4 distinct thread IDs
+    for i in range(4):
+        cfg = {"configurable": {"thread_id": f"thread_{i}", "checkpoint_ns": ""}}
+        saver.put(cfg, {"id": f"chk_{i}", "v": 1, "ts": i, "channel_values": {}}, {}, {})
+
+    # Capacity must not exceed 2
+    assert len(saver.storage) == 2
+    # Only thread_2 and thread_3 should remain
+    assert set(saver.storage.keys()) == {"thread_2", "thread_3"}
+
+
+def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
+    """Verify validate_report_node elevates degradation_status from HEALTHY when breakers are open."""
+    from resilient_triage.graph.nodes.validate_report import validate_report_node
+    from resilient_triage.schemas.incident import DegradationStatus
+
+    raw_json = json.dumps({
+        "summary": "Partial database failover",
+        "severity": "MEDIUM",
+        "root_cause_analysis": "Primary node replication lag",
+        "affected_services": [],
+        "telemetry_signals": [],
+        "recommended_actions": [],
+        "degradation_status": "HEALTHY",  # Hallucinated HEALTHY
+        "circuit_breakers_tripped": [],
+        "confidence_score": 0.85,
+    })
+
+    # 1 breaker open -> PARTIALLY_DEGRADED
+    state_single = {
+        "candidate_report_raw": raw_json,
+        "repair_attempts": 0,
+        "circuit_breaker_status": {"chaos": "open"},
+    }
+    rep_single = validate_report_node(state_single)["final_report"]
+    assert rep_single.degradation_status == DegradationStatus.PARTIALLY_DEGRADED
+    assert rep_single.circuit_breakers_tripped == ["chaos"]
+
+    # 2 breakers open -> SEVERELY_DEGRADED
+    state_double = {
+        "candidate_report_raw": raw_json,
+        "repair_attempts": 0,
+        "circuit_breaker_status": {"chaos": "open", "statuspage": "open"},
+    }
+    rep_double = validate_report_node(state_double)["final_report"]
+    assert rep_double.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+    assert set(rep_double.circuit_breakers_tripped) == {"chaos", "statuspage"}
+
+
+@pytest.mark.asyncio
+async def test_groq_proactive_cooldown_routing(mocker):
+    """Verify GroqChatModel proactively routes to fallback_model during active rate-limit cooldown."""
+    import time
+    from langchain_core.messages import HumanMessage
+    from resilient_triage.graph.llm import GroqChatModel, groq_quota_tracker
+
+    # Set active cooldown window
+    groq_quota_tracker.rate_limit_cooldown_until = time.monotonic() + 10.0
+
+    mock_client = mocker.AsyncMock()
+    mock_resp = mocker.MagicMock(
+        status_code=200,
+        json=lambda: {"choices": [{"message": {"content": '{"summary": "Fallback Cooldown OK"}'}}]},
+    )
+    mock_client.post.return_value = mock_resp
+    mocker.patch("resilient_triage.graph.llm.get_groq_async_client", return_value=mock_client)
+
+    model = GroqChatModel(
+        api_key="test_key",
+        model_name="qwen/qwen3.8-27b",
+        fallback_model="llama-3.1-8b-instant",
+    )
+
+    res = await model.ainvoke([HumanMessage(content="test query")])
+    assert res.content == '{"summary": "Fallback Cooldown OK"}'
+
+    # Must only make 1 call directly to fallback model without touching primary
+    assert mock_client.post.call_count == 1
+    call_payload = mock_client.post.call_args[1]["json"]
+    assert call_payload["model"] == "llama-3.1-8b-instant"
+
+    groq_quota_tracker.reset_counters()
+
 
 

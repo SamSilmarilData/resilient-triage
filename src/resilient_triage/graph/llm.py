@@ -3,6 +3,10 @@
 import json
 import logging
 import os
+import re
+import threading
+import time
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 import httpx
@@ -12,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from resilient_triage.config import settings
+from resilient_triage.schemas.api import LLMQuotaSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +35,12 @@ def get_groq_async_client(timeout: float = 20.0) -> httpx.AsyncClient:
     return _groq_async_client
 
 
-import threading
-from datetime import datetime, timezone
-
-from resilient_triage.schemas.api import LLMQuotaSnapshot
+async def close_groq_async_client() -> None:
+    """Close the shared persistent Groq httpx.AsyncClient connection pool."""
+    global _groq_async_client
+    if _groq_async_client is not None and not _groq_async_client.is_closed:
+        await _groq_async_client.aclose()
+        _groq_async_client = None
 
 
 class GroqQuotaTracker:
@@ -43,7 +50,7 @@ class GroqQuotaTracker:
         self._lock = threading.Lock()
         self.provider: str = "groq"
         self.active_model: str = settings.groq_model
-        self.fallback_model: str = "openai/gpt-oss-20b"
+        self.fallback_model: str = "llama-3.1-8b-instant"
         self.remaining_requests: int | None = None
         self.limit_requests: int | None = None
         self.remaining_tokens: int | None = None
@@ -56,6 +63,7 @@ class GroqQuotaTracker:
         self.last_status: int | None = None
         self.last_error: str | None = None
         self.last_updated: datetime | None = None
+        self.rate_limit_cooldown_until: float = 0.0
 
     def record_response(
         self,
@@ -79,6 +87,18 @@ class GroqQuotaTracker:
                     self.last_error = data.get("error", {}).get("message", resp.text)
                 except Exception:
                     self.last_error = resp.text
+
+                # Parse cooldown or apply default 30s window
+                cooldown_sec = 30.0
+                try:
+                    reset_header = resp.headers.get("x-ratelimit-reset-requests")
+                    if reset_header and isinstance(reset_header, str):
+                        m = re.search(r"(\d+(?:\.\d+)?)\s*s", reset_header)
+                        if m:
+                            cooldown_sec = float(m.group(1))
+                except Exception:
+                    pass
+                self.rate_limit_cooldown_until = time.monotonic() + cooldown_sec
             elif resp.status_code >= 400:
                 try:
                     data = resp.json()
@@ -119,6 +139,12 @@ class GroqQuotaTracker:
             self.rate_limit_hits = 0
             self.failover_events = 0
             self.last_error = None
+            self.rate_limit_cooldown_until = 0.0
+
+    def is_primary_rate_limited(self) -> bool:
+        """Return True if primary model is within active rate-limit cooldown window."""
+        with self._lock:
+            return time.monotonic() < self.rate_limit_cooldown_until
 
     def get_snapshot(self) -> LLMQuotaSnapshot:
         with self._lock:
@@ -149,7 +175,7 @@ class GroqChatModel(BaseChatModel):
 
     api_key: str
     model_name: str = "qwen/qwen3.8-27b"
-    fallback_model: str = "openai/gpt-oss-20b"
+    fallback_model: str = "llama-3.1-8b-instant"
     timeout: float = 20.0
 
     def _format_messages(self, messages: List[BaseMessage]) -> list[dict[str, str]]:
@@ -173,12 +199,16 @@ class GroqChatModel(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
+        use_fallback_directly = bool(
+            self.fallback_model and groq_quota_tracker.is_primary_rate_limited()
+        )
+        target_model = self.fallback_model if use_fallback_directly else self.model_name
         payload = {
-            "model": self.model_name,
+            "model": target_model,
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 750,
+            "max_tokens": 2500,
         }
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(
@@ -186,9 +216,9 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            groq_quota_tracker.record_response(resp, model_name=self.model_name)
+            groq_quota_tracker.record_response(resp, model_name=target_model, is_failover=use_fallback_directly)
 
-            if resp.status_code == 429 and self.fallback_model:
+            if resp.status_code == 429 and self.fallback_model and not use_fallback_directly:
                 logger.warning(
                     "Groq rate limit (429) hit for %s; failing over to %s",
                     self.model_name,
@@ -225,12 +255,16 @@ class GroqChatModel(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
+        use_fallback_directly = bool(
+            self.fallback_model and groq_quota_tracker.is_primary_rate_limited()
+        )
+        target_model = self.fallback_model if use_fallback_directly else self.model_name
         payload = {
-            "model": self.model_name,
+            "model": target_model,
             "messages": self._format_messages(messages),
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
-            "max_tokens": 750,
+            "max_tokens": 2500,
         }
 
         from resilient_triage.resilience.retry import with_retry
@@ -243,9 +277,9 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            groq_quota_tracker.record_response(resp, model_name=self.model_name)
+            groq_quota_tracker.record_response(resp, model_name=target_model, is_failover=use_fallback_directly)
 
-            if resp.status_code == 429 and self.fallback_model:
+            if resp.status_code == 429 and self.fallback_model and not use_fallback_directly:
                 logger.warning(
                     "Groq rate limit (429) hit for %s; failing over to %s",
                     self.model_name,
