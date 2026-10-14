@@ -49,3 +49,6 @@ htmlcov/
 skills-lock.json
 AGENTS.md
 CLAUDE.md
+
+# Temporary sqlite/checkpointer sessions
+*.ses

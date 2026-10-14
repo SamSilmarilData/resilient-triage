@@ -169,21 +169,56 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8000", help="Target API base URL")
     args = parser.parse_args()
 
+    import urllib.parse
+    import socket
+    import tempfile
+
     target_url = args.url.rstrip("/")
     server_process = None
 
     if is_server_running(target_url):
         print(f"{CYAN}Detected running server at {target_url}. Running tests directly.{RESET}")
     else:
-        print(f"{YELLOW}No running server found at {target_url}. Launching ephemeral instance...{RESET}")
+        parsed = urllib.parse.urlparse(target_url)
+        target_host = parsed.hostname or "127.0.0.1"
+        target_port = parsed.port or 8000
+
+        # Check if the requested port is already occupied by a different service
+        port_busy = False
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind((target_host, target_port))
+        except OSError:
+            port_busy = True
+
+        if port_busy:
+            # Bind to port 0 to allocate an ephemeral free port
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind((target_host, 0))
+                target_port = sock.getsockname()[1]
+            target_url = f"http://{target_host}:{target_port}"
+            print(f"{YELLOW}Port was occupied by another process. Relocating ephemeral instance to {target_url}...{RESET}")
+        else:
+            print(f"{YELLOW}No running server found at {target_url}. Launching ephemeral instance...{RESET}")
+
+        log_file = tempfile.NamedTemporaryFile(mode="w+", delete=False, prefix="smoke_uvicorn_")
         server_process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "resilient_triage.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "resilient_triage.api.app:app",
+                "--host",
+                target_host,
+                "--port",
+                str(target_port),
+            ],
+            stdout=log_file,
+            stderr=log_file,
         )
-        # Wait for readiness
+        # Wait for readiness (up to 30s to allow cold-start ONNX model initialization)
         ready = False
-        for _ in range(30):
+        for _ in range(60):
             time.sleep(0.5)
             if is_server_running(target_url):
                 ready = True
@@ -192,7 +227,9 @@ def main():
         if not ready:
             if server_process:
                 server_process.terminate()
-            print_fail("Ephemeral server failed to start within 15 seconds.")
+            log_file.seek(0)
+            err_output = log_file.read()
+            print_fail(f"Ephemeral server failed to start within 30 seconds.\n{err_output}")
 
     try:
         run_battery(target_url)

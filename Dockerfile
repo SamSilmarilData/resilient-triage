@@ -19,6 +19,13 @@ COPY scripts/ scripts/
 
 RUN chmod +x scripts/*.sh && pip install --upgrade pip && pip install .
 
+RUN groupadd -g 10001 appuser && \
+    useradd -u 10001 -g appuser -m -s /bin/bash appuser && \
+    mkdir -p /var/run/redis /var/lib/redis /var/log/redis && \
+    chown -R appuser:appuser /app /var/run/redis /var/lib/redis /var/log/redis
+
+USER appuser
+
 EXPOSE 8000 6379
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
