@@ -93,3 +93,61 @@ async def test_circuit_breaker_registry_snapshots_and_reset():
     registry.reset_all()
     assert cb1.current_state == "closed"
     assert cb1.fail_counter == 0
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_half_open_recovery_and_failure(monkeypatch):
+    """Verify half-open probe execution: trial success closes breaker, trial failure re-opens it."""
+    import asyncio
+    registry = CircuitBreakerRegistry()
+    # 0.1s timeout for fast test execution
+    cb = registry.get_or_create("recovery_test_service", fail_max=2, reset_timeout=0.1)
+
+    fail_count = 0
+
+    async def flaky_service():
+        nonlocal fail_count
+        if fail_count < 2:
+            fail_count += 1
+            raise RuntimeError("Outage ongoing")
+        return "recovered"
+
+    # 1. Cause 2 failures to trip breaker to OPEN
+    for _ in range(2):
+        with pytest.raises((RuntimeError, CircuitBreakerError)):
+            await cb.call(flaky_service)
+
+    assert cb.current_state == "open"
+
+    # 2. Before timeout, fast-fails without executing flaky_service
+    with pytest.raises(CircuitBreakerError):
+        await cb.call(flaky_service)
+    assert fail_count == 2
+
+    # 3. Wait for reset timeout (0.12s)
+    await asyncio.sleep(0.12)
+
+    # 4. Trial call executes: flaky_service now succeeds
+    result = await cb.call(flaky_service)
+    assert result == "recovered"
+    assert cb.current_state == "closed"
+    assert cb.fail_counter == 0
+
+    # 5. Now test trial call failure in half-open
+    cb2 = registry.get_or_create("half_open_fail_service", fail_max=1, reset_timeout=0.1)
+
+    async def permanently_dead_service():
+        raise RuntimeError("Service is dead")
+
+    with pytest.raises((RuntimeError, CircuitBreakerError)):
+        await cb2.call(permanently_dead_service)
+
+    assert cb2.current_state == "open"
+    await asyncio.sleep(0.12)
+
+    # Trial call fails
+    with pytest.raises((RuntimeError, CircuitBreakerError)):
+        await cb2.call(permanently_dead_service)
+
+    # Breaker re-opens
+    assert cb2.current_state == "open"

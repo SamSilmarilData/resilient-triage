@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, TypeVar
 
 import pybreaker
@@ -148,12 +148,21 @@ class AsyncCircuitBreaker:
             T: Value returned by func.
 
         Raises:
-            pybreaker.CircuitBreakerError: If breaker is in OPEN state.
+            pybreaker.CircuitBreakerError: If breaker is in OPEN state and timeout not elapsed,
+                or if trial call fails in half-open state.
             BaseException: Any unhandled exception raised by func during execution.
         """
-        # 1. Check state before execution (raises CircuitBreakerError if OPEN and timeout not elapsed)
+        # 1. Check state before execution
         with self.breaker._lock:
-            self.breaker.state.before_call(func, *args, **kwargs)
+            current_st = str(self.breaker.current_state)
+            if current_st == pybreaker.STATE_OPEN:
+                timeout = timedelta(seconds=self.breaker.reset_timeout)
+                opened_at = self.breaker._state_storage.opened_at
+                if opened_at and datetime.now(timezone.utc) < opened_at + timeout:
+                    raise pybreaker.CircuitBreakerError("Timeout not elapsed yet, circuit breaker still open")
+                # Timeout elapsed: transition to half-open trial probe
+                self.breaker.half_open()
+
             for listener in self.breaker.listeners:
                 listener.before_call(self.breaker, func, *args, **kwargs)
 
@@ -163,7 +172,7 @@ class AsyncCircuitBreaker:
         except BaseException as exc:
             # 3. Handle error inside lock
             with self.breaker._lock:
-                self.breaker.state._handle_error(exc)
+                self.breaker.state._handle_error(exc, reraise=False)
             raise
         else:
             # 4. Handle success inside lock
