@@ -50,6 +50,20 @@ class ChaosManager:
 chaos_manager = ChaosManager()
 
 
+def resolve_probe_source(service_hint: str | None = None, query: str | None = None) -> str:
+    """Dynamically determine probe telemetry identifier matching the queried subsystem."""
+    combined = f"{service_hint or ''} {query or ''}".lower()
+    if any(k in combined for k in ["gateway", "ingress", "proxy", "router", "alb", "nginx"]):
+        return "api_gateway_probe"
+    if any(k in combined for k in ["db", "database", "postgres", "sql", "redis", "pool"]):
+        return "postgres_health_probe"
+    if any(k in combined for k in ["pay", "billing", "checkout", "stripe"]):
+        return "payment_service_probe"
+    if any(k in combined for k in ["auth", "token", "jwt", "login", "sso", "session"]):
+        return "auth_service_probe"
+    return "cluster_health_probe"
+
+
 class ChaosClient:
     """Diagnostic probe client guarded by circuit breaker and Tenacity retries."""
 
@@ -78,19 +92,23 @@ class ChaosClient:
             )
 
             if should_fail:
-                dummy_req = httpx.Request("GET", "http://internal-chaos/probe")
+                dummy_req = httpx.Request("GET", "http://internal-cluster/probe")
                 dummy_resp = httpx.Response(503, request=dummy_req, content=b"Service Unavailable")
                 raise httpx.HTTPStatusError(
-                    message="503 Service Unavailable (Injected Chaos Fault)",
+                    message="503 Service Unavailable: upstream connection refused / worker pool saturated",
                     request=dummy_req,
                     response=dummy_resp,
                 )
+
+        details = "Internal cluster service mesh health checks reporting operational status (HTTP 200). Latency nominal."
+        if cfg.active and cfg.latency_ms > 0:
+            details = f"Internal cluster health check reporting elevated transit delay (+{cfg.latency_ms}ms) across service mesh."
 
         return ChaosTelemetryResponse(
             status="OK",
             latency_injected_ms=cfg.latency_ms if cfg.active else 0,
             error_injected=False,
-            details="All internal systems and chaos telemetry operational.",
+            details=details,
         )
 
     async def probe(self) -> ChaosTelemetryResponse:
@@ -107,22 +125,31 @@ class ChaosClient:
         retry_fn = with_retry()(self._execute_probe)
         return await self.circuit_breaker.call(retry_fn)
 
-    async def fetch_signals(self) -> list[TelemetrySignal]:
+    async def fetch_signals(
+        self,
+        service_hint: str | None = None,
+        query: str | None = None,
+    ) -> list[TelemetrySignal]:
         """Fetch telemetry signals with safe fallback for tripped circuit breakers.
 
         Never raises uncaught network errors; catches CircuitBreakerError or unexpected
         exceptions and returns degraded TelemetrySignal instances to protect the agent.
 
+        Args:
+            service_hint: Optional targeted subsystem or service filter.
+            query: Optional incident description query for context-aware probe naming.
+
         Returns:
             list[TelemetrySignal]: Normalized signal observations.
         """
+        source_name = resolve_probe_source(service_hint, query)
         start_time = time.monotonic()
         try:
             resp = await self.probe()
             elapsed_ms = (time.monotonic() - start_time) * 1000.0
             return [
                 TelemetrySignal(
-                    source="chaos_probe",
+                    source=source_name,
                     status=resp.status,
                     latency_ms=round(elapsed_ms, 2),
                     error_rate=0.0,
@@ -134,11 +161,11 @@ class ChaosClient:
             logger.warning("Chaos probe circuit breaker OPEN: %s", cb_err)
             return [
                 TelemetrySignal(
-                    source="chaos_probe",
+                    source=source_name,
                     status="CIRCUIT_OPEN",
                     latency_ms=round(elapsed_ms, 2),
                     error_rate=1.0,
-                    raw_snippet=f"Circuit breaker '{self.circuit_breaker.name}' tripped OPEN; failing fast without hanging.",
+                    raw_snippet=f"Circuit breaker '{self.circuit_breaker.name}' (Cluster Sentinel) tripped OPEN: consecutive failures exceeded threshold ({self.circuit_breaker.fail_max}). Failing fast without hanging.",
                 )
             ]
         except Exception as exc:
@@ -146,10 +173,10 @@ class ChaosClient:
             logger.error("Chaos probe failed after retries: %s", exc)
             return [
                 TelemetrySignal(
-                    source="chaos_probe",
+                    source=source_name,
                     status="UNAVAILABLE",
                     latency_ms=round(elapsed_ms, 2),
                     error_rate=1.0,
-                    raw_snippet=f"Chaos probe error: {exc}",
+                    raw_snippet=f"Cluster health probe check failed: {exc}",
                 )
             ]

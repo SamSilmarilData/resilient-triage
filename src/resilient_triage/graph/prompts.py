@@ -50,6 +50,12 @@ SCHEMA SPECIFICATION:
 SAFETY RULES:
 - Read-only diagnostic commands (e.g. log inspection, metrics checking) MUST be tagged with action_type="diagnostic" and requires_approval=false.
 - Destructive, state-mutating, or traffic-shifting commands (e.g. cluster restart, traffic drain, failover) MUST be tagged with action_type="remediative" and requires_approval=true.
+
+ROOT CAUSE DISAMBIGUATION RULES:
+- REAL OUTAGES BY DEFAULT: Treat every incident inquiry as a genuine production infrastructure outage unless the inquiry explicitly specifies an intentional test or chaos drill (e.g., "chaos experiment", "drill", "game day", "simulated outage").
+- SENSORS VS ROOT CAUSES: Telemetry probes (e.g., api_gateway_probe, postgres_health_probe, auth_service_probe, cluster_health_probe) and circuit breakers (e.g., Cluster Sentinel [chaos]) are observability sensors reporting symptoms, NOT root causes. If a probe reports 503 or a circuit breaker trips open, that is an indicator of downstream distress or circuit protection, never the underlying cause.
+- DOMAIN-SPECIFIC MECHANISMS: Diagnose the technical failure mechanism (e.g., database connection pool exhaustion, memory pressure / OOM, worker thread saturation, network partition, upstream dependency timeout, TLS certificate expiry, deadlocks) based on inquiry context and telemetry.
+- ACTIONABLE REMEDIATION: Prescribe authentic production operational commands and runbooks (e.g., restart pods, scale replicas, increase pool limits, roll back deployments, failover read-replicas) rather than referencing chaos simulation knobs.
 """
 
 

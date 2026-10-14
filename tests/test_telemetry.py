@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock
 
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.schemas.telemetry import ChaosConfig
-from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
+from resilient_triage.telemetry.chaos import (
+    ChaosClient,
+    ChaosManager,
+    resolve_probe_source,
+)
 from resilient_triage.telemetry.statuspage import StatuspageClient
 
 
@@ -177,4 +181,104 @@ async def test_statuspage_client_short_ttl_cache():
     assert mock_client.get.call_count == 1
 
     clear_statuspage_cache()
+
+
+@pytest.mark.asyncio
+async def test_chaos_latency_injection():
+    """Verify that configuring latency_ms introduces actual artificial execution delay."""
+    import time
+
+    mgr = ChaosManager()
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create("test_chaos_latency_cb", fail_max=5)
+    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+
+    mgr.update_config(ChaosConfig(active=True, latency_ms=80, inject_503=False, failure_rate=0.0))
+
+    start = time.monotonic()
+    resp = await client.probe()
+    elapsed_ms = (time.monotonic() - start) * 1000.0
+
+    assert resp.status == "OK"
+    assert resp.latency_injected_ms == 80
+    assert elapsed_ms >= 70.0  # At least 70ms with scheduling margin
+
+
+@pytest.mark.asyncio
+async def test_chaos_failure_rate_probabilistic():
+    """Verify that failure_rate = 1.0 triggers 503 fault via the probabilistic path."""
+    mgr = ChaosManager()
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create("test_chaos_failure_rate_cb", fail_max=5)
+    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+
+    # Injected 503 is false, but failure rate is 100%
+    mgr.update_config(ChaosConfig(active=True, inject_503=False, failure_rate=1.0))
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await client.probe()
+
+    assert exc_info.value.response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_chaos_inactive_ignores_faults():
+    """Verify that when active is False, faults (latency, 503, failure_rate) are not injected."""
+    import time
+
+    mgr = ChaosManager()
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create("test_chaos_inactive_cb", fail_max=5)
+    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+
+    # Active is False even with latency and 503 set
+    mgr.update_config(ChaosConfig(active=False, latency_ms=500, inject_503=True, failure_rate=1.0))
+
+    start = time.monotonic()
+    resp = await client.probe()
+    elapsed_ms = (time.monotonic() - start) * 1000.0
+
+    assert resp.status == "OK"
+    assert resp.latency_injected_ms == 0
+    assert elapsed_ms < 50.0  # Runs immediately without delay
+
+
+def test_resolve_probe_source():
+    """Verify resolve_probe_source dynamically maps subsystem hints to domain probes."""
+    assert resolve_probe_source(service_hint="api_gateway") == "api_gateway_probe"
+    assert resolve_probe_source(query="Ingress router 502 errors") == "api_gateway_probe"
+    assert resolve_probe_source(service_hint="postgres") == "postgres_health_probe"
+    assert resolve_probe_source(query="Database connection pool exhaustion") == "postgres_health_probe"
+    assert resolve_probe_source(service_hint="payment_service") == "payment_service_probe"
+    assert resolve_probe_source(query="Checkout billing webhook timeout") == "payment_service_probe"
+    assert resolve_probe_source(service_hint="auth-service") == "auth_service_probe"
+    assert resolve_probe_source(query="JWT session token validation latency") == "auth_service_probe"
+    assert resolve_probe_source(service_hint="unknown_worker", query="general alert") == "cluster_health_probe"
+    assert resolve_probe_source() == "cluster_health_probe"
+
+
+@pytest.mark.asyncio
+async def test_chaos_fetch_signals_dynamic_attribution():
+    """Verify fetch_signals uses context-aware probe naming and returns authentic error symptoms."""
+    mgr = ChaosManager()
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create("test_dynamic_attribution_cb", fail_max=5)
+    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+
+    # 1. Healthy fetch with DB hint
+    signals = await client.fetch_signals(service_hint="postgres", query="Pool timeout")
+    assert len(signals) == 1
+    assert signals[0].source == "postgres_health_probe"
+    assert signals[0].status == "OK"
+
+    # 2. Inject 503 error - verify symptom contains NO simulator jargon
+    mgr.update_config(ChaosConfig(active=True, inject_503=True))
+    signals_err = await client.fetch_signals(service_hint="gateway", query="Ingress dropping traffic")
+    assert len(signals_err) == 1
+    assert signals_err[0].source == "api_gateway_probe"
+    assert signals_err[0].status == "UNAVAILABLE"
+    # Ensure simulator jargon is eliminated
+    assert "Injected Chaos Fault" not in (signals_err[0].raw_snippet or "")
+    assert "worker pool saturated" in (signals_err[0].raw_snippet or "")
+
 

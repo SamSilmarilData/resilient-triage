@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage
 from resilient_triage.graph.builder import build_triage_graph
 from resilient_triage.graph.llm import MockTriageChatModel, set_triage_llm
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
+from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
 from resilient_triage.schemas.incident import (
@@ -303,4 +304,31 @@ async def test_groq_chat_model_429_failover(mocker):
     res = await model.ainvoke([HumanMessage(content="test")])
     assert res.content == '{"summary": "Fallback OK"}'
     assert mock_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_telemetry_dynamic_probe_routing():
+    """Verify collect_telemetry_node passes incident context to produce domain-specific probe sources."""
+    # Postgres query -> postgres_health_probe
+    state_pg = {
+        "query": "Database connection pool exhausted on orders-db",
+        "service_filter": "postgres",
+        "target_tools": ["chaos"],
+    }
+    res_pg = await collect_telemetry_node(state_pg)
+    signals_pg = res_pg.get("telemetry_signals", [])
+    assert len(signals_pg) == 1
+    assert signals_pg[0]["source"] == "postgres_health_probe"
+
+    # Gateway query -> api_gateway_probe
+    state_gw = {
+        "query": "ALB ingress router dropping HTTP connections",
+        "service_filter": "api-gateway",
+        "target_tools": ["chaos"],
+    }
+    res_gw = await collect_telemetry_node(state_gw)
+    signals_gw = res_gw.get("telemetry_signals", [])
+    assert len(signals_gw) == 1
+    assert signals_gw[0]["source"] == "api_gateway_probe"
+
 

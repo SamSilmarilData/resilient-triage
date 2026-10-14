@@ -23,7 +23,12 @@ async def collect_telemetry_node(state: TriageState) -> dict[str, Any]:
 
     if "chaos" in target_tools:
         ch_client = ChaosClient()
-        tasks.append(ch_client.fetch_signals())
+        tasks.append(
+            ch_client.fetch_signals(
+                service_hint=state.get("service_filter"),
+                query=state.get("query"),
+            )
+        )
         task_names.append("chaos")
 
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
