@@ -192,18 +192,106 @@ def test_triage_request_response_schemas():
 
 
 def test_triage_state_initialization():
-    """Verify LangGraph TriageState dictionary typing."""
+    """Verify LangGraph TriageState dictionary typing and field structure."""
     state: TriageState = {
         "query": "Investigating high webhook error rate",
+        "service_filter": "actions",
+        "target_tools": ["statuspage", "chaos"],
         "messages": [],
         "statuspage_telemetry": None,
         "chaos_telemetry": None,
+        "telemetry_signals": [{"source": "statuspage", "status": "operational"}],
         "circuit_breaker_status": {"statuspage": "CLOSED", "chaos": "CLOSED"},
         "is_degraded": False,
+        "degradation_reason": None,
+        "historical_context": ["Previous similar incident resolved 2 hours ago"],
+        "candidate_report_raw": None,
         "repair_attempts": 0,
+        "refinement_attempts": 0,
         "validation_errors": [],
         "final_report": None,
     }
     assert state["query"] == "Investigating high webhook error rate"
+    assert state["service_filter"] == "actions"
+    assert state["target_tools"] == ["statuspage", "chaos"]
     assert state["circuit_breaker_status"]["statuspage"] == "CLOSED"
     assert state["repair_attempts"] == 0
+    assert state["refinement_attempts"] == 0
+    assert len(state["telemetry_signals"]) == 1
+    assert len(state["historical_context"]) == 1
+
+
+def test_action_recommendation_schema():
+    """Verify ActionRecommendation defaults, safety attributes, and enum validation."""
+    # Default values: priority P1, remediative action_type, requires_approval=False
+    action = ActionRecommendation(
+        action="Restart pods in deployment",
+        target_system="Kubelet",
+    )
+    assert action.priority == PriorityLevel.P1
+    assert action.action_type == "remediative"
+    assert action.requires_approval is False
+
+    # Diagnostic override
+    diag = ActionRecommendation(
+        priority=PriorityLevel.P0,
+        action="kubectl get pods -A",
+        target_system="Kubelet",
+        action_type="diagnostic",
+        requires_approval=False,
+    )
+    assert diag.priority == PriorityLevel.P0
+    assert diag.action_type == "diagnostic"
+    assert diag.requires_approval is False
+
+    # Forbidden extra fields
+    with pytest.raises(ValidationError):
+        ActionRecommendation(
+            action="Check logs",
+            target_system="Logs",
+            hallucinated_property="invalid",
+        )
+
+    # Invalid priority enum
+    with pytest.raises(ValidationError):
+        ActionRecommendation(
+            priority="P99",
+            action="Check logs",
+            target_system="Logs",
+        )
+
+
+def test_service_impact_and_telemetry_signal_schemas():
+    """Verify ServiceImpact and TelemetrySignal strict validation and extra forbid."""
+    impact = ServiceImpact(
+        service_name="PostgreSQL",
+        impact_level="Partial Degradation",
+        details="High connection pool wait time",
+    )
+    assert impact.service_name == "PostgreSQL"
+
+    with pytest.raises(ValidationError):
+        ServiceImpact(
+            service_name="PostgreSQL",
+            impact_level="Down",
+            details="Outage",
+            unexpected_field="disallowed",
+        )
+
+    signal = TelemetrySignal(
+        source="postgres_health_probe",
+        status="OK",
+        latency_ms=12.5,
+        error_rate=0.0,
+        raw_snippet="Connection pool healthy",
+    )
+    assert signal.source == "postgres_health_probe"
+    assert signal.latency_ms == 12.5
+
+    with pytest.raises(ValidationError):
+        TelemetrySignal(
+            source="probe",
+            status="OK",
+            invalid_extra_field=True,
+        )
+

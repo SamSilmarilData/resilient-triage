@@ -1,8 +1,8 @@
-"""Tests for StatuspageClient, ChaosManager, and ChaosClient with resilience guards."""
-
-import pytest
-import httpx
+import time
 from unittest.mock import AsyncMock
+
+import httpx
+import pytest
 
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.schemas.telemetry import ChaosConfig
@@ -186,8 +186,6 @@ async def test_statuspage_client_short_ttl_cache():
 @pytest.mark.asyncio
 async def test_chaos_latency_injection():
     """Verify that configuring latency_ms introduces actual artificial execution delay."""
-    import time
-
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
     cb = registry.get_or_create("test_chaos_latency_cb", fail_max=5)
@@ -224,8 +222,6 @@ async def test_chaos_failure_rate_probabilistic():
 @pytest.mark.asyncio
 async def test_chaos_inactive_ignores_faults():
     """Verify that when active is False, faults (latency, 503, failure_rate) are not injected."""
-    import time
-
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
     cb = registry.get_or_create("test_chaos_inactive_cb", fail_max=5)

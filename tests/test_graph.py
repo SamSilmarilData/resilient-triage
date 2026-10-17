@@ -1,7 +1,10 @@
 """Tests for LangGraph cyclic state machine, self-repair loops, and resilience routing."""
 
 import json
+import time
 import uuid
+
+import httpx
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -16,16 +19,6 @@ from resilient_triage.schemas.incident import (
     IncidentTriageReport,
     SeverityLevel,
 )
-
-
-@pytest.fixture(autouse=True)
-def reset_test_environment():
-    """Reset registry and LLM overrides between tests."""
-    circuit_breaker_registry.reset_all()
-    set_triage_llm(MockTriageChatModel())
-    yield
-    circuit_breaker_registry.reset_all()
-    set_triage_llm(None)
 
 
 
@@ -282,7 +275,6 @@ def test_groq_chat_model_formatting_and_factory():
 @pytest.mark.asyncio
 async def test_groq_chat_model_429_failover(mocker):
     """Verify GroqChatModel automatically fails over to fallback_model on HTTP 429."""
-    import httpx
     from langchain_core.messages import HumanMessage
     from resilient_triage.graph.llm import GroqChatModel
 
@@ -437,7 +429,6 @@ def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
 @pytest.mark.asyncio
 async def test_groq_proactive_cooldown_routing(mocker):
     """Verify GroqChatModel proactively routes to fallback_model during active rate-limit cooldown."""
-    import time
     from langchain_core.messages import HumanMessage
     from resilient_triage.graph.llm import GroqChatModel, groq_quota_tracker
 

@@ -3,6 +3,7 @@
 import asyncio
 import numpy as np
 import pytest
+import pytest_asyncio
 
 from resilient_triage.cache.embeddings import (
     DeterministicEmbeddingProvider,
@@ -18,6 +19,28 @@ from resilient_triage.schemas.incident import (
     IncidentTriageReport,
     SeverityLevel,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def cleanup_cache_instances():
+    """Track and close any SemanticCacheManager instances created during tests to prevent socket leaks."""
+    created: list[SemanticCacheManager] = []
+    original_init = SemanticCacheManager.__init__
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        created.append(self)
+
+    SemanticCacheManager.__init__ = tracked_init
+    try:
+        yield
+    finally:
+        SemanticCacheManager.__init__ = original_init
+        for c in created:
+            try:
+                await c.close()
+            except Exception:
+                pass
 
 
 def _make_sample_report(summary: str = "GitHub Actions failure", degraded: bool = False) -> IncidentTriageReport:
@@ -308,7 +331,12 @@ async def test_exact_scope_partitioning_prevents_false_cache_hits():
 async def test_in_memory_cache_capacity_eviction():
     """Verify that in-memory store evicts oldest entry when max_capacity is reached."""
     provider = DeterministicEmbeddingProvider()
-    cache = SemanticCacheManager(embedding_provider=provider, max_capacity=2)
+    cache = SemanticCacheManager(
+        redis_url="redis://127.0.0.1:59999/0",
+        embedding_provider=provider,
+        max_capacity=2,
+    )
+    cache.reconnect_cooldown_seconds = 0.01
     await cache.initialize()
     await cache.clear()
 
@@ -336,7 +364,7 @@ async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     import redis.exceptions
     provider = DeterministicEmbeddingProvider()
     cache = SemanticCacheManager(embedding_provider=provider)
-    await cache.initialize()
+    cache._initialized = True
 
     # Simulate connected Redis with RediSearch module
     mock_redis = mocker.AsyncMock()
@@ -366,7 +394,7 @@ async def test_scan_iter_key_enumeration(mocker):
     """Verify cache.clear() uses scan_iter cursor iteration to delete keys without blocking."""
     provider = DeterministicEmbeddingProvider()
     cache = SemanticCacheManager(embedding_provider=provider)
-    await cache.initialize()
+    cache._initialized = True
 
     mock_redis = mocker.AsyncMock()
 

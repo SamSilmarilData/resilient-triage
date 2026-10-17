@@ -1,42 +1,19 @@
 """End-to-end integration and resilience test suite for FastAPI gateway."""
 
-import pytest
-import pytest_asyncio
-import httpx
+import asyncio
+import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
 
 from resilient_triage.api.app import app
 from resilient_triage.cache.semantic_cache import semantic_cache
 from resilient_triage.graph.llm import MockTriageChatModel, groq_quota_tracker, set_triage_llm
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from resilient_triage.schemas.incident import SeverityLevel
 from resilient_triage.telemetry.chaos import ChaosClient, chaos_manager
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def reset_api_environment():
-    """Reset circuit breakers, chaos manager, cache, quota tracker, and LLM override between tests."""
-    circuit_breaker_registry.reset_all()
-    chaos_manager.reset()
-    groq_quota_tracker.reset_counters()
-    await semantic_cache.clear()
-    set_triage_llm(MockTriageChatModel())
-    yield
-    circuit_breaker_registry.reset_all()
-    chaos_manager.reset()
-    groq_quota_tracker.reset_counters()
-    await semantic_cache.clear()
-    set_triage_llm(None)
-
-
-@pytest_asyncio.fixture
-async def client():
-    """Yield an async test client configured with app lifespan."""
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
-        ) as ac:
-            yield ac
 
 
 @pytest.mark.asyncio
@@ -79,7 +56,7 @@ async def test_triage_cache_miss_and_headers(client: httpx.AsyncClient):
 
     report = data["report"]
     assert report["summary"] is not None
-    assert report["severity"] in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"]
+    assert report["severity"] in [s.value for s in SeverityLevel]
     assert len(report["recommended_actions"]) > 0
 
 
@@ -374,8 +351,6 @@ async def test_resilience_reset_clears_llm_quota_counters(client: httpx.AsyncCli
 @pytest.mark.asyncio
 async def test_chaos_probe_latency_via_api(client: httpx.AsyncClient):
     """Verify that POST /chaos/inject with latency_ms slows down GET /chaos/probe."""
-    import time
-
     # Configure 80ms artificial latency
     resp = await client.post(
         "/chaos/inject",
@@ -456,13 +431,10 @@ async def test_prometheus_metrics_endpoint(client: httpx.AsyncClient):
 @pytest.mark.asyncio
 async def test_concurrency_semaphore_shedding(client: httpx.AsyncClient, monkeypatch):
     """Verify that semaphore exhaustion triggers 503 load shedding."""
-    import asyncio
-    import sys
-    import resilient_triage.api.app
-    app_module = sys.modules["resilient_triage.api.app"]
-
     # Temporarily set semaphore to 0 to simulate full saturation
     saturated_sem = asyncio.Semaphore(0)
+    # api/__init__.py exposes `app` which shadows the submodule name; use sys.modules for module globals
+    app_module = sys.modules["resilient_triage.api.app"]
     monkeypatch.setattr(app_module, "GRAPH_SEMAPHORE", saturated_sem)
 
     # Patch wait_for timeout to 0.02s for fast test execution

@@ -1,5 +1,6 @@
 """Tests for AsyncCircuitBreaker, metrics tracking, and CircuitBreakerRegistry."""
 
+import asyncio
 import time
 import pytest
 from pybreaker import CircuitBreakerError
@@ -98,7 +99,6 @@ async def test_circuit_breaker_registry_snapshots_and_reset():
 @pytest.mark.asyncio
 async def test_circuit_breaker_half_open_recovery_and_failure(monkeypatch):
     """Verify half-open probe execution: trial success closes breaker, trial failure re-opens it."""
-    import asyncio
     registry = CircuitBreakerRegistry()
     # 0.1s timeout for fast test execution
     cb = registry.get_or_create("recovery_test_service", fail_max=2, reset_timeout=0.1)
