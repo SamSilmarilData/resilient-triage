@@ -1,6 +1,6 @@
 """Telemetry and chaos data contracts."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -65,7 +65,9 @@ class ChaosConfig(BaseModel):
 
     active: bool = Field(default=False, description="Whether chaos injection is enabled")
     inject_503: bool = Field(default=False, description="Always force 503 Service Unavailable")
-    failure_rate: Annotated[float, Field(default=0.0, ge=0.0, le=1.0, description="Random failure rate (0.0 to 1.0)")]
+    failure_rate: Annotated[
+        float, Field(default=0.0, ge=0.0, le=1.0, description="Random failure rate (0.0 to 1.0)")
+    ] = 0.0
     latency_ms: int = Field(default=0, ge=0, description="Artificial latency delay in milliseconds")
 
 
@@ -76,6 +78,8 @@ class ChaosTelemetryResponse(BaseModel):
 
     status: str = Field(..., description="Telemetry probe status: 'OK' or 'DEGRADED'")
     latency_injected_ms: int = Field(default=0, description="Latency delay introduced")
-    error_injected: bool = Field(default=False, description="Whether an intentional fault was triggered")
+    error_injected: bool = Field(
+        default=False, description="Whether an intentional fault was triggered"
+    )
     details: str = Field(..., description="Probe message or chaos diagnostic")
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

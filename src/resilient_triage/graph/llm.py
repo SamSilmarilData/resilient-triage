@@ -6,11 +6,14 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
-from typing import Any, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
-from langchain_core.callbacks.manager import CallbackManagerForLLMRun
+from langchain_core.callbacks.manager import (
+    AsyncCallbackManagerForLLMRun,
+    CallbackManagerForLLMRun,
+)
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -74,7 +77,7 @@ class GroqQuotaTracker:
         with self._lock:
             self.total_calls += 1
             self.last_status = resp.status_code
-            self.last_updated = datetime.now(timezone.utc)
+            self.last_updated = datetime.now(UTC)
             self.active_model = model_name
 
             if is_failover and resp.status_code < 400:
@@ -178,7 +181,7 @@ class GroqChatModel(BaseChatModel):
     fallback_model: str = "llama-3.1-8b-instant"
     timeout: float = 20.0
 
-    def _format_messages(self, messages: List[BaseMessage]) -> list[dict[str, str]]:
+    def _format_messages(self, messages: list[BaseMessage]) -> list[dict[str, str]]:
         formatted = []
         for m in messages:
             if m.type == "human":
@@ -194,9 +197,9 @@ class GroqChatModel(BaseChatModel):
 
     def _generate(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         use_fallback_directly = bool(
@@ -216,7 +219,9 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            groq_quota_tracker.record_response(resp, model_name=target_model, is_failover=use_fallback_directly)
+            groq_quota_tracker.record_response(
+                resp, model_name=target_model, is_failover=use_fallback_directly
+            )
 
             if resp.status_code == 429 and self.fallback_model and not use_fallback_directly:
                 logger.warning(
@@ -231,11 +236,19 @@ class GroqChatModel(BaseChatModel):
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=fb_payload,
                 )
-                groq_quota_tracker.record_response(fb_resp, model_name=self.fallback_model, is_failover=True)
+                groq_quota_tracker.record_response(
+                    fb_resp, model_name=self.fallback_model, is_failover=True
+                )
                 if fb_resp.status_code < 400:
-                    logger.info("Groq fallback model '%s' succeeded (HTTP %d).", self.fallback_model, fb_resp.status_code)
+                    logger.info(
+                        "Groq fallback model '%s' succeeded (HTTP %d).",
+                        self.fallback_model,
+                        fb_resp.status_code,
+                    )
                     content = fb_resp.json()["choices"][0]["message"]["content"]
-                    return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+                    return ChatResult(
+                        generations=[ChatGeneration(message=AIMessage(content=content))]
+                    )
                 else:
                     logger.warning(
                         "Groq fallback model '%s' also failed with HTTP %d: %s",
@@ -250,9 +263,9 @@ class GroqChatModel(BaseChatModel):
 
     async def _agenerate(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         use_fallback_directly = bool(
@@ -277,7 +290,9 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            groq_quota_tracker.record_response(resp, model_name=target_model, is_failover=use_fallback_directly)
+            groq_quota_tracker.record_response(
+                resp, model_name=target_model, is_failover=use_fallback_directly
+            )
 
             if resp.status_code == 429 and self.fallback_model and not use_fallback_directly:
                 logger.warning(
@@ -292,9 +307,15 @@ class GroqChatModel(BaseChatModel):
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=fb_payload,
                 )
-                groq_quota_tracker.record_response(fb_resp, model_name=self.fallback_model, is_failover=True)
+                groq_quota_tracker.record_response(
+                    fb_resp, model_name=self.fallback_model, is_failover=True
+                )
                 if fb_resp.status_code < 400:
-                    logger.info("Groq fallback model '%s' succeeded (HTTP %d).", self.fallback_model, fb_resp.status_code)
+                    logger.info(
+                        "Groq fallback model '%s' succeeded (HTTP %d).",
+                        self.fallback_model,
+                        fb_resp.status_code,
+                    )
                     return fb_resp.json()["choices"][0]["message"]["content"]
                 else:
                     logger.warning(
@@ -311,7 +332,6 @@ class GroqChatModel(BaseChatModel):
 
         content = await _send_request()
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
-
 
     @property
     def _llm_type(self) -> str:
@@ -373,9 +393,9 @@ class MockTriageChatModel(BaseChatModel):
 
     def _generate(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         if self.responses and self.call_count < len(self.responses):
@@ -389,12 +409,12 @@ class MockTriageChatModel(BaseChatModel):
 
     async def _agenerate(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        return self._generate(messages, stop=stop, run_manager=None, **kwargs)
 
     @property
     def _llm_type(self) -> str:

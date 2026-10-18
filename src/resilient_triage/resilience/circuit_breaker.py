@@ -2,8 +2,9 @@
 
 import logging
 import threading
-from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, TypeVar
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any, TypeVar
 
 import pybreaker
 from pydantic import BaseModel, Field
@@ -32,7 +33,7 @@ class CircuitBreakerMetricsListener(pybreaker.CircuitBreakerListener):
     """Custom listener tracking state changes, metrics, and failure diagnostics."""
 
     def __init__(self) -> None:
-        self.last_state_change: datetime = datetime.now(timezone.utc)
+        self.last_state_change: datetime = datetime.now(UTC)
         self.last_failure_time: datetime | None = None
         self.last_failure_reason: str | None = None
         self.last_success_time: datetime | None = None
@@ -44,7 +45,7 @@ class CircuitBreakerMetricsListener(pybreaker.CircuitBreakerListener):
         old_state: pybreaker.CircuitBreakerState | None,
         new_state: pybreaker.CircuitBreakerState,
     ) -> None:
-        self.last_state_change = datetime.now(timezone.utc)
+        self.last_state_change = datetime.now(UTC)
         old_name = old_state.name if old_state else "none"
         new_name = new_state.name if new_state else "unknown"
 
@@ -74,7 +75,7 @@ class CircuitBreakerMetricsListener(pybreaker.CircuitBreakerListener):
             )
 
     def failure(self, cb: pybreaker.CircuitBreaker, exc: BaseException) -> None:
-        self.last_failure_time = datetime.now(timezone.utc)
+        self.last_failure_time = datetime.now(UTC)
         self.last_failure_reason = str(exc)
         logger.warning(
             "Circuit breaker '%s' recorded failure (%d/%d): %s",
@@ -85,7 +86,7 @@ class CircuitBreakerMetricsListener(pybreaker.CircuitBreakerListener):
         )
 
     def success(self, cb: pybreaker.CircuitBreaker) -> None:
-        self.last_success_time = datetime.now(timezone.utc)
+        self.last_success_time = datetime.now(UTC)
 
 
 class AsyncCircuitBreaker:
@@ -95,13 +96,15 @@ class AsyncCircuitBreaker:
     100% of pybreaker's state machine, listeners, thread-safety, and storage options.
     """
 
-    def __init__(self, breaker: pybreaker.CircuitBreaker, listener: CircuitBreakerMetricsListener) -> None:
+    def __init__(
+        self, breaker: pybreaker.CircuitBreaker, listener: CircuitBreakerMetricsListener
+    ) -> None:
         self.breaker = breaker
         self.listener = listener
 
     @property
     def name(self) -> str:
-        return self.breaker.name
+        return self.breaker.name or ""
 
     @property
     def current_state(self) -> str:
@@ -158,8 +161,10 @@ class AsyncCircuitBreaker:
             if current_st == pybreaker.STATE_OPEN:
                 timeout = timedelta(seconds=self.breaker.reset_timeout)
                 opened_at = self.breaker._state_storage.opened_at
-                if opened_at and datetime.now(timezone.utc) < opened_at + timeout:
-                    raise pybreaker.CircuitBreakerError("Timeout not elapsed yet, circuit breaker still open")
+                if opened_at and datetime.now(UTC) < opened_at + timeout:
+                    raise pybreaker.CircuitBreakerError(
+                        "Timeout not elapsed yet, circuit breaker still open"
+                    )
                 # Timeout elapsed: transition to half-open trial probe
                 self.breaker.half_open()
 
@@ -212,9 +217,13 @@ class CircuitBreakerRegistry:
             if name in self._breakers:
                 return self._breakers[name]
 
-            effective_fail_max = fail_max if fail_max is not None else settings.circuit_breaker_fail_max
+            effective_fail_max = (
+                fail_max if fail_max is not None else settings.circuit_breaker_fail_max
+            )
             effective_reset_timeout = (
-                reset_timeout if reset_timeout is not None else settings.circuit_breaker_reset_timeout
+                reset_timeout
+                if reset_timeout is not None
+                else settings.circuit_breaker_reset_timeout
             )
 
             listener = CircuitBreakerMetricsListener()

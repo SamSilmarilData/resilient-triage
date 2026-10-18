@@ -35,7 +35,7 @@ def clean_json_string(raw: str) -> str:
 
 def validate_report_node(state: TriageState) -> dict[str, Any]:
     """Validate candidate report strictly against Pydantic schema."""
-    candidate_raw = state.get("candidate_report_raw", "")
+    candidate_raw = state.get("candidate_report_raw") or ""
     repair_attempts = state.get("repair_attempts", 0)
 
     try:
@@ -71,7 +71,9 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
             report.circuit_breakers_tripped = list(set(report.circuit_breakers_tripped + tripped))
             if report.degradation_status == DegradationStatus.HEALTHY:
                 report.degradation_status = (
-                    DegradationStatus.SEVERELY_DEGRADED if len(tripped) >= 2 else DegradationStatus.PARTIALLY_DEGRADED
+                    DegradationStatus.SEVERELY_DEGRADED
+                    if len(tripped) >= 2
+                    else DegradationStatus.PARTIALLY_DEGRADED
                 )
 
         logger.info("Candidate report successfully validated against IncidentTriageReport schema.")

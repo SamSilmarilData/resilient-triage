@@ -34,18 +34,20 @@ class BoundedMemorySaver(MemorySaver):
 
     def put(
         self,
-        config: dict[str, Any],
-        checkpoint: dict[str, Any],
-        metadata: dict[str, Any],
-        new_versions: dict[str, Any],
-    ) -> dict[str, Any]:
+        config: Any,
+        checkpoint: Any,
+        metadata: Any,
+        new_versions: Any,
+    ) -> Any:
         """Persist checkpoint while enforcing max thread storage capacity."""
-        thread_id = config.get("configurable", {}).get("thread_id")
+        thread_id = (
+            config.get("configurable", {}).get("thread_id") if hasattr(config, "get") else None
+        )
         if thread_id and thread_id not in self.storage and len(self.storage) >= self.max_threads:
             oldest_thread = next(iter(self.storage))
             self.storage.pop(oldest_thread, None)
             if hasattr(self, "writes") and isinstance(self.writes, dict):
-                self.writes.pop(oldest_thread, None)
+                self.writes.pop(oldest_thread, None)  # type: ignore[call-overload]
         return super().put(config, checkpoint, metadata, new_versions)
 
 

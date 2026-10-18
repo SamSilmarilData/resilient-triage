@@ -34,7 +34,7 @@ async def collect_telemetry_node(state: TriageState) -> dict[str, Any]:
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
     aggregated_signals: list[TelemetrySignal] = []
-    for name, res in zip(task_names, raw_results):
+    for name, res in zip(task_names, raw_results, strict=True):
         if isinstance(res, Exception):
             aggregated_signals.append(
                 TelemetrySignal(

@@ -7,6 +7,7 @@ import argparse
 import subprocess
 import sys
 import time
+
 import httpx
 
 GREEN = "\033[92m"
@@ -73,7 +74,9 @@ def run_battery(base_url: str):
     rep1 = res1.json()["report"]
     print_pass(f"Status: HTTP 200 | Cache: {cache1} | Turnaround: {elapsed1:.1f}ms")
     print_pass(f"Report Summary: {rep1['summary'][:80]}...")
-    print_pass(f"Severity: {rep1['severity']} | Confidence: {rep1.get('confidence_score', 0.9)*100:.0f}%")
+    print_pass(
+        f"Severity: {rep1['severity']} | Confidence: {rep1.get('confidence_score', 0.9) * 100:.0f}%"
+    )
     print_pass(f"Actions Generated: {len(rep1['recommended_actions'])} prioritized recommendations")
 
     # 3. Triage Cache Hit (<20ms Target)
@@ -90,8 +93,12 @@ def run_battery(base_url: str):
     if cache2 != "HIT":
         print_fail(f"Expected X-Cache: HIT, got {cache2}")
 
-    print_pass(f"Status: HTTP 200 | Cache: {BOLD}{GREEN}HIT{RESET} | Cosine Similarity: {similarity:.4f}")
-    print_pass(f"Turnaround Latency: {BOLD}{GREEN}{elapsed2:.2f}ms{RESET} (Strict sub-20ms requirement met!)")
+    print_pass(
+        f"Status: HTTP 200 | Cache: {BOLD}{GREEN}HIT{RESET} | Cosine Similarity: {similarity:.4f}"
+    )
+    print_pass(
+        f"Turnaround Latency: {BOLD}{GREEN}{elapsed2:.2f}ms{RESET} (Strict sub-20ms requirement met!)"
+    )
 
     # 4. Force Refresh Bypass
     print_step("Step 4: Force Refresh Bypass Verification")
@@ -103,7 +110,9 @@ def run_battery(base_url: str):
 
     # 5. Chaos Injection
     print_step("Step 5: Runtime Chaos Outage Injection")
-    res_chaos = client.post("/chaos/inject", json={"active": True, "inject_503": True, "latency_ms": 10})
+    res_chaos = client.post(
+        "/chaos/inject", json={"active": True, "inject_503": True, "latency_ms": 10}
+    )
     if res_chaos.status_code != 200:
         print_fail("Failed to update chaos config")
     print_pass("Chaos 503 fault injection activated dynamically")
@@ -159,7 +168,9 @@ def run_battery(base_url: str):
         print_fail("Failed to clear cache")
     print_pass("Semantic cache memory successfully flushed")
 
-    print(f"\n{BOLD}{GREEN}========================================================================")
+    print(
+        f"\n{BOLD}{GREEN}========================================================================"
+    )
     print("🎉 ALL LIVE SMOKE TESTS PASSED - SYSTEM IS 100% PRODUCTION READY!")
     print(f"========================================================================{RESET}\n")
 
@@ -169,9 +180,9 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8000", help="Target API base URL")
     args = parser.parse_args()
 
-    import urllib.parse
     import socket
     import tempfile
+    import urllib.parse
 
     target_url = args.url.rstrip("/")
     server_process = None
@@ -197,9 +208,13 @@ def main():
                 sock.bind((target_host, 0))
                 target_port = sock.getsockname()[1]
             target_url = f"http://{target_host}:{target_port}"
-            print(f"{YELLOW}Port was occupied by another process. Relocating ephemeral instance to {target_url}...{RESET}")
+            print(
+                f"{YELLOW}Port was occupied by another process. Relocating ephemeral instance to {target_url}...{RESET}"
+            )
         else:
-            print(f"{YELLOW}No running server found at {target_url}. Launching ephemeral instance...{RESET}")
+            print(
+                f"{YELLOW}No running server found at {target_url}. Launching ephemeral instance...{RESET}"
+            )
 
         log_file = tempfile.NamedTemporaryFile(mode="w+", delete=False, prefix="smoke_uvicorn_")
         server_process = subprocess.Popen(

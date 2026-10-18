@@ -2,7 +2,8 @@
 
 import functools
 import logging
-from typing import Any, Awaitable, Callable, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 import httpx
 import tenacity
@@ -69,7 +70,9 @@ def with_retry(
     Returns:
         Callable: Wrapped asynchronous function guarded with retries.
     """
-    effective_max_attempts = max_attempts if max_attempts is not None else settings.retry_max_attempts
+    effective_max_attempts = (
+        max_attempts if max_attempts is not None else settings.retry_max_attempts
+    )
     effective_min_wait = min_wait if min_wait is not None else settings.retry_min_wait_seconds
     effective_max_wait = max_wait if max_wait is not None else settings.retry_max_wait_seconds
 

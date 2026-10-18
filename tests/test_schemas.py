@@ -1,6 +1,7 @@
 """Tests for Pydantic schemas and validation constraints."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
 
@@ -17,9 +18,6 @@ from resilient_triage.schemas.incident import (
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import (
     ChaosConfig,
-    ChaosTelemetryResponse,
-    StatuspageComponent,
-    StatuspageIncident,
     StatuspageSummary,
 )
 
@@ -28,7 +26,7 @@ def test_valid_incident_triage_report():
     """Verify that a well-formed dictionary parses strictly into IncidentTriageReport."""
     data = {
         "incident_id": "test-uuid-1234",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "summary": "GitHub Actions is failing across all workflow runs.",
         "severity": "CRITICAL",
         "root_cause_analysis": "Upstream webhook processing failure detected in external statuspage.",
@@ -294,4 +292,3 @@ def test_service_impact_and_telemetry_signal_schemas():
             status="OK",
             invalid_extra_field=True,
         )
-

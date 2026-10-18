@@ -1,11 +1,12 @@
 """FastAPI application for Resilient Incident Triage Gateway."""
 
 import asyncio
-from contextlib import asynccontextmanager
 import logging
-from pathlib import Path
 import time
 import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import cast
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -31,6 +32,7 @@ from resilient_triage.schemas.api import (
     TriageRequest,
     TriageResponse,
 )
+from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
 from resilient_triage.telemetry.chaos import ChaosClient, chaos_manager
 from resilient_triage.telemetry.statuspage import close_statuspage_client
@@ -48,6 +50,7 @@ async def verify_admin_key(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Unauthorized: invalid or missing X-Admin-Key header.",
             )
+
 
 # Concurrency boundary: max 10 concurrent graph executions to prevent stampedes
 GRAPH_SEMAPHORE = asyncio.Semaphore(10)
@@ -118,7 +121,6 @@ app.add_middleware(
 )
 
 
-
 @app.middleware("http")
 async def process_time_and_correlation_middleware(request: Request, call_next):
     """Add correlation request ID, elapsed execution time, and structured error fallback to every response."""
@@ -166,7 +168,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-
 @app.post("/triage", response_model=TriageResponse)
 async def triage_incident(payload: TriageRequest, request: Request):
     """Triage an incident through semantic cache (<20ms) or LangGraph state machine.
@@ -206,13 +207,13 @@ async def triage_incident(payload: TriageRequest, request: Request):
     # 2. Cache MISS: Acquire concurrency semaphore with 5.0s load-shedding boundary
     try:
         await asyncio.wait_for(GRAPH_SEMAPHORE.acquire(), timeout=5.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _metrics["requests_saturated"] += 1
         logger.warning("Graph concurrency semaphore saturated (limit 10). Shedding load.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Triage state machine is currently saturated. Please retry with exponential backoff.",
-        )
+        ) from None
 
     try:
         initial_state = {
@@ -239,7 +240,7 @@ async def triage_incident(payload: TriageRequest, request: Request):
             fallback_input["query"] = payload.query
         if not fallback_input.get("service_filter"):
             fallback_input["service_filter"] = payload.service_filter
-        fallback_state = fallback_report_node(fallback_input)
+        fallback_state = fallback_report_node(cast(TriageState, fallback_input))
         final_report = fallback_state["final_report"]
         # Persist emergency fallback report to semantic cache
         await semantic_cache.store(
@@ -301,12 +302,12 @@ async def probe_chaos():
         raise HTTPException(
             status_code=exc.response.status_code,
             detail=f"Chaos probe injected failure: {exc}",
-        )
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Chaos probe failed or circuit open: {exc}",
-        )
+        ) from exc
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -318,7 +319,9 @@ async def get_sre_console():
     """
     index_file = TEMPLATES_DIR / "index.html"
     if not index_file.exists():
-        return HTMLResponse(content="<h1>Resilient Triage API is running. Visit /docs for OpenAPI specs.</h1>")
+        return HTMLResponse(
+            content="<h1>Resilient Triage API is running. Visit /docs for OpenAPI specs.</h1>"
+        )
     return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
 
 
@@ -397,7 +400,10 @@ async def reset_resilience():
     circuit_breaker_registry.reset_all()
     chaos_manager.reset()
     groq_quota_tracker.reset_counters()
-    return {"status": "ok", "message": "Circuit breakers, chaos state, and LLM counters successfully reset"}
+    return {
+        "status": "ok",
+        "message": "Circuit breakers, chaos state, and LLM counters successfully reset",
+    }
 
 
 @app.post("/cache/clear", dependencies=[Depends(verify_admin_key)])
@@ -430,30 +436,38 @@ async def get_metrics():
         st = info.state.lower().replace("-", "_")
         for possible_state in ["closed", "open", "half_open"]:
             val = 1 if st == possible_state else 0
-            lines.append(f'resilient_triage_circuit_breaker_state{{name="{name}",state="{possible_state}"}} {val}')
+            lines.append(
+                f'resilient_triage_circuit_breaker_state{{name="{name}",state="{possible_state}"}} {val}'
+            )
 
-    lines.extend([
-        "",
-        "# HELP resilient_triage_circuit_breaker_fail_counter Current consecutive failure count",
-        "# TYPE resilient_triage_circuit_breaker_fail_counter gauge",
-    ])
+    lines.extend(
+        [
+            "",
+            "# HELP resilient_triage_circuit_breaker_fail_counter Current consecutive failure count",
+            "# TYPE resilient_triage_circuit_breaker_fail_counter gauge",
+        ]
+    )
     for name, info in statuses.items():
-        lines.append(f'resilient_triage_circuit_breaker_fail_counter{{name="{name}"}} {info.fail_counter}')
+        lines.append(
+            f'resilient_triage_circuit_breaker_fail_counter{{name="{name}"}} {info.fail_counter}'
+        )
 
-    lines.extend([
-        "",
-        "# HELP resilient_triage_cache_entries Total incident reports persist in semantic cache",
-        "# TYPE resilient_triage_cache_entries gauge",
-        f'resilient_triage_cache_entries{{driver="{semantic_cache.driver}"}} {semantic_cache.count}',
-        "",
-        "# HELP resilient_triage_llm_rate_limit_hits_total Total HTTP 429 rate limit events encountered",
-        "# TYPE resilient_triage_llm_rate_limit_hits_total counter",
-        f'resilient_triage_llm_rate_limit_hits_total {groq_quota_tracker.rate_limit_hits}',
-        "",
-        "# HELP resilient_triage_llm_failovers_total Total fallback model invocations triggered",
-        "# TYPE resilient_triage_llm_failovers_total counter",
-        f'resilient_triage_llm_failovers_total {groq_quota_tracker.failover_events}',
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            "# HELP resilient_triage_cache_entries Total incident reports persist in semantic cache",
+            "# TYPE resilient_triage_cache_entries gauge",
+            f'resilient_triage_cache_entries{{driver="{semantic_cache.driver}"}} {semantic_cache.count}',
+            "",
+            "# HELP resilient_triage_llm_rate_limit_hits_total Total HTTP 429 rate limit events encountered",
+            "# TYPE resilient_triage_llm_rate_limit_hits_total counter",
+            f"resilient_triage_llm_rate_limit_hits_total {groq_quota_tracker.rate_limit_hits}",
+            "",
+            "# HELP resilient_triage_llm_failovers_total Total fallback model invocations triggered",
+            "# TYPE resilient_triage_llm_failovers_total counter",
+            f"resilient_triage_llm_failovers_total {groq_quota_tracker.failover_events}",
+            "",
+        ]
+    )
 
     return PlainTextResponse(content="\n".join(lines) + "\n")

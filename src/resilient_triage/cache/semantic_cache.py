@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -38,6 +39,24 @@ def format_scoped_query(query: str, service_filter: str | None = None) -> str:
         if scope:
             return f"[scope: {scope}] {clean_q}"
     return clean_q
+
+
+def _to_str(val: Any) -> str:
+    """Safely convert Redis bytes or string to str."""
+    if val is None:
+        return ""
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    return str(val)
+
+
+def _to_bytes(val: Any) -> bytes:
+    """Safely convert Redis string or bytes to bytes."""
+    if val is None:
+        return b""
+    if isinstance(val, bytes):
+        return val
+    return str(val).encode("utf-8")
 
 
 class CacheMatch(BaseModel):
@@ -200,13 +219,21 @@ class SemanticCacheManager:
             for key in keys:
                 try:
                     data = await self._redis.hgetall(key)
-                    if not data or b"vector" not in data or b"report" not in data:
+                    if not data:
                         continue
-                    doc_id = key.decode("utf-8").replace(self.DOC_PREFIX, "")
-                    query = data.get(b"query", b"").decode("utf-8")
-                    report_json = data.get(b"report", b"").decode("utf-8")
-                    service_scope = data.get(b"service_scope", b"").decode("utf-8")
-                    vec_bytes = data[b"vector"]
+                    vec_raw = data.get(b"vector") if b"vector" in data else data.get("vector")
+                    report_raw = data.get(b"report") if b"report" in data else data.get("report")
+                    if vec_raw is None or report_raw is None:
+                        continue
+                    doc_id = _to_str(key).replace(self.DOC_PREFIX, "")
+                    query = _to_str(data.get(b"query") if b"query" in data else data.get("query"))
+                    report_json = _to_str(report_raw)
+                    service_scope = _to_str(
+                        data.get(b"service_scope")
+                        if b"service_scope" in data
+                        else data.get("service_scope")
+                    )
+                    vec_bytes = _to_bytes(vec_raw)
                     vec_arr = np.frombuffer(vec_bytes, dtype=np.float32)
                     ttl = await self._redis.ttl(key)
                     expires_at = now + (ttl if ttl > 0 else self.default_ttl)
@@ -222,7 +249,9 @@ class SemanticCacheManager:
                 except Exception as doc_err:
                     logger.debug("Failed to hydrate document key %s: %s", key, doc_err)
 
-            logger.info("Hydrated %d cached documents from Redis into memory.", len(self._in_memory_docs))
+            logger.info(
+                "Hydrated %d cached documents from Redis into memory.", len(self._in_memory_docs)
+            )
         except Exception as err:
             logger.warning("Error hydrating from Redis: %s", err)
 
@@ -239,7 +268,7 @@ class SemanticCacheManager:
             logger.debug("RediSearch index '%s' already exists.", self.INDEX_NAME)
         except Exception:
             try:
-                schema = (
+                schema = [
                     TextField("query"),
                     TagField("service_scope"),
                     VectorField(
@@ -251,12 +280,14 @@ class SemanticCacheManager:
                             "DISTANCE_METRIC": "COSINE",
                         },
                     ),
-                )
+                ]
                 definition = IndexDefinition(prefix=[self.DOC_PREFIX], index_type=IndexType.HASH)
                 await self._redis.ft(self.INDEX_NAME).create_index(schema, definition=definition)
                 logger.info("Created RediSearch vector index '%s'.", self.INDEX_NAME)
             except Exception as e:
-                logger.warning("Failed to create RediSearch index: %s. Falling back to in-memory.", e)
+                logger.warning(
+                    "Failed to create RediSearch index: %s. Falling back to in-memory.", e
+                )
                 self._has_redisearch = False
 
     async def check_connection(self) -> bool:
@@ -307,7 +338,11 @@ class SemanticCacheManager:
 
         start_time = time.monotonic()
         effective_threshold = threshold if threshold is not None else self.similarity_threshold
-        target_scope = re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower()) if service_filter and service_filter.strip() else ""
+        target_scope = (
+            re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
+            if service_filter and service_filter.strip()
+            else ""
+        )
         scoped_q = format_scoped_query(query, service_filter)
 
         # 1. Generate query embedding
@@ -321,12 +356,23 @@ class SemanticCacheManager:
                 )
                 if match:
                     return match
-            except (aioredis.ConnectionError, aioredis.TimeoutError, ConnectionRefusedError, OSError) as conn_err:
-                logger.warning("RediSearch connection failure: %s. Disconnecting and checking in-memory store.", conn_err)
+            except (
+                aioredis.ConnectionError,
+                aioredis.TimeoutError,
+                ConnectionRefusedError,
+                OSError,
+            ) as conn_err:
+                logger.warning(
+                    "RediSearch connection failure: %s. Disconnecting and checking in-memory store.",
+                    conn_err,
+                )
                 self._redis = None
                 self._has_redisearch = False
             except Exception as e:
-                logger.warning("RediSearch query execution error: %s. Query falling back to in-memory store without disconnecting Redis.", e)
+                logger.warning(
+                    "RediSearch query execution error: %s. Query falling back to in-memory store without disconnecting Redis.",
+                    e,
+                )
 
         # 3. Fallback to high-performance in-memory vector search
         return self._search_in_memory(
@@ -342,6 +388,8 @@ class SemanticCacheManager:
         target_scope: str = "",
     ) -> CacheMatch | None:
         """Query native RediSearch HNSW vector index with strict scope isolation."""
+        if self._redis is None:
+            return None
         from redis.commands.search.query import Query
 
         # Cosine distance = 1.0 - cosine_similarity
@@ -407,7 +455,8 @@ class SemanticCacheManager:
         # Filter candidate documents matching requested scope
         if target_scope:
             matching_items = [
-                (k, v) for k, v in list(self._in_memory_docs.items())
+                (k, v)
+                for k, v in list(self._in_memory_docs.items())
                 if v.service_scope.lower() == target_scope.lower()
             ]
         else:
@@ -466,7 +515,11 @@ class SemanticCacheManager:
         elif self._redis is None:
             await self._ensure_connected()
 
-        target_scope = re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower()) if service_filter and service_filter.strip() else ""
+        target_scope = (
+            re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
+            if service_filter and service_filter.strip()
+            else ""
+        )
         scoped_q = format_scoped_query(query, service_filter)
         query_vec = self.embedding_provider.embed_query(scoped_q)
 
@@ -504,7 +557,7 @@ class SemanticCacheManager:
         if self._redis:
             try:
                 redis_key = f"{self.DOC_PREFIX}{doc_id}"
-                mapping = {
+                mapping: Mapping[Any, Any] = {
                     "query": scoped_q,
                     "service_scope": target_scope,
                     "report": report_json,
@@ -513,7 +566,9 @@ class SemanticCacheManager:
                 await self._redis.hset(redis_key, mapping=mapping)
                 await self._redis.expire(redis_key, effective_ttl)
             except Exception as e:
-                logger.warning("Redis store error: %s (in-memory copy active). Marking disconnected.", e)
+                logger.warning(
+                    "Redis store error: %s (in-memory copy active). Marking disconnected.", e
+                )
                 self._redis = None
                 self._has_redisearch = False
 
@@ -522,7 +577,9 @@ class SemanticCacheManager:
         self._in_memory_docs.clear()
         if self._redis:
             try:
-                keys = [k async for k in self._redis.scan_iter(match=f"{self.DOC_PREFIX}*", count=100)]
+                keys = [
+                    k async for k in self._redis.scan_iter(match=f"{self.DOC_PREFIX}*", count=100)
+                ]
                 if keys:
                     for i in range(0, len(keys), 500):
                         await self._redis.delete(*keys[i : i + 500])
@@ -564,4 +621,3 @@ class SemanticCacheManager:
 
 # Global singleton
 semantic_cache = SemanticCacheManager()
-

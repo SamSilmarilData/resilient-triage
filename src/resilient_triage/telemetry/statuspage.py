@@ -2,7 +2,6 @@
 
 import logging
 import time
-from typing import Any
 
 import httpx
 from pybreaker import CircuitBreakerError
@@ -78,7 +77,9 @@ class StatuspageClient:
         if self.cache_ttl_seconds > 0 and self.url in _SUMMARY_CACHE:
             cached_summary, cached_ts = _SUMMARY_CACHE[self.url]
             if (now - cached_ts) < self.cache_ttl_seconds:
-                logger.debug("Serving Statuspage summary from in-memory cache (age=%.2fs)", now - cached_ts)
+                logger.debug(
+                    "Serving Statuspage summary from in-memory cache (age=%.2fs)", now - cached_ts
+                )
                 return cached_summary
 
         if self._external_client is not None:

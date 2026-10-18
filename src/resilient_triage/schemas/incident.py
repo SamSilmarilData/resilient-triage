@@ -1,7 +1,7 @@
 """Incident triage report data contracts and enums."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated
 
@@ -42,7 +42,9 @@ class ServiceImpact(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     service_name: str = Field(..., description="Name of the affected service or component")
-    impact_level: str = Field(..., description="Qualitative impact (e.g. Total Outage, Latency Spike, Intermittent 503s)")
+    impact_level: str = Field(
+        ..., description="Qualitative impact (e.g. Total Outage, Latency Spike, Intermittent 503s)"
+    )
     details: str = Field(..., description="Observed symptoms or relevant context")
 
 
@@ -51,11 +53,17 @@ class TelemetrySignal(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source: str = Field(..., description="Telemetry source identifier (e.g., statuspage, chaos_probe)")
+    source: str = Field(
+        ..., description="Telemetry source identifier (e.g., statuspage, chaos_probe)"
+    )
     status: str = Field(..., description="Operational status observed")
     latency_ms: float | None = Field(default=None, description="Observed round-trip latency in ms")
-    error_rate: float | None = Field(default=None, description="Observed error rate fraction (0.0 - 1.0)")
-    raw_snippet: str | None = Field(default=None, description="Short snippet of raw telemetry data or status message")
+    error_rate: float | None = Field(
+        default=None, description="Observed error rate fraction (0.0 - 1.0)"
+    )
+    raw_snippet: str | None = Field(
+        default=None, description="Short snippet of raw telemetry data or status message"
+    )
 
 
 class ActionRecommendation(BaseModel):
@@ -86,12 +94,14 @@ class IncidentTriageReport(BaseModel):
         description="Unique identifier for the triage incident report",
     )
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp of report generation",
     )
     summary: str = Field(..., min_length=5, description="Executive summary of the incident")
     severity: SeverityLevel = Field(..., description="Incident severity level")
-    root_cause_analysis: str = Field(..., min_length=5, description="Inferred root cause or hypothesis")
+    root_cause_analysis: str = Field(
+        ..., min_length=5, description="Inferred root cause or hypothesis"
+    )
     affected_services: list[ServiceImpact] = Field(
         default_factory=list,
         description="List of impacted services and degradation levels",
@@ -113,5 +123,8 @@ class IncidentTriageReport(BaseModel):
         description="Names of circuit breakers that tripped open during execution",
     )
     confidence_score: Annotated[
-        float, Field(default=0.85, ge=0.0, le=1.0, description="Model confidence score between 0.0 and 1.0")
+        float,
+        Field(
+            default=0.85, ge=0.0, le=1.0, description="Model confidence score between 0.0 and 1.0"
+        ),
     ] = 0.85

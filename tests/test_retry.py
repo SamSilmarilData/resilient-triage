@@ -1,6 +1,5 @@
 """Tests for Tenacity retry decorator and transient error classification."""
 
-import time
 import httpx
 import pytest
 

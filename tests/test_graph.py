@@ -6,7 +6,6 @@ import uuid
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
 
 from resilient_triage.graph.builder import build_triage_graph
 from resilient_triage.graph.llm import MockTriageChatModel, set_triage_llm
@@ -19,7 +18,6 @@ from resilient_triage.schemas.incident import (
     IncidentTriageReport,
     SeverityLevel,
 )
-
 
 
 def _make_valid_report_json(severity: str = "HIGH", confidence: float = 0.90) -> str:
@@ -69,11 +67,13 @@ def _make_valid_report_json(severity: str = "HIGH", confidence: float = 0.90) ->
 
 def test_clean_json_string_utilities():
     """Verify markdown fences and surrounding text are cleanly stripped."""
-    raw_markdown = "```json\n{\"summary\": \"Test incident\"}\n```"
-    assert clean_json_string(raw_markdown) == "{\"summary\": \"Test incident\"}"
+    raw_markdown = '```json\n{"summary": "Test incident"}\n```'
+    assert clean_json_string(raw_markdown) == '{"summary": "Test incident"}'
 
-    conversational = "Here is the incident triage report:\n\n{\"summary\": \"Outage\"}\n\nHope this helps!"
-    assert clean_json_string(conversational) == "{\"summary\": \"Outage\"}"
+    conversational = (
+        'Here is the incident triage report:\n\n{"summary": "Outage"}\n\nHope this helps!'
+    )
+    assert clean_json_string(conversational) == '{"summary": "Outage"}'
 
 
 def test_dynamic_tool_targeting():
@@ -254,6 +254,7 @@ async def test_graph_thread_checkpointing():
 def test_groq_chat_model_formatting_and_factory():
     """Verify GroqChatModel message formatting and active model reporting."""
     from langchain_core.messages import HumanMessage, SystemMessage
+
     from resilient_triage.graph.llm import GroqChatModel, get_active_model_name
 
     model = GroqChatModel(api_key="mock_key", model_name="qwen/qwen3.8-27b")
@@ -276,11 +277,14 @@ def test_groq_chat_model_formatting_and_factory():
 async def test_groq_chat_model_429_failover(mocker):
     """Verify GroqChatModel automatically fails over to fallback_model on HTTP 429."""
     from langchain_core.messages import HumanMessage
+
     from resilient_triage.graph.llm import GroqChatModel
 
     mock_client = mocker.AsyncMock()
     resp_429 = mocker.MagicMock(status_code=429, text="Rate limit exceeded")
-    resp_429.raise_for_status.side_effect = httpx.HTTPStatusError("429", request=mocker.MagicMock(), response=resp_429)
+    resp_429.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "429", request=mocker.MagicMock(), response=resp_429
+    )
     resp_200 = mocker.MagicMock(
         status_code=200,
         json=lambda: {"choices": [{"message": {"content": '{"summary": "Fallback OK"}'}}]},
@@ -328,32 +332,40 @@ def test_validate_report_enforces_remediation_approval_safety():
     """Verify validate_report_node programmatically overrides mutating actions to requires_approval=True."""
     from resilient_triage.graph.nodes.validate_report import validate_report_node
 
-    candidate_with_unapproved_remediation = json.dumps({
-        "summary": "Kubernetes worker node pool CPU saturation",
-        "severity": "CRITICAL",
-        "root_cause_analysis": "OOM killer terminating runner processes",
-        "affected_services": [{"service_name": "worker-pool", "impact_level": "Total Outage", "details": "Pods crashing"}],
-        "telemetry_signals": [],
-        "recommended_actions": [
-            {
-                "priority": "P0",
-                "action": "kubectl drain node-pool-primary --delete-emptydir-data --force",
-                "target_system": "Kubelet",
-                "action_type": "remediative",
-                "requires_approval": False,  # Safety violation from LLM
-            },
-            {
-                "priority": "P1",
-                "action": "kubectl top nodes",
-                "target_system": "Monitoring",
-                "action_type": "diagnostic",
-                "requires_approval": False,
-            }
-        ],
-        "degradation_status": "HEALTHY",
-        "circuit_breakers_tripped": [],
-        "confidence_score": 0.95,
-    })
+    candidate_with_unapproved_remediation = json.dumps(
+        {
+            "summary": "Kubernetes worker node pool CPU saturation",
+            "severity": "CRITICAL",
+            "root_cause_analysis": "OOM killer terminating runner processes",
+            "affected_services": [
+                {
+                    "service_name": "worker-pool",
+                    "impact_level": "Total Outage",
+                    "details": "Pods crashing",
+                }
+            ],
+            "telemetry_signals": [],
+            "recommended_actions": [
+                {
+                    "priority": "P0",
+                    "action": "kubectl drain node-pool-primary --delete-emptydir-data --force",
+                    "target_system": "Kubelet",
+                    "action_type": "remediative",
+                    "requires_approval": False,  # Safety violation from LLM
+                },
+                {
+                    "priority": "P1",
+                    "action": "kubectl top nodes",
+                    "target_system": "Monitoring",
+                    "action_type": "diagnostic",
+                    "requires_approval": False,
+                },
+            ],
+            "degradation_status": "HEALTHY",
+            "circuit_breakers_tripped": [],
+            "confidence_score": 0.95,
+        }
+    )
 
     state = {
         "candidate_report_raw": candidate_with_unapproved_remediation,
@@ -393,17 +405,19 @@ def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
     from resilient_triage.graph.nodes.validate_report import validate_report_node
     from resilient_triage.schemas.incident import DegradationStatus
 
-    raw_json = json.dumps({
-        "summary": "Partial database failover",
-        "severity": "MEDIUM",
-        "root_cause_analysis": "Primary node replication lag",
-        "affected_services": [],
-        "telemetry_signals": [],
-        "recommended_actions": [],
-        "degradation_status": "HEALTHY",  # Hallucinated HEALTHY
-        "circuit_breakers_tripped": [],
-        "confidence_score": 0.85,
-    })
+    raw_json = json.dumps(
+        {
+            "summary": "Partial database failover",
+            "severity": "MEDIUM",
+            "root_cause_analysis": "Primary node replication lag",
+            "affected_services": [],
+            "telemetry_signals": [],
+            "recommended_actions": [],
+            "degradation_status": "HEALTHY",  # Hallucinated HEALTHY
+            "circuit_breakers_tripped": [],
+            "confidence_score": 0.85,
+        }
+    )
 
     # 1 breaker open -> PARTIALLY_DEGRADED
     state_single = {
@@ -430,6 +444,7 @@ def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
 async def test_groq_proactive_cooldown_routing(mocker):
     """Verify GroqChatModel proactively routes to fallback_model during active rate-limit cooldown."""
     from langchain_core.messages import HumanMessage
+
     from resilient_triage.graph.llm import GroqChatModel, groq_quota_tracker
 
     # Set active cooldown window
@@ -458,6 +473,3 @@ async def test_groq_proactive_cooldown_routing(mocker):
     assert call_payload["model"] == "llama-3.1-8b-instant"
 
     groq_quota_tracker.reset_counters()
-
-
-

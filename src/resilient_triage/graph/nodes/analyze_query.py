@@ -1,17 +1,36 @@
 """Node: analyze_query - Extracts intent, normalizes scope, and targets relevant telemetry."""
 
 from typing import Any
-from langchain_core.messages import HumanMessage
 
 from resilient_triage.schemas.state import TriageState
 
-EXTERNAL_KEYWORDS = {"github", "statuspage", "actions", "repo", "webhook", "cloud", "aws", "gcp", "atlassian"}
-INTERNAL_KEYWORDS = {"internal", "chaos", "auth", "database", "redis", "latency probe", "payment", "chaos_probe"}
+EXTERNAL_KEYWORDS = {
+    "github",
+    "statuspage",
+    "actions",
+    "repo",
+    "webhook",
+    "cloud",
+    "aws",
+    "gcp",
+    "atlassian",
+}
+INTERNAL_KEYWORDS = {
+    "internal",
+    "chaos",
+    "auth",
+    "database",
+    "redis",
+    "latency probe",
+    "payment",
+    "chaos_probe",
+}
 
 
 def analyze_query_node(state: TriageState) -> dict[str, Any]:
     """Inspect query context and dynamically target relevant telemetry sources."""
-    query = (state.get("query") or state.get("incident_query") or "").strip()
+    raw_query = state.get("query") or state.get("incident_query") or ""
+    query = str(raw_query).strip()
     service_filter = state.get("service_filter")
     combined_text = f"{query} {service_filter or ''}".lower()
 

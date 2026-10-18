@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig
 
@@ -38,7 +39,9 @@ class TriageResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     report: IncidentTriageReport
-    cached: bool = Field(default=False, description="True if served from semantic cache (X-Cache: HIT)")
+    cached: bool = Field(
+        default=False, description="True if served from semantic cache (X-Cache: HIT)"
+    )
     cache_similarity: float | None = Field(
         default=None,
         description="Cosine similarity score if matched in semantic cache",
@@ -51,6 +54,7 @@ class TriageResponse(BaseModel):
 
 class ChaosTriggerRequest(ChaosConfig):
     """Request body to update runtime chaos simulation parameters."""
+
     pass
 
 
@@ -77,18 +81,40 @@ class LLMQuotaSnapshot(BaseModel):
     provider: str = Field(default="groq", description="LLM provider name")
     active_model: str = Field(..., description="Active primary model name")
     fallback_model: str | None = Field(default=None, description="Active fallback model name")
-    remaining_requests: int | None = Field(default=None, description="Requests remaining in current window")
-    limit_requests: int | None = Field(default=None, description="Total request limit for current window")
-    remaining_tokens: int | None = Field(default=None, description="Tokens remaining in current window")
-    limit_tokens: int | None = Field(default=None, description="Total token limit for current window")
-    reset_requests: str | None = Field(default=None, description="Time until request quota window resets")
-    reset_tokens: str | None = Field(default=None, description="Time until token quota window resets")
+    remaining_requests: int | None = Field(
+        default=None, description="Requests remaining in current window"
+    )
+    limit_requests: int | None = Field(
+        default=None, description="Total request limit for current window"
+    )
+    remaining_tokens: int | None = Field(
+        default=None, description="Tokens remaining in current window"
+    )
+    limit_tokens: int | None = Field(
+        default=None, description="Total token limit for current window"
+    )
+    reset_requests: str | None = Field(
+        default=None, description="Time until request quota window resets"
+    )
+    reset_tokens: str | None = Field(
+        default=None, description="Time until token quota window resets"
+    )
     total_calls: int = Field(default=0, description="Total LLM API calls executed")
-    rate_limit_hits: int = Field(default=0, description="Total HTTP 429 rate limit events encountered")
-    failover_events: int = Field(default=0, description="Total successful fallback model invocations")
-    last_status: int | None = Field(default=None, description="HTTP status code of most recent LLM response")
-    last_error: str | None = Field(default=None, description="Most recent error message or rate limit description")
-    last_updated: datetime | None = Field(default=None, description="Timestamp of most recent update")
+    rate_limit_hits: int = Field(
+        default=0, description="Total HTTP 429 rate limit events encountered"
+    )
+    failover_events: int = Field(
+        default=0, description="Total successful fallback model invocations"
+    )
+    last_status: int | None = Field(
+        default=None, description="HTTP status code of most recent LLM response"
+    )
+    last_error: str | None = Field(
+        default=None, description="Most recent error message or rate limit description"
+    )
+    last_updated: datetime | None = Field(
+        default=None, description="Timestamp of most recent update"
+    )
 
 
 class HealthResponse(BaseModel):
@@ -133,4 +159,3 @@ class ResilienceStatusResponse(BaseModel):
         default=None,
         description="Active LLM quota and rate limit telemetry snapshot",
     )
-

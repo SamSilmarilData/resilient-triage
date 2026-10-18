@@ -31,8 +31,12 @@ class Settings(BaseSettings):
         le=1.0,
         description="Cosine similarity threshold for semantic cache HIT (>= 0.90)",
     )
-    cache_ttl_seconds: int = Field(default=300, ge=30, description="Standard semantic cache TTL in seconds")
-    cache_degraded_ttl_seconds: int = Field(default=60, ge=10, description="Degraded report cache TTL in seconds")
+    cache_ttl_seconds: int = Field(
+        default=300, ge=30, description="Standard semantic cache TTL in seconds"
+    )
+    cache_degraded_ttl_seconds: int = Field(
+        default=60, ge=10, description="Degraded report cache TTL in seconds"
+    )
     embedding_model: str = Field(
         default="BAAI/bge-small-en-v1.5",
         description="FastEmbed ONNX model name",
@@ -73,7 +77,9 @@ class Settings(BaseSettings):
     )
 
     # LLM Providers (Groq LPU, OpenAI, Google)
-    groq_api_key: str | None = Field(default=None, description="Groq API key for ultra-fast LPU inference")
+    groq_api_key: str | None = Field(
+        default=None, description="Groq API key for ultra-fast LPU inference"
+    )
     groq_model: str = Field(
         default="qwen/qwen3.8-27b",
         description="Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
@@ -87,4 +93,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

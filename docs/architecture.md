@@ -106,7 +106,7 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
 
 ---
 
-### 7. High-Performance Latency & Observability Optimizations (v1.1.0)
+### 7. High-Performance Latency & Observability Optimizations (v1.3.0)
 
 During real-world cloud deployment evaluations (e.g. Render Singapore), external network transit, upstream API calls, and cold ONNX runs were identified and eliminated:
 

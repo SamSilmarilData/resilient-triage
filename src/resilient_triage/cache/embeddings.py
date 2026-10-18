@@ -4,13 +4,12 @@ import hashlib
 import logging
 import threading
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
 
 from resilient_triage.config import settings
-
-from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -72,25 +71,36 @@ class FastEmbedProvider(BaseEmbeddingProvider):
         self.model_name = model_name or settings.embedding_model
         self._dim = settings.vector_dimension
         self._model: Any = None
+        self._fallback: DeterministicEmbeddingProvider | None = None
         self._lock = threading.Lock()
         self._cache: OrderedDict[str, list[float]] = OrderedDict()
         self._max_cache_size = max_cache_size
 
     def _ensure_model(self) -> Any:
-        if self._model is None:
+        if self._model is None and self._fallback is None:
             with self._lock:
-                if self._model is None:
-                    logger.info("Initializing FastEmbed model: %s", self.model_name)
-                    from fastembed import TextEmbedding
+                if self._model is None and self._fallback is None:
+                    try:
+                        logger.info("Initializing FastEmbed model: %s", self.model_name)
+                        from fastembed import TextEmbedding
 
-                    self._model = TextEmbedding(model_name=self.model_name)
+                        self._model = TextEmbedding(model_name=self.model_name)
+                    except Exception as exc:
+                        logger.warning(
+                            "FastEmbed initialization failed (%s). Failing over to DeterministicEmbeddingProvider.",
+                            exc,
+                        )
+                        self._fallback = DeterministicEmbeddingProvider(dimension=self._dim)
         return self._model
 
     def warmup(self) -> None:
         """Pre-warm the embedding model so the first request incurs no latency."""
         self._ensure_model()
         self.embed_query("warmup ping")
-        logger.info("FastEmbed model %s pre-warmed successfully.", self.model_name)
+        if self._fallback is None:
+            logger.info("FastEmbed model %s pre-warmed successfully.", self.model_name)
+        else:
+            logger.info("FastEmbed fallback provider active and pre-warmed.")
 
     @property
     def dimension(self) -> int:
@@ -112,6 +122,9 @@ class FastEmbedProvider(BaseEmbeddingProvider):
                 return self._cache[cache_key]
 
         model = self._ensure_model()
+        if self._fallback is not None:
+            return self._fallback.embed_query(text)
+
         # FastEmbed returns a generator of numpy arrays
         raw_vec = next(model.embed([text]))
         normalized = _normalize_vector(raw_vec).tolist()
@@ -135,6 +148,9 @@ class FastEmbedProvider(BaseEmbeddingProvider):
         if not texts:
             return []
         model = self._ensure_model()
+        if self._fallback is not None:
+            return self._fallback.embed_documents(texts)
+
         results = []
         for raw_vec in model.embed(texts):
             results.append(_normalize_vector(raw_vec).tolist())
@@ -252,7 +268,7 @@ def get_embedding_provider(force_deterministic: bool | None = None) -> BaseEmbed
 
 def reset_embedding_provider() -> None:
     """Reset singleton provider instance.
-    
+
     Primarily utilized by test fixtures to clear provider state between tests.
     """
     global _global_embedding_provider

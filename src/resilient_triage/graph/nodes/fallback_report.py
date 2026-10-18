@@ -15,7 +15,7 @@ from resilient_triage.schemas.state import TriageState
 
 def fallback_report_node(state: TriageState) -> dict[str, Any]:
     """Emit guaranteed valid IncidentTriageReport when LLM self-repair retries are exhausted."""
-    query = state.get("query") or state.get("incident_query") or "Incident investigation"
+    query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
     validation_errors = state.get("validation_errors", [])
     cb_status = state.get("circuit_breaker_status", {})
     tripped = [name for name, st in cb_status.items() if st == "open"]
@@ -32,7 +32,9 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
     if "429" in err_snippet:
         root_cause = "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis engaged."
     elif "503" in err_snippet or "unavailable" in err_snippet.lower():
-        root_cause = "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
+        root_cause = (
+            "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
+        )
     else:
         root_cause = f"Self-repair limits reached. Diagnostic context: {err_snippet}"
 

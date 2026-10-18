@@ -1,6 +1,7 @@
 """Node: synthesize_telemetry - Consolidates signals, circuit state, and warnings into model prompt."""
 
 from typing import Any
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from resilient_triage.graph.prompts import (

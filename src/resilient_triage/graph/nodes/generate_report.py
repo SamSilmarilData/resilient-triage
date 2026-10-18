@@ -2,6 +2,7 @@
 
 import logging
 from typing import Any
+
 from langchain_core.messages import AIMessage
 
 from resilient_triage.config import settings

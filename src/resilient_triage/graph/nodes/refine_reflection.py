@@ -1,6 +1,7 @@
 """Node: refine_reflection - Prompts LLM for confidence-driven reflection when confidence is low."""
 
 from typing import Any
+
 from langchain_core.messages import HumanMessage
 
 from resilient_triage.graph.prompts import format_refine_reflection_prompt

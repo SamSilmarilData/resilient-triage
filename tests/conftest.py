@@ -5,7 +5,6 @@ and shared client fixtures.
 """
 
 import httpx
-import pytest
 import pytest_asyncio
 
 from resilient_triage.api.app import app

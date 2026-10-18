@@ -1,6 +1,5 @@
 """Tests for semantic caching, embeddings, and sub-20ms vector lookups."""
 
-import asyncio
 import numpy as np
 import pytest
 import pytest_asyncio
@@ -43,12 +42,16 @@ async def cleanup_cache_instances():
                 pass
 
 
-def _make_sample_report(summary: str = "GitHub Actions failure", degraded: bool = False) -> IncidentTriageReport:
+def _make_sample_report(
+    summary: str = "GitHub Actions failure", degraded: bool = False
+) -> IncidentTriageReport:
     return IncidentTriageReport(
         summary=summary,
         severity=SeverityLevel.HIGH,
         root_cause_analysis="Upstream service outage",
-        degradation_status=DegradationStatus.PARTIALLY_DEGRADED if degraded else DegradationStatus.HEALTHY,
+        degradation_status=DegradationStatus.PARTIALLY_DEGRADED
+        if degraded
+        else DegradationStatus.HEALTHY,
         circuit_breakers_tripped=["statuspage"] if degraded else [],
         confidence_score=0.92,
     )
@@ -115,11 +118,13 @@ def test_embedding_provider_lru_cache():
     assert "query c" in [k.lower() for k in provider._cache]
 
 
-
 def test_format_scoped_query():
     """Verify query scope formatting."""
     assert format_scoped_query("Is Actions down?") == "Is Actions down?"
-    assert format_scoped_query("Is Actions down?", "github-actions") == "[scope: github-actions] Is Actions down?"
+    assert (
+        format_scoped_query("Is Actions down?", "github-actions")
+        == "[scope: github-actions] Is Actions down?"
+    )
     assert format_scoped_query("  Is Actions down?  ", "  CI  ") == "[scope: ci] Is Actions down?"
 
 
@@ -236,6 +241,7 @@ async def test_degraded_report_reduced_ttl():
     degraded_entry = next(e for e in entries if "Degraded query" in e.query)
 
     import time
+
     now = time.monotonic()
     # Healthy TTL should be ~300s, Degraded TTL should be ~60s
     assert 280 < (healthy_entry.expires_at - now) <= 300
@@ -362,6 +368,7 @@ async def test_in_memory_cache_capacity_eviction():
 async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     """Verify that RediSearch query syntax errors do not drop the Redis connection."""
     import redis.exceptions
+
     provider = DeterministicEmbeddingProvider()
     cache = SemanticCacheManager(embedding_provider=provider)
     cache._initialized = True
@@ -369,7 +376,9 @@ async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     # Simulate connected Redis with RediSearch module
     mock_redis = mocker.AsyncMock()
     mock_ft = mocker.MagicMock()
-    mock_ft.search = mocker.AsyncMock(side_effect=redis.exceptions.ResponseError("Syntax error at offset 5"))
+    mock_ft.search = mocker.AsyncMock(
+        side_effect=redis.exceptions.ResponseError("Syntax error at offset 5")
+    )
     mock_redis.ft = mocker.MagicMock(return_value=mock_ft)
     cache._redis = mock_redis
     cache._has_redisearch = True
@@ -409,3 +418,19 @@ async def test_scan_iter_key_enumeration(mocker):
     mock_redis.delete.assert_awaited_once_with(b"triage:doc:1", b"triage:doc:2")
 
 
+def test_fastembed_fallback_to_deterministic_when_offline(mocker):
+    """Verify FastEmbedProvider gracefully falls back to DeterministicEmbeddingProvider if download/init fails."""
+    provider = FastEmbedProvider(model_name="nonexistent/model")
+    mocker.patch(
+        "fastembed.TextEmbedding", side_effect=RuntimeError("Offline network error: 403 Forbidden")
+    )
+
+    vec = provider.embed_query("Fallback test query")
+    assert len(vec) == 384
+    assert np.isclose(np.linalg.norm(vec), 1.0, atol=1e-5)
+    assert provider._fallback is not None
+
+    batch = provider.embed_documents(["Query 1", "Query 2"])
+    assert len(batch) == 2
+    assert len(batch[0]) == 384
+    provider.warmup()

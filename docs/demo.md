@@ -1,4 +1,4 @@
-# 🎬 SRE Command Center: Interactive Demo Guide & Presentation Script (v1.1.0)
+# 🎬 SRE Command Center: Interactive Demo Guide & Presentation Script (v1.3.0)
 
 This guide provides the complete narrative, technical depth, and step-by-step presentation script for showcasing `resilient-triage` to recruiters, engineering managers, teammates, and friends.
 

@@ -8,12 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from resilient_triage.api.app import app
-from resilient_triage.cache.semantic_cache import semantic_cache
-from resilient_triage.graph.llm import MockTriageChatModel, groq_quota_tracker, set_triage_llm
+from resilient_triage.graph.llm import groq_quota_tracker
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
 from resilient_triage.schemas.incident import SeverityLevel
-from resilient_triage.telemetry.chaos import ChaosClient, chaos_manager
+from resilient_triage.telemetry.chaos import ChaosClient
 
 
 @pytest.mark.asyncio
@@ -24,7 +22,7 @@ async def test_health_endpoint(client: httpx.AsyncClient):
 
     data = resp.json()
     assert data["status"] == "healthy"
-    assert data["version"] == "1.1.0"
+    assert data["version"] == "1.3.0"
     assert "statuspage" in data["circuits"]
     assert "chaos" in data["circuits"]
     assert data["circuits"]["statuspage"] == "closed"
@@ -169,6 +167,7 @@ async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient):
     """Verify system degrades gracefully and delivers report when circuit breaker trips."""
     # 1. Force chaos circuit breaker to trip OPEN
     chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
 
@@ -196,6 +195,7 @@ async def test_resilience_status_and_reset(client: httpx.AsyncClient):
     """Verify /resilience/status diagnostics and /resilience/reset recovery."""
     # Trip chaos breaker
     chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
 
@@ -244,7 +244,10 @@ async def test_cache_clear_endpoint(client: httpx.AsyncClient):
 @pytest.mark.asyncio
 async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
     """Verify unhandled exceptions return structured JSON without leaking tracebacks."""
-    with patch("resilient_triage.api.app.triage_graph.ainvoke", side_effect=RuntimeError("Secret internal db failure")):
+    with patch(
+        "resilient_triage.api.app.triage_graph.ainvoke",
+        side_effect=RuntimeError("Secret internal db failure"),
+    ):
         resp = await client.post(
             "/triage",
             json={"query": "Trigger unhandled exception failure", "force_refresh": True},
@@ -281,7 +284,10 @@ async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient)
         data = resp.json()
         report = data["report"]
         assert report["degradation_status"] == "SEVERELY_DEGRADED"
-        assert "429" in report["root_cause_analysis"] or "rate limit" in report["root_cause_analysis"].lower()
+        assert (
+            "429" in report["root_cause_analysis"]
+            or "rate limit" in report["root_cause_analysis"].lower()
+        )
         assert len(report["recommended_actions"]) > 0
 
 
@@ -385,8 +391,13 @@ async def test_chaos_probe_failure_rate_via_api(client: httpx.AsyncClient):
 @pytest.mark.asyncio
 async def test_triage_internal_scope_only_targets_chaos(client: httpx.AsyncClient):
     """Verify that triage requests with service_filter='internal' only target internal chaos telemetry and exclude external Statuspage."""
-    with patch("resilient_triage.telemetry.statuspage.StatuspageClient.fetch_signals") as mock_sp, \
-         patch("resilient_triage.telemetry.chaos.ChaosClient.fetch_signals", wraps=ChaosClient().fetch_signals) as mock_chaos:
+    with (
+        patch("resilient_triage.telemetry.statuspage.StatuspageClient.fetch_signals") as mock_sp,
+        patch(
+            "resilient_triage.telemetry.chaos.ChaosClient.fetch_signals",
+            wraps=ChaosClient().fetch_signals,
+        ) as mock_chaos,
+    ):
         resp = await client.post(
             "/triage",
             json={
@@ -498,7 +509,9 @@ async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
     assert r2.status_code == 401
 
     # /chaos/inject accepted with valid key
-    r3 = await client.post("/chaos/inject", json={"active": False}, headers={"X-Admin-Key": "super_secret_token_42"})
+    r3 = await client.post(
+        "/chaos/inject", json={"active": False}, headers={"X-Admin-Key": "super_secret_token_42"}
+    )
     assert r3.status_code == 200
 
     # /resilience/reset rejected without key
@@ -522,7 +535,10 @@ async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
 async def test_lifespan_closes_telemetry_and_llm_clients():
     """Verify close_statuspage_client and close_groq_async_client execute safely without error."""
     from resilient_triage.graph.llm import close_groq_async_client, get_groq_async_client
-    from resilient_triage.telemetry.statuspage import _get_statuspage_client, close_statuspage_client
+    from resilient_triage.telemetry.statuspage import (
+        _get_statuspage_client,
+        close_statuspage_client,
+    )
 
     # Instantiate clients
     c1 = _get_statuspage_client()
@@ -535,5 +551,3 @@ async def test_lifespan_closes_telemetry_and_llm_clients():
     assert c1.is_closed
     await close_groq_async_client()
     assert c2.is_closed
-
-

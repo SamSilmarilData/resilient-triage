@@ -1,9 +1,6 @@
 """Prompt templates and formatters for LangGraph triage nodes."""
 
-import json
 from typing import Any
-
-from resilient_triage.schemas.incident import IncidentTriageReport
 
 TRIAGE_SYSTEM_PROMPT = """You are an expert site reliability engineer and incident triage agent named resilient-triage.
 Your job is to analyze telemetry signals, isolate the root cause, determine severity, and recommend actionable remediation steps.

@@ -2,11 +2,11 @@
 
 import asyncio
 import time
+
 import pytest
 from pybreaker import CircuitBreakerError
 
 from resilient_triage.resilience.circuit_breaker import (
-    AsyncCircuitBreaker,
     CircuitBreakerRegistry,
 )
 
@@ -74,7 +74,7 @@ async def test_circuit_breaker_registry_snapshots_and_reset():
     """Verify registry tracks multiple named breakers and supports full reset."""
     registry = CircuitBreakerRegistry()
     cb1 = registry.get_or_create("service_alpha", fail_max=3)
-    cb2 = registry.get_or_create("service_beta", fail_max=3)
+    registry.get_or_create("service_beta", fail_max=3)
 
     async def fail():
         raise ValueError("boom")

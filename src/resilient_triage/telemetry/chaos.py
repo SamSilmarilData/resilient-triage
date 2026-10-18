@@ -5,7 +5,6 @@ import logging
 import random
 import threading
 import time
-from typing import Any
 
 import httpx
 from pybreaker import CircuitBreakerError

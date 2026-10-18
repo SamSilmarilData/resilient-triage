@@ -22,7 +22,12 @@ async def test_statuspage_client_parsing_and_signals():
         "status": {"indicator": "major", "description": "Major Service Outage"},
         "components": [
             {"id": "c1", "name": "Git Operations", "status": "operational"},
-            {"id": "c2", "name": "Actions", "status": "major_outage", "description": "Actions unavailable"},
+            {
+                "id": "c2",
+                "name": "Actions",
+                "status": "major_outage",
+                "description": "Actions unavailable",
+            },
         ],
         "incidents": [
             {
@@ -244,12 +249,19 @@ def test_resolve_probe_source():
     assert resolve_probe_source(service_hint="api_gateway") == "api_gateway_probe"
     assert resolve_probe_source(query="Ingress router 502 errors") == "api_gateway_probe"
     assert resolve_probe_source(service_hint="postgres") == "postgres_health_probe"
-    assert resolve_probe_source(query="Database connection pool exhaustion") == "postgres_health_probe"
+    assert (
+        resolve_probe_source(query="Database connection pool exhaustion") == "postgres_health_probe"
+    )
     assert resolve_probe_source(service_hint="payment_service") == "payment_service_probe"
     assert resolve_probe_source(query="Checkout billing webhook timeout") == "payment_service_probe"
     assert resolve_probe_source(service_hint="auth-service") == "auth_service_probe"
-    assert resolve_probe_source(query="JWT session token validation latency") == "auth_service_probe"
-    assert resolve_probe_source(service_hint="unknown_worker", query="general alert") == "cluster_health_probe"
+    assert (
+        resolve_probe_source(query="JWT session token validation latency") == "auth_service_probe"
+    )
+    assert (
+        resolve_probe_source(service_hint="unknown_worker", query="general alert")
+        == "cluster_health_probe"
+    )
     assert resolve_probe_source() == "cluster_health_probe"
 
 
@@ -269,12 +281,12 @@ async def test_chaos_fetch_signals_dynamic_attribution():
 
     # 2. Inject 503 error - verify symptom contains NO simulator jargon
     mgr.update_config(ChaosConfig(active=True, inject_503=True))
-    signals_err = await client.fetch_signals(service_hint="gateway", query="Ingress dropping traffic")
+    signals_err = await client.fetch_signals(
+        service_hint="gateway", query="Ingress dropping traffic"
+    )
     assert len(signals_err) == 1
     assert signals_err[0].source == "api_gateway_probe"
     assert signals_err[0].status == "UNAVAILABLE"
     # Ensure simulator jargon is eliminated
     assert "Injected Chaos Fault" not in (signals_err[0].raw_snippet or "")
     assert "worker pool saturated" in (signals_err[0].raw_snippet or "")
-
-
