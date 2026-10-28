@@ -1,4 +1,4 @@
-"""Circuit breaker implementation with pybreaker and async support."""
+"""Circuit breaker: project-owned async breaker interface; the only module importing pybreaker."""
 
 import logging
 import threading
@@ -14,6 +14,10 @@ from resilient_triage.config import settings
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+class BreakerOpen(Exception):
+    """Raised when a circuit breaker refuses a call because it is open."""
 
 
 class CircuitBreakerInfo(BaseModel):
@@ -90,53 +94,42 @@ class CircuitBreakerMetricsListener(pybreaker.CircuitBreakerListener):
 
 
 class AsyncCircuitBreaker:
-    """Thread-safe async adapter for pybreaker.CircuitBreaker.
+    """Async circuit breaker; the project's interface over pybreaker.
 
     Bypasses pybreaker's legacy Tornado-dependent call_async while preserving
-    100% of pybreaker's state machine, listeners, thread-safety, and storage options.
+    pybreaker's state machine, listeners, thread-safety, and storage options.
+    Callers see only `call`, `name`, `state`, `info()` and `reset()`, and catch
+    `BreakerOpen` when the breaker refuses a call.
     """
 
     def __init__(
         self, breaker: pybreaker.CircuitBreaker, listener: CircuitBreakerMetricsListener
     ) -> None:
-        self.breaker = breaker
-        self.listener = listener
+        self._breaker = breaker
+        self._listener = listener
 
     @property
     def name(self) -> str:
-        return self.breaker.name or ""
+        """Breaker name as registered."""
+        return self._breaker.name or ""
 
     @property
-    def current_state(self) -> str:
-        return str(self.breaker.current_state)
+    def state(self) -> str:
+        """Current state: 'closed', 'open' or 'half-open'."""
+        return str(self._breaker.current_state)
 
-    @property
-    def is_open(self) -> bool:
-        return self.current_state == pybreaker.STATE_OPEN
-
-    @property
-    def fail_counter(self) -> int:
-        return self.breaker.fail_counter
-
-    @property
-    def fail_max(self) -> int:
-        return self.breaker.fail_max
-
-    def get_info(self) -> CircuitBreakerInfo:
-        """Produce a diagnostic snapshot of breaker status and metrics.
-
-        Returns:
-            CircuitBreakerInfo: Pydantic model with breaker state, fail counts, and timestamps.
-        """
+    def info(self) -> CircuitBreakerInfo:
+        """Produce a diagnostic snapshot of breaker status and metrics."""
+        state = self.state
         return CircuitBreakerInfo(
             name=self.name,
-            state=self.current_state,
-            fail_counter=self.fail_counter,
-            fail_max=self.fail_max,
-            is_open=self.is_open,
-            last_failure_time=self.listener.last_failure_time,
-            last_state_change=self.listener.last_state_change,
-            last_failure_reason=self.listener.last_failure_reason,
+            state=state,
+            fail_counter=self._breaker.fail_counter,
+            fail_max=self._breaker.fail_max,
+            is_open=state == pybreaker.STATE_OPEN,
+            last_failure_time=self._listener.last_failure_time,
+            last_state_change=self._listener.last_state_change,
+            last_failure_reason=self._listener.last_failure_reason,
         )
 
     async def call(self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
@@ -151,43 +144,48 @@ class AsyncCircuitBreaker:
             T: Value returned by func.
 
         Raises:
-            pybreaker.CircuitBreakerError: If breaker is in OPEN state and timeout not elapsed,
-                or if trial call fails in half-open state.
-            BaseException: Any unhandled exception raised by func during execution.
+            BreakerOpen: If the breaker is open and its reset timeout has not elapsed, or
+                if this call's failure trips the breaker open.
+            BaseException: Any other exception raised by func during execution.
         """
         # 1. Check state before execution
-        with self.breaker._lock:
-            current_st = str(self.breaker.current_state)
-            if current_st == pybreaker.STATE_OPEN:
-                timeout = timedelta(seconds=self.breaker.reset_timeout)
-                opened_at = self.breaker._state_storage.opened_at
+        with self._breaker._lock:
+            if str(self._breaker.current_state) == pybreaker.STATE_OPEN:
+                timeout = timedelta(seconds=self._breaker.reset_timeout)
+                opened_at = self._breaker._state_storage.opened_at
                 if opened_at and datetime.now(UTC) < opened_at + timeout:
-                    raise pybreaker.CircuitBreakerError(
-                        "Timeout not elapsed yet, circuit breaker still open"
-                    )
+                    raise BreakerOpen("Timeout not elapsed yet, circuit breaker still open")
                 # Timeout elapsed: transition to half-open trial probe
-                self.breaker.half_open()
+                self._breaker.half_open()
 
-            for listener in self.breaker.listeners:
-                listener.before_call(self.breaker, func, *args, **kwargs)
+            for listener in self._breaker.listeners:
+                listener.before_call(self._breaker, func, *args, **kwargs)
 
         try:
             # 2. Execute async coroutine
             result = await func(*args, **kwargs)
         except BaseException as exc:
-            # 3. Handle error inside lock
-            with self.breaker._lock:
-                self.breaker.state._handle_error(exc, reraise=False)
+            # 3. Handle error inside lock; pybreaker raises its own error on the tripping failure
+            with self._breaker._lock:
+                try:
+                    self._breaker.state._handle_error(exc, reraise=False)
+                except pybreaker.CircuitBreakerError as trip:
+                    raise BreakerOpen(str(trip)) from exc
             raise
         else:
             # 4. Handle success inside lock
-            with self.breaker._lock:
-                self.breaker.state._handle_success()
+            with self._breaker._lock:
+                self._breaker.state._handle_success()
             return result
 
-    def close(self) -> None:
+    def reset(self) -> None:
         """Manually close the circuit breaker and reset failure counters."""
-        self.breaker.close()
+        self._breaker.close()
+
+
+def force_open_for_tests(breaker: AsyncCircuitBreaker) -> None:
+    """Test-only: trip `breaker` open immediately, without any failing calls."""
+    breaker._breaker.open()
 
 
 class CircuitBreakerRegistry:
@@ -256,13 +254,13 @@ class CircuitBreakerRegistry:
             dict[str, CircuitBreakerInfo]: Mapping of breaker name to diagnostic info.
         """
         with self._lock:
-            return {name: cb.get_info() for name, cb in self._breakers.items()}
+            return {name: cb.info() for name, cb in self._breakers.items()}
 
     def reset_all(self) -> None:
         """Reset all registered breakers to closed state."""
         with self._lock:
             for cb in self._breakers.values():
-                cb.close()
+                cb.reset()
 
 
 # Global registry singleton

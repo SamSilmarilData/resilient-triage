@@ -143,16 +143,16 @@ async def test_chaos_probe_trips_circuit_breaker(client: httpx.AsyncClient):
     await client.post("/chaos/inject", json={"active": True, "inject_503": True})
 
     chaos_cb = circuit_breaker_registry.get_or_create("chaos")
-    assert chaos_cb.is_open is False
+    assert chaos_cb.info().is_open is False
 
     # 2. Probe until fail_max is reached and breaker trips
-    for _ in range(chaos_cb.fail_max):
+    for _ in range(chaos_cb.info().fail_max):
         try:
             await client.get("/chaos/probe")
         except Exception:
             pass
 
-    assert chaos_cb.is_open is True
+    assert chaos_cb.info().is_open is True
 
     # 3. /health should now report degraded status
     health_resp = await client.get("/health")
@@ -171,10 +171,10 @@ async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient):
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
 
-    for _ in range(chaos_cb.fail_max):
+    for _ in range(chaos_cb.info().fail_max):
         with pytest.raises(Exception):
             await chaos_cb.call(_failing_task)
-    assert chaos_cb.is_open is True
+    assert chaos_cb.info().is_open is True
 
     # 2. Trigger triage request through API
     resp = await client.post(
@@ -199,7 +199,7 @@ async def test_resilience_status_and_reset(client: httpx.AsyncClient):
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
 
-    for _ in range(chaos_cb.fail_max):
+    for _ in range(chaos_cb.info().fail_max):
         with pytest.raises(Exception):
             await chaos_cb.call(_failing_task)
 
@@ -216,7 +216,7 @@ async def test_resilience_status_and_reset(client: httpx.AsyncClient):
     assert reset_resp.status_code == 200
 
     # Verify breaker is closed and health restored
-    assert chaos_cb.is_open is False
+    assert chaos_cb.info().is_open is False
     health_resp = await client.get("/health")
     assert health_resp.json()["status"] == "healthy"
 
@@ -326,10 +326,10 @@ async def test_emergency_fallback_report_lists_tripped_breakers(client: httpx.As
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
 
-    for _ in range(chaos_cb.fail_max):
+    for _ in range(chaos_cb.info().fail_max):
         with pytest.raises(Exception):
             await chaos_cb.call(_failing_task)
-    assert chaos_cb.is_open is True
+    assert chaos_cb.info().is_open is True
 
     with _graph_without_final_report():
         resp = await client.post(
