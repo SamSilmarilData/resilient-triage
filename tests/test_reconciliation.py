@@ -125,7 +125,7 @@ def test_other_fields_are_untouched():
 
 
 def test_approval_check_fails_safe():
-    """Any non-diagnostic action_type ends with requires_approval=True; diagnostic keeps its value."""
+    """Non-diagnostic action_type ends with requires_approval=True; diagnostic keeps its value."""
     actions = [
         _action("Remediation"),
         _action("mutating"),

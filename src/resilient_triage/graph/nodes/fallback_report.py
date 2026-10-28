@@ -27,7 +27,10 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
 
     err_snippet = "; ".join(validation_errors[:2]) if validation_errors else "LLM synthesis error"
     if "429" in err_snippet:
-        root_cause = "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis engaged."
+        root_cause = (
+            "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis "
+            "engaged."
+        )
     elif "503" in err_snippet or "unavailable" in err_snippet.lower():
         root_cause = (
             "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."

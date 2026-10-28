@@ -47,7 +47,7 @@ async def close_groq_async_client() -> None:
 
 
 class GroqQuotaTracker:
-    """Thread-safe tracker recording Groq rate limit headers, token budgets, and failover metrics."""
+    """Thread-safe tracker of Groq rate-limit headers, token budgets, and failover metrics."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -372,7 +372,9 @@ class MockTriageChatModel(BaseChatModel):
                 "recommended_actions": [
                     {
                         "priority": "P0",
-                        "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+                        "action": (
+                            "Inspect Actions webhook runner health: kubectl get pods -n actions"
+                        ),
                         "target_system": "Actions Controller",
                         "action_type": "diagnostic",
                         "requires_approval": False,

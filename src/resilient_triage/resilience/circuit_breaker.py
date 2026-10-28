@@ -57,7 +57,10 @@ class CircuitBreakerMetricsListener(pybreaker.CircuitBreakerListener):
         if new_name == pybreaker.STATE_OPEN:
             self.total_trips += 1
             logger.error(
-                "CIRCUIT BREAKER TRIPPED OPEN: '%s' tripped from %s to %s (consecutive failures: %d/%d)",
+                (
+                    "CIRCUIT BREAKER TRIPPED OPEN: '%s' tripped from %s to %s (consecutive "
+                    "failures: %d/%d)"
+                ),
                 cb.name,
                 old_name,
                 new_name,

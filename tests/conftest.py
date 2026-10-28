@@ -26,7 +26,7 @@ from resilient_triage.telemetry.statuspage import (
 
 @pytest_asyncio.fixture(autouse=True)
 async def reset_global_test_environment(monkeypatch):
-    """Uniformly reset application singletons, clear caches, and minimize retry delays for fast execution."""
+    """Reset app singletons, clear caches, and minimise retry delays so tests run fast."""
     # Compress retry wait intervals in tests to eliminate idle sleeps while testing retry logic
     monkeypatch.setattr(settings, "retry_min_wait_seconds", 0.001)
     monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.005)

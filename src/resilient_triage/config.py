@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     vector_dimension: int = Field(default=384, description="Embedding vector dimension")
     use_deterministic_embeddings: bool = Field(
         default=False,
-        description="Force deterministic offline embeddings (useful for tests and airgapped environments)",
+        description=(
+            "Force deterministic offline embeddings (useful for tests and airgapped environments)"
+        ),
     )
 
     # Telemetry Sources

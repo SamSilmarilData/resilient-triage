@@ -95,14 +95,23 @@ class ChaosClient:
                 dummy_req = httpx.Request("GET", "http://internal-cluster/probe")
                 dummy_resp = httpx.Response(503, request=dummy_req, content=b"Service Unavailable")
                 raise httpx.HTTPStatusError(
-                    message="503 Service Unavailable: upstream connection refused / worker pool saturated",
+                    message=(
+                        "503 Service Unavailable: upstream connection refused / "
+                        "worker pool saturated"
+                    ),
                     request=dummy_req,
                     response=dummy_resp,
                 )
 
-        details = "Internal cluster service mesh health checks reporting operational status (HTTP 200). Latency nominal."
+        details = (
+            "Internal cluster service mesh health checks reporting operational status "
+            "(HTTP 200). Latency nominal."
+        )
         if cfg.active and cfg.latency_ms > 0:
-            details = f"Internal cluster health check reporting elevated transit delay (+{cfg.latency_ms}ms) across service mesh."
+            details = (
+                "Internal cluster health check reporting elevated transit delay "
+                f"(+{cfg.latency_ms}ms) across service mesh."
+            )
 
         return ChaosTelemetryResponse(
             status="OK",
