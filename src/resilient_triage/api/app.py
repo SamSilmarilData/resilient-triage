@@ -22,6 +22,7 @@ from resilient_triage.graph.llm import (
     get_active_model_name,
     groq_quota_tracker,
 )
+from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
@@ -241,7 +242,12 @@ async def triage_incident(payload: TriageRequest, request: Request):
         if not fallback_input.get("service_filter"):
             fallback_input["service_filter"] = payload.service_filter
         fallback_state = fallback_report_node(cast(TriageState, fallback_input))
-        final_report = fallback_state["final_report"]
+        fallback_input.update(fallback_state)
+        # Second reconciliation call site (after finalize): the graph never reached it.
+        final_report = reconcile(
+            fallback_state["final_report"],
+            DegradationEvidence.from_state(cast(TriageState, fallback_input)),
+        )
         # Persist emergency fallback report to semantic cache
         await semantic_cache.store(
             query=payload.query,

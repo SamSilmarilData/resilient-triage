@@ -4,36 +4,32 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+/build/
+/dist/
+/wheels/
 *.egg-info/
-.installed.cfg
+.eggs/
 *.egg
 
 # Virtual environments
 .venv/
 venv/
+/env/
 ENV/
 
-# Testing & Coverage
+# Testing, coverage & tool caches
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
+.mypy_cache/
+.ruff_cache/
 
 # Environment variables
 .env
-.env.local
+.env.*
+!.env.example
 
 # IDE
 .idea/
@@ -44,11 +40,16 @@ htmlcov/
 # OS
 .DS_Store
 
-# Agent skills & local agent docs
+# Agent skills & local agent state
 .agents/
 skills-lock.json
-AGENTS.md
-CLAUDE.md
+.claude/worktrees/
+.claude/settings.local.json
+.claude/skills/
+
+# Generated artifacts
+brag-output/
+node_modules/
 
 # Temporary sqlite/checkpointer sessions
 *.ses

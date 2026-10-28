@@ -47,7 +47,7 @@ stateDiagram-v2
 2. **`OPEN` (Failing Fast)**:
    - Calls immediately raise `pybreaker.CircuitBreakerError` in $<0.01\text{ms}$ without executing network I/O.
    - Protects the failing dependency from retry storms.
-   - Triggers `DegradedFallbackNode` in LangGraph.
+   - If the breaker belongs to a targeted tool, it is recorded as a tripped breaker and triggers `DegradedFallbackNode` in LangGraph.
 3. **`HALF_OPEN` (Trial Probe)**:
    - After `reset_timeout = 30` seconds, the breaker enters `HALF_OPEN`.
    - Allows a single test request through.
@@ -112,9 +112,30 @@ Large Language Models frequently emit JSON with minor syntax or schema defects. 
    - If the model fails after 2 repair attempts, execution routes to `fallback_report_node`.
    - Synthesizes a deterministic `IncidentTriageReport`:
      - Severity: `UNKNOWN` or inferred from query keywords.
-     - Degradation Status: `SEVERELY_DEGRADED`.
+     - Degradation Status: `SEVERELY_DEGRADED`, set by report reconciliation in `finalize` because the node records `synthesis_fell_back: True` (see below).
      - Root Cause: Explicitly notes model generation exhaustion and includes raw query signals.
      - Recommended Actions: Supplies baseline diagnostic commands (`kubectl logs`, `kubectl top`, `systemctl status`).
+
+### Degradation status: report reconciliation in `finalize`
+
+A report's `degradation_status` and `circuit_breakers_tripped` are system facts, never the model's opinion. They are set by `reconcile(report, DegradationEvidence.from_state(state))` (`graph/reconciliation.py`), which has two call sites: `finalize` calls it on every report the graph produces, whether it came from the LLM, self-repair, refinement or the synthesis fallback; and the emergency path in `POST /triage` (`api/app.py`) calls it when the graph returns no `final_report` and the API builds one with `fallback_report_node`, on the graph's state plus `synthesis_fell_back: True`, before caching it.
+
+The evidence is:
+- **Tripped breakers**: targeted tools whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
+- **Unavailable sources**: targeted tools that could not be read while their breaker was *not* tripped: the fetch task raised, or a signal it returned has `status == "UNAVAILABLE"`. `collect_telemetry` records them as `unavailable_sources`. A tool whose breaker is tripped counts only as a tripped breaker, never also as an unavailable source.
+- **Synthesis fallback**: the report was built by `fallback_report`.
+
+The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED):
+
+| Evidence | Status |
+| :--- | :--- |
+| Synthesis fallback | `SEVERELY_DEGRADED` |
+| 2 or more tripped breakers | `SEVERELY_DEGRADED` |
+| Exactly 1 tripped breaker | `PARTIALLY_DEGRADED` |
+| Any unavailable source | `PARTIALLY_DEGRADED` |
+| None of the above | `HEALTHY` |
+
+`circuit_breakers_tripped` becomes the sorted tripped-breaker set; breaker names the LLM made up are dropped. `UNKNOWN` is never produced.
 
 ---
 

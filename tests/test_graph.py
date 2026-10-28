@@ -17,6 +17,7 @@ from resilient_triage.schemas.incident import (
     DegradationStatus,
     IncidentTriageReport,
     SeverityLevel,
+    TelemetrySignal,
 )
 
 
@@ -328,10 +329,51 @@ async def test_collect_telemetry_dynamic_probe_routing():
     assert signals_gw[0]["source"] == "api_gateway_probe"
 
 
-def test_validate_report_enforces_remediation_approval_safety():
-    """Verify validate_report_node programmatically overrides mutating actions to requires_approval=True."""
-    from resilient_triage.graph.nodes.validate_report import validate_report_node
+_STATUSPAGE_FETCH = "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals"
+_UNAVAILABLE_SIGNAL = TelemetrySignal(
+    source="statuspage:global", status="UNAVAILABLE", raw_snippet="Statuspage unavailable"
+)
 
+
+@pytest.mark.asyncio
+async def test_collect_telemetry_records_source_whose_task_raised(mocker):
+    """A targeted source whose fetch task raised is recorded as unavailable."""
+    mocker.patch(_STATUSPAGE_FETCH, new=mocker.AsyncMock(side_effect=RuntimeError("boom")))
+
+    result = await collect_telemetry_node({"query": "q", "target_tools": ["statuspage"]})
+
+    assert result["unavailable_sources"] == ["statuspage"]
+    assert result["tripped_breakers"] == []
+
+
+@pytest.mark.asyncio
+async def test_collect_telemetry_tripped_breaker_is_not_unavailable(mocker):
+    """A source whose breaker is tripped counts as a tripped breaker, not an unavailable source."""
+    circuit_breaker_registry.get_or_create("statuspage").breaker.open()
+    mocker.patch(_STATUSPAGE_FETCH, new=mocker.AsyncMock(return_value=[_UNAVAILABLE_SIGNAL]))
+
+    result = await collect_telemetry_node({"query": "q", "target_tools": ["statuspage"]})
+
+    assert result["tripped_breakers"] == ["statuspage"]
+    assert result["unavailable_sources"] == []
+
+
+@pytest.mark.asyncio
+async def test_collect_telemetry_never_records_untargeted_source(mocker):
+    """A source the query does not target is never recorded as unavailable."""
+    fetch = mocker.patch(_STATUSPAGE_FETCH, new=mocker.AsyncMock(side_effect=RuntimeError("x")))
+
+    result = await collect_telemetry_node(
+        {"query": "Database connection pool exhausted", "target_tools": ["chaos"]}
+    )
+
+    fetch.assert_not_called()
+    assert result["unavailable_sources"] == []
+
+
+@pytest.mark.asyncio
+async def test_graph_enforces_remediation_approval_safety():
+    """Verify the graph's final report forces requires_approval=True on non-diagnostic actions."""
     candidate_with_unapproved_remediation = json.dumps(
         {
             "summary": "Kubernetes worker node pool CPU saturation",
@@ -350,7 +392,7 @@ def test_validate_report_enforces_remediation_approval_safety():
                     "priority": "P0",
                     "action": "kubectl drain node-pool-primary --delete-emptydir-data --force",
                     "target_system": "Kubelet",
-                    "action_type": "remediative",
+                    "action_type": "Remediation",
                     "requires_approval": False,  # Safety violation from LLM
                 },
                 {
@@ -367,17 +409,16 @@ def test_validate_report_enforces_remediation_approval_safety():
         }
     )
 
-    state = {
-        "candidate_report_raw": candidate_with_unapproved_remediation,
-        "repair_attempts": 0,
-        "circuit_breaker_status": {},
-    }
+    mock_llm = MockTriageChatModel()
+    mock_llm.responses = [candidate_with_unapproved_remediation]
+    set_triage_llm(mock_llm)
 
-    result = validate_report_node(state)
-    report = result["final_report"]
-    assert report is not None
-    # Remediative action must be programmatically forced to requires_approval=True
-    assert report.recommended_actions[0].action_type == "remediative"
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "Kubernetes worker node pool CPU saturation"})
+    report = final_state["final_report"]
+    assert isinstance(report, IncidentTriageReport)
+    # Non-diagnostic action must be programmatically forced to requires_approval=True
+    assert report.recommended_actions[0].action_type == "Remediation"
     assert report.recommended_actions[0].requires_approval is True
     # Diagnostic action remains requires_approval=False
     assert report.recommended_actions[1].action_type == "diagnostic"
@@ -400,12 +441,12 @@ def test_bounded_memory_saver_eviction():
     assert set(saver.storage.keys()) == {"thread_2", "thread_3"}
 
 
-def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
-    """Verify validate_report_node elevates degradation_status from HEALTHY when breakers are open."""
-    from resilient_triage.graph.nodes.validate_report import validate_report_node
+def test_reconcile_overrides_hallucinated_healthy_when_circuit_tripped():
+    """Verify reconcile elevates degradation_status from HEALTHY when breakers are tripped."""
+    from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
     from resilient_triage.schemas.incident import DegradationStatus
 
-    raw_json = json.dumps(
+    report = IncidentTriageReport.model_validate(
         {
             "summary": "Partial database failover",
             "severity": "MEDIUM",
@@ -419,23 +460,23 @@ def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
         }
     )
 
-    # 1 breaker open -> PARTIALLY_DEGRADED
-    state_single = {
-        "candidate_report_raw": raw_json,
-        "repair_attempts": 0,
-        "circuit_breaker_status": {"chaos": "open"},
-    }
-    rep_single = validate_report_node(state_single)["final_report"]
+    # 1 breaker tripped -> PARTIALLY_DEGRADED
+    single = DegradationEvidence(
+        tripped_breakers=frozenset({"chaos"}),
+        unavailable_sources=frozenset(),
+        synthesis_fell_back=False,
+    )
+    rep_single = reconcile(report, single)
     assert rep_single.degradation_status == DegradationStatus.PARTIALLY_DEGRADED
     assert rep_single.circuit_breakers_tripped == ["chaos"]
 
-    # 2 breakers open -> SEVERELY_DEGRADED
-    state_double = {
-        "candidate_report_raw": raw_json,
-        "repair_attempts": 0,
-        "circuit_breaker_status": {"chaos": "open", "statuspage": "open"},
-    }
-    rep_double = validate_report_node(state_double)["final_report"]
+    # 2 breakers tripped -> SEVERELY_DEGRADED
+    double = DegradationEvidence(
+        tripped_breakers=frozenset({"chaos", "statuspage"}),
+        unavailable_sources=frozenset(),
+        synthesis_fell_back=False,
+    )
+    rep_double = reconcile(report, double)
     assert rep_double.degradation_status == DegradationStatus.SEVERELY_DEGRADED
     assert set(rep_double.circuit_breakers_tripped) == {"chaos", "statuspage"}
 
@@ -473,3 +514,88 @@ async def test_groq_proactive_cooldown_routing(mocker):
     assert call_payload["model"] == "llama-3.1-8b-instant"
 
     groq_quota_tracker.reset_counters()
+
+
+@pytest.mark.asyncio
+async def test_synthesis_fallback_status_is_never_downgraded():
+    """Synthesis fallback with one tripped breaker gives SEVERELY_DEGRADED, not PARTIALLY."""
+    circuit_breaker_registry.get_or_create("chaos").breaker.open()
+
+    mock_llm = MockTriageChatModel()
+    mock_llm.responses = ["not json"] * 5
+    set_triage_llm(mock_llm)
+
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "Internal chaos probe failing on auth-service"})
+
+    report = final_state["final_report"]
+    assert isinstance(report, IncidentTriageReport)
+    assert report.confidence_score == 0.20
+    assert report.circuit_breakers_tripped == ["chaos"]
+    assert report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+
+
+@pytest.mark.asyncio
+async def test_only_targeted_breakers_degrade_the_report(mocker):
+    """An open breaker the query never targets leaves the report HEALTHY."""
+    circuit_breaker_registry.get_or_create("chaos").breaker.open()
+    mocker.patch(
+        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
+        new=mocker.AsyncMock(return_value=[]),
+    )
+
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+
+    assert final_state["target_tools"] == ["statuspage"]
+    report = final_state["final_report"]
+    assert report.degradation_status == DegradationStatus.HEALTHY
+    assert report.circuit_breakers_tripped == []
+
+
+@pytest.mark.asyncio
+async def test_llm_invented_breaker_names_are_dropped(mocker):
+    """An LLM report claiming a tripped 'redis' breaker with no evidence gets an empty list."""
+    mocker.patch(
+        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
+        new=mocker.AsyncMock(return_value=[]),
+    )
+    claimed = json.loads(_make_valid_report_json())
+    claimed["circuit_breakers_tripped"] = ["redis"]
+
+    mock_llm = MockTriageChatModel()
+    mock_llm.responses = [json.dumps(claimed)]
+    set_triage_llm(mock_llm)
+
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+
+    report = final_state["final_report"]
+    assert report.circuit_breakers_tripped == []
+    assert report.degradation_status == DegradationStatus.HEALTHY
+
+
+@pytest.mark.asyncio
+async def test_unavailable_source_degrades_the_report(mocker):
+    """A targeted source returning UNAVAILABLE with a closed breaker gives PARTIALLY_DEGRADED."""
+    mocker.patch(
+        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
+        new=mocker.AsyncMock(
+            return_value=[
+                TelemetrySignal(
+                    source="statuspage:global",
+                    status="UNAVAILABLE",
+                    raw_snippet="Statuspage unavailable: connection reset",
+                )
+            ]
+        ),
+    )
+
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+
+    assert final_state["target_tools"] == ["statuspage"]
+    assert not circuit_breaker_registry.get_or_create("statuspage").is_open
+    report = final_state["final_report"]
+    assert report.circuit_breakers_tripped == []
+    assert report.degradation_status == DegradationStatus.PARTIALLY_DEGRADED

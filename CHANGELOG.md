@@ -5,6 +5,18 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Report reconciliation owns the degradation fields**: `finalize` now runs `reconcile` (`graph/reconciliation.py`) on every report, so `degradation_status` and `circuit_breakers_tripped` follow one rule whichever path produced the report. The LLM no longer controls either field: its values, including breaker names it made up, are discarded.
+- **Any non-diagnostic action now requires approval**: report reconciliation sets `requires_approval=True` on every recommended action whose `action_type` is not `diagnostic` (case and whitespace ignored). Previously only the exact value `remediative` was caught, so labels like `"Remediation"` or `"mutating"` slipped through. The check moved out of `validate_report`.
+- **Only targeted breakers degrade a report**: an open circuit breaker for a telemetry source the query does not target no longer marks the report degraded or lists that breaker.
+- **Unavailable sources degrade a report**: a targeted telemetry source that fails (its fetch raised or returned an `UNAVAILABLE` signal) while its breaker is still closed now makes the report at least `PARTIALLY_DEGRADED`; previously the report could claim `HEALTHY`.
+
+### Fixed
+- A synthesis fallback report with one tripped breaker is now `SEVERELY_DEGRADED`; previously `finalize` downgraded it to `PARTIALLY_DEGRADED`.
+- The emergency fallback report (built by `POST /triage` when the graph returns no report) is now reconciled too, so it is `SEVERELY_DEGRADED` and lists tripped targeted breakers instead of being returned and cached as `HEALTHY`.
+
 ## [1.3.0] - 2026-10-12 — Editorial Vector Visualizations & Documentation Upgrade
 
 ### Added

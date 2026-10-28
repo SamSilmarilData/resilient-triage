@@ -60,10 +60,7 @@ def route_after_telemetry(state: TriageState) -> Literal["compensate", "synthesi
     Returns:
         Literal["compensate", "synthesize"]: Next destination node key.
     """
-    target_tools = state.get("target_tools", [])
-    cb_status = state.get("circuit_breaker_status", {})
-
-    tripped = [tool for tool in target_tools if cb_status.get(tool) == "open"]
+    tripped = state.get("tripped_breakers", [])
     if tripped:
         logger.warning("Routing to compensatory degraded branch for tripped breakers: %s", tripped)
         return "compensate"
