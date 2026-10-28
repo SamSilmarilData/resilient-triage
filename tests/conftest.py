@@ -1,10 +1,14 @@
 """Pytest configuration and shared fixtures for the resilient-triage test suite.
 
-Every test gets fast retry waits; tests that need app state take the `runtime` fixture, a fresh
-AppRuntime per test, so there are no module-level singletons to reset.
+Every test gets fast retry waits and no network beyond loopback; tests that need app state
+take the `runtime` fixture, a fresh AppRuntime per test, so there are no module-level
+singletons to reset.
 """
 
-from collections.abc import AsyncIterator
+import ipaddress
+import socket
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import httpx
 import pytest
@@ -22,6 +26,56 @@ def fast_retry_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Compress retry wait intervals so retry tests don't sleep."""
     monkeypatch.setattr(settings, "retry_min_wait_seconds", 0.001)
     monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.005)
+
+
+def _is_local(host: object) -> bool:
+    if host is None or host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def offline_only(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Block and fail any connection off loopback, so no test reaches real Groq or Statuspage.
+
+    The app degrades instead of raising, so a blocked call alone could still pass; every
+    attempt is recorded and fails the test at teardown. Loopback (local Redis) stays open.
+    """
+    attempts: list[str] = []
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_getaddrinfo = socket.getaddrinfo
+
+    def blocked(target: object) -> OSError:
+        attempts.append(repr(target))
+        return OSError(f"network access outside loopback is blocked in tests: {target!r}")
+
+    def connect(self: socket.socket, address: Any) -> None:
+        if isinstance(address, tuple) and not _is_local(address[0]):
+            raise blocked(address)
+        real_connect(self, address)
+
+    def connect_ex(self: socket.socket, address: Any) -> int:
+        if isinstance(address, tuple) and not _is_local(address[0]):
+            raise blocked(address)
+        return real_connect_ex(self, address)
+
+    def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if not _is_local(host.decode() if isinstance(host, bytes) else host):
+            raise blocked(host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    yield
+    hint = " (cold FastEmbed model cache? load it once outside pytest)"
+    assert not attempts, f"test tried to reach the network: {attempts}" + (
+        hint if any("huggingface" in a for a in attempts) else ""
+    )
 
 
 @pytest_asyncio.fixture
