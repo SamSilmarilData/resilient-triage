@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
+import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from resilient_triage.cache.embeddings import BaseEmbeddingProvider
@@ -83,6 +84,7 @@ class AppRuntime:
         quota: GroqQuotaTracker,
         deps: TriageDeps,
         active_model: str,
+        http_clients: tuple[httpx.AsyncClient, ...] = (),
     ) -> None:
         self.cache = cache
         self.breakers = breakers
@@ -90,6 +92,7 @@ class AppRuntime:
         self.quota = quota
         self.deps = deps
         self.active_model = active_model
+        self._http_clients = http_clients
 
     async def start(self) -> None:
         """Connect the cache (or fall back to memory) and register the default breakers."""
@@ -102,6 +105,15 @@ class AppRuntime:
 
     async def aclose(self) -> None:
         """Close every client this runtime owns."""
+        try:
+            await self.cache.close()
+        except Exception as exc:
+            logger.warning("Semantic cache close failed: %s", exc)
+        for client in self._http_clients:
+            try:
+                await client.aclose()
+            except Exception as exc:
+                logger.warning("HTTP client close failed: %s", exc)
 
     async def snapshot(self) -> ResilienceSnapshot:
         """Return the current resilience state."""
@@ -132,9 +144,11 @@ def build_runtime(
     breakers = CircuitBreakerRegistry()
     chaos = ChaosManager()
     quota = GroqQuotaTracker()
+    statuspage_http = new_statuspage_http_client()
+    http_clients: list[httpx.AsyncClient] = [statuspage_http]
     statuspage = StatuspageClient(
         url=settings.statuspage_url,
-        client=new_statuspage_http_client(),
+        client=statuspage_http,
         cache_ttl_seconds=SUMMARY_CACHE_TTL_SECONDS,
         summary_cache={},
         breaker_registry=breakers,
@@ -143,9 +157,9 @@ def build_runtime(
         llm = llm_adapter
         active_model = f"Test Override ({llm_adapter._llm_type})"
     else:
-        llm, active_model = build_triage_llm(
-            settings, quota_tracker=quota, http_client=new_groq_http_client()
-        )
+        groq_http = new_groq_http_client()
+        http_clients.append(groq_http)
+        llm, active_model = build_triage_llm(settings, quota_tracker=quota, http_client=groq_http)
     deps = TriageDeps(
         llm=llm,
         telemetry=TelemetrySources(
@@ -163,4 +177,5 @@ def build_runtime(
         quota=quota,
         deps=deps,
         active_model=active_model,
+        http_clients=tuple(http_clients),
     )
