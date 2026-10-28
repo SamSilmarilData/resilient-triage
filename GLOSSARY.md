@@ -7,7 +7,7 @@ A fault-tolerant incident triage gateway: it turns an incident query into a stri
 ### Degradation
 
 **Tripped breaker**:
-A circuit breaker that is open *and* targeted by the current query, as observed when telemetry is collected. An open breaker the query never targets is not tripped for that report.
+A circuit breaker that is refusing calls *and* is targeted by the current query, as observed when telemetry is collected. An open breaker the query never targets is not tripped for that report.
 _Avoid_: open breaker (when meaning the per-report set), failed breaker
 
 **Degradation status**:
@@ -59,3 +59,21 @@ _Avoid_: saturated (except as the existing metric label), rejected, throttled
 **Run deadline**:
 The longest a single run may take. When it passes, the request is answered with a synthesis fallback instead of waiting further.
 _Avoid_: timeout (unqualified), request timeout
+
+### Telemetry
+
+**Telemetry source**:
+A system the agent reads incident signals from: Statuspage (external) or Cluster Sentinel (internal).
+_Avoid_: tool, client, probe (when meaning the source)
+
+**Targeted source**:
+A telemetry source the current query was routed to read. Only targeted sources can make a report degraded.
+_Avoid_: target tool, selected tool
+
+**Cluster Sentinel**:
+The internal cluster-health telemetry source.
+_Avoid_: chaos, chaos probe (when meaning the source)
+
+**Chaos injection**:
+Faults an operator deliberately applies to Cluster Sentinel (latency, forced or random failures) to exercise degradation.
+_Avoid_: chaos (unqualified), simulation
