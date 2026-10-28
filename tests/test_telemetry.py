@@ -293,3 +293,59 @@ async def test_chaos_fetch_signals_dynamic_attribution():
     # Ensure simulator jargon is eliminated
     assert "Injected Chaos Fault" not in (signals_err[0].raw_snippet or "")
     assert "worker pool saturated" in (signals_err[0].raw_snippet or "")
+
+
+def _summary_response(indicator: str) -> httpx.Response:
+    """Build a minimal Statuspage summary response with the given indicator."""
+    return httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://statuspage.test/summary.json"),
+        json={
+            "page": {"name": "GitHub"},
+            "status": {"indicator": indicator, "description": f"{indicator} status"},
+            "components": [],
+            "incidents": [],
+        },
+    )
+
+
+async def test_statuspage_sources_with_separate_caches_do_not_share_summaries():
+    """Two Statuspage sources built with separate summary caches each fetch their own summary."""
+    url = "https://statuspage.test/summary.json"
+    client_a = AsyncMock(spec=httpx.AsyncClient)
+    client_a.get.return_value = _summary_response("major")
+    client_b = AsyncMock(spec=httpx.AsyncClient)
+    client_b.get.return_value = _summary_response("none")
+
+    source_a = StatuspageClient(
+        url=url,
+        client=client_a,
+        cache_ttl_seconds=60.0,
+        summary_cache={},
+        breaker_registry=CircuitBreakerRegistry(),
+    )
+    source_b = StatuspageClient(
+        url=url,
+        client=client_b,
+        cache_ttl_seconds=60.0,
+        summary_cache={},
+        breaker_registry=CircuitBreakerRegistry(),
+    )
+
+    assert (await source_a.fetch_summary()).indicator == "major"
+    assert (await source_b.fetch_summary()).indicator == "none"
+    assert (await source_a.fetch_summary()).indicator == "major"
+    assert client_a.get.call_count == 1
+    assert client_b.get.call_count == 1
+
+
+def test_telemetry_clients_register_breakers_in_the_registry_they_are_given():
+    """Chaos and Statuspage clients built with a registry take their breakers from it."""
+    registry = CircuitBreakerRegistry()
+
+    chaos = ChaosClient(manager=ChaosManager(), breaker_registry=registry)
+    statuspage = StatuspageClient(breaker_registry=registry)
+
+    assert registry.get("chaos") is chaos.circuit_breaker
+    assert registry.get("statuspage") is statuspage.circuit_breaker
+    assert set(registry.get_all_statuses()) == {"chaos", "statuspage"}

@@ -604,3 +604,37 @@ async def test_unavailable_source_degrades_the_report(mocker):
     report = final_state["final_report"]
     assert report.circuit_breakers_tripped == []
     assert report.degradation_status == DegradationStatus.PARTIALLY_DEGRADED
+
+
+def _groq_response(status_code: int, content: str = "{}") -> httpx.Response:
+    """Build a Groq chat-completions response with the given status code."""
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    if status_code == 429:
+        return httpx.Response(429, request=request, json={"error": {"message": "Rate limit"}})
+    return httpx.Response(
+        status_code, request=request, json={"choices": [{"message": {"content": content}}]}
+    )
+
+
+async def test_groq_models_with_separate_quota_trackers_do_not_share_rate_limit_counters(mocker):
+    """A 429 seen by one Groq model leaves another model's quota tracker untouched."""
+    from langchain_core.messages import HumanMessage
+
+    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
+
+    client_a = mocker.AsyncMock(spec=httpx.AsyncClient)
+    client_a.post.side_effect = [_groq_response(429), _groq_response(200, "fallback")]
+    client_b = mocker.AsyncMock(spec=httpx.AsyncClient)
+    client_b.post.return_value = _groq_response(200, "primary")
+    tracker_a = GroqQuotaTracker()
+    tracker_b = GroqQuotaTracker()
+    model_a = GroqChatModel(api_key="k", quota_tracker=tracker_a, http_client=client_a)
+    model_b = GroqChatModel(api_key="k", quota_tracker=tracker_b, http_client=client_b)
+
+    assert (await model_a.ainvoke([HumanMessage(content="q")])).content == "fallback"
+    assert (await model_b.ainvoke([HumanMessage(content="q")])).content == "primary"
+
+    assert tracker_a.get_snapshot().rate_limit_hits == 1
+    assert tracker_b.get_snapshot().rate_limit_hits == 0
+    assert tracker_b.get_snapshot().total_calls == 1
+    assert client_b.post.call_args[1]["json"]["model"] == "qwen/qwen3.8-27b"

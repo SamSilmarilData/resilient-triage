@@ -9,6 +9,7 @@ from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
     AsyncCircuitBreaker,
     BreakerOpen,
+    CircuitBreakerRegistry,
     circuit_breaker_registry,
 )
 from resilient_triage.resilience.retry import with_retry
@@ -59,14 +60,19 @@ class StatuspageClient:
         circuit_breaker: AsyncCircuitBreaker | None = None,
         client: httpx.AsyncClient | None = None,
         cache_ttl_seconds: float | None = None,
+        *,
+        summary_cache: dict[str, tuple[StatuspageSummary, float]] | None = None,
+        breaker_registry: CircuitBreakerRegistry | None = None,
     ) -> None:
         self.url = url or settings.statuspage_url
-        self.circuit_breaker = circuit_breaker or circuit_breaker_registry.get_or_create(
+        registry = breaker_registry if breaker_registry is not None else circuit_breaker_registry
+        self.circuit_breaker = circuit_breaker or registry.get_or_create(
             name="statuspage",
             fail_max=settings.circuit_breaker_fail_max,
             reset_timeout=settings.circuit_breaker_reset_timeout,
         )
         self._external_client = client
+        self._summary_cache = summary_cache if summary_cache is not None else _SUMMARY_CACHE
         if cache_ttl_seconds is not None:
             self.cache_ttl_seconds = cache_ttl_seconds
         else:
@@ -75,8 +81,8 @@ class StatuspageClient:
     async def _fetch_raw(self) -> StatuspageSummary:
         """Fetch raw JSON from Statuspage endpoint and parse into summary model with 10s caching."""
         now = time.monotonic()
-        if self.cache_ttl_seconds > 0 and self.url in _SUMMARY_CACHE:
-            cached_summary, cached_ts = _SUMMARY_CACHE[self.url]
+        if self.cache_ttl_seconds > 0 and self.url in self._summary_cache:
+            cached_summary, cached_ts = self._summary_cache[self.url]
             if (now - cached_ts) < self.cache_ttl_seconds:
                 logger.debug(
                     "Serving Statuspage summary from in-memory cache (age=%.2fs)", now - cached_ts
@@ -88,7 +94,7 @@ class StatuspageClient:
             resp.raise_for_status()
             summary = StatuspageSummary.from_api_response(resp.json())
             if self.cache_ttl_seconds > 0:
-                _SUMMARY_CACHE[self.url] = (summary, now)
+                self._summary_cache[self.url] = (summary, now)
             return summary
 
         client = _get_statuspage_client()
@@ -96,7 +102,7 @@ class StatuspageClient:
         resp.raise_for_status()
         summary = StatuspageSummary.from_api_response(resp.json())
         if self.cache_ttl_seconds > 0:
-            _SUMMARY_CACHE[self.url] = (summary, now)
+            self._summary_cache[self.url] = (summary, now)
         return summary
 
     async def fetch_summary(self) -> StatuspageSummary:

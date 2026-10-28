@@ -17,6 +17,7 @@ from langchain_core.callbacks.manager import (
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field
 
 from resilient_triage.config import settings
 from resilient_triage.schemas.api import LLMQuotaSnapshot
@@ -180,6 +181,18 @@ class GroqChatModel(BaseChatModel):
     model_name: str = "qwen/qwen3.8-27b"
     fallback_model: str = "llama-3.1-8b-instant"
     timeout: float = 20.0
+    quota_tracker: GroqQuotaTracker | None = Field(default=None, exclude=True)
+    http_client: httpx.AsyncClient | None = Field(default=None, exclude=True)
+
+    def _quota_tracker(self) -> GroqQuotaTracker:
+        """Return the injected quota tracker, else the process-wide one."""
+        return self.quota_tracker if self.quota_tracker is not None else groq_quota_tracker
+
+    def _async_client(self) -> httpx.AsyncClient:
+        """Return the injected async HTTP client, else the shared pooled one."""
+        if self.http_client is not None:
+            return self.http_client
+        return get_groq_async_client(timeout=self.timeout)
 
     def _format_messages(self, messages: list[BaseMessage]) -> list[dict[str, str]]:
         formatted = []
@@ -203,7 +216,7 @@ class GroqChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         use_fallback_directly = bool(
-            self.fallback_model and groq_quota_tracker.is_primary_rate_limited()
+            self.fallback_model and self._quota_tracker().is_primary_rate_limited()
         )
         target_model = self.fallback_model if use_fallback_directly else self.model_name
         payload = {
@@ -219,7 +232,7 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            groq_quota_tracker.record_response(
+            self._quota_tracker().record_response(
                 resp, model_name=target_model, is_failover=use_fallback_directly
             )
 
@@ -236,7 +249,7 @@ class GroqChatModel(BaseChatModel):
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=fb_payload,
                 )
-                groq_quota_tracker.record_response(
+                self._quota_tracker().record_response(
                     fb_resp, model_name=self.fallback_model, is_failover=True
                 )
                 if fb_resp.status_code < 400:
@@ -269,7 +282,7 @@ class GroqChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         use_fallback_directly = bool(
-            self.fallback_model and groq_quota_tracker.is_primary_rate_limited()
+            self.fallback_model and self._quota_tracker().is_primary_rate_limited()
         )
         target_model = self.fallback_model if use_fallback_directly else self.model_name
         payload = {
@@ -284,13 +297,13 @@ class GroqChatModel(BaseChatModel):
 
         @with_retry(max_attempts=2, min_wait=0.5, max_wait=3.0)
         async def _send_request() -> str:
-            client = get_groq_async_client(timeout=self.timeout)
+            client = self._async_client()
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            groq_quota_tracker.record_response(
+            self._quota_tracker().record_response(
                 resp, model_name=target_model, is_failover=use_fallback_directly
             )
 
@@ -307,7 +320,7 @@ class GroqChatModel(BaseChatModel):
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=fb_payload,
                 )
-                groq_quota_tracker.record_response(
+                self._quota_tracker().record_response(
                     fb_resp, model_name=self.fallback_model, is_failover=True
                 )
                 if fb_resp.status_code < 400:

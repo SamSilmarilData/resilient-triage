@@ -12,6 +12,7 @@ from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
     AsyncCircuitBreaker,
     BreakerOpen,
+    CircuitBreakerRegistry,
     circuit_breaker_registry,
 )
 from resilient_triage.resilience.retry import with_retry
@@ -71,9 +72,12 @@ class ChaosClient:
         self,
         manager: ChaosManager | None = None,
         circuit_breaker: AsyncCircuitBreaker | None = None,
+        *,
+        breaker_registry: CircuitBreakerRegistry | None = None,
     ) -> None:
         self.manager = manager or chaos_manager
-        self.circuit_breaker = circuit_breaker or circuit_breaker_registry.get_or_create(
+        registry = breaker_registry if breaker_registry is not None else circuit_breaker_registry
+        self.circuit_breaker = circuit_breaker or registry.get_or_create(
             name="chaos",
             fail_max=settings.circuit_breaker_fail_max,
             reset_timeout=settings.circuit_breaker_reset_timeout,
