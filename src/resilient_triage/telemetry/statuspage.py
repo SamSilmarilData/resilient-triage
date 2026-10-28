@@ -7,7 +7,6 @@ import httpx
 
 from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
-    AsyncCircuitBreaker,
     BreakerOpen,
     CircuitBreakerRegistry,
 )
@@ -39,22 +38,19 @@ class StatuspageClient:
         self,
         *,
         client: httpx.AsyncClient,
+        breaker_registry: CircuitBreakerRegistry,
         url: str | None = None,
-        circuit_breaker: AsyncCircuitBreaker | None = None,
         cache_ttl_seconds: float = SUMMARY_CACHE_TTL_SECONDS,
-        summary_cache: dict[str, tuple[StatuspageSummary, float]] | None = None,
-        breaker_registry: CircuitBreakerRegistry | None = None,
     ) -> None:
         self.url = url or settings.statuspage_url
-        registry = breaker_registry if breaker_registry is not None else CircuitBreakerRegistry()
-        self.circuit_breaker = circuit_breaker or registry.get_or_create(
+        self.circuit_breaker = breaker_registry.get_or_create(
             name="statuspage",
             fail_max=settings.circuit_breaker_fail_max,
             reset_timeout=settings.circuit_breaker_reset_timeout,
         )
         self._client = client
-        # Maps url -> (StatuspageSummary, timestamp); private to this source unless passed in.
-        self._summary_cache = summary_cache if summary_cache is not None else {}
+        # Maps url -> (StatuspageSummary, timestamp); private to this source.
+        self._summary_cache: dict[str, tuple[StatuspageSummary, float]] = {}
         self.cache_ttl_seconds = cache_ttl_seconds
 
     async def _fetch_raw(self) -> StatuspageSummary:

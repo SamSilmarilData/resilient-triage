@@ -131,7 +131,7 @@ async def triage_incident(
             service_filter=payload.service_filter,
         )
         if match:
-            runtime.requests.hit += 1
+            runtime.requests.answered_from_cache += 1
             elapsed_ms = (time.monotonic() - start_req) * 1000.0
             response_data = TriageResponse(
                 report=match.report,
@@ -152,8 +152,8 @@ async def triage_incident(
     try:
         await asyncio.wait_for(runtime.graph_semaphore.acquire(), timeout=5.0)
     except TimeoutError:
-        runtime.requests.saturated += 1
-        logger.warning("Graph concurrency semaphore saturated. Shedding load.")
+        runtime.requests.shed += 1
+        logger.warning("No run slot freed up in time; shed request.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
@@ -176,7 +176,7 @@ async def triage_incident(
     finally:
         runtime.graph_semaphore.release()
 
-    runtime.requests.miss += 1
+    runtime.requests.answered_by_run += 1
 
     final_report = state_result.get("final_report")
     if not final_report:
@@ -250,13 +250,13 @@ async def probe_chaos(runtime: RuntimeDep) -> ChaosTelemetryResponse:
     """Execute live diagnostic probe through Tenacity retries and circuit breaker.
 
     Args:
-        runtime: The app's runtime, whose chaos client and breaker run the probe.
+        runtime: The app's runtime, which probes Cluster Sentinel.
 
     Returns:
         ChaosTelemetryResponse: Diagnostic outcome from the internal chaos service.
     """
     try:
-        return await runtime.deps.telemetry.chaos.probe()
+        return await runtime.probe_cluster_sentinel()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=exc.response.status_code,
@@ -399,9 +399,9 @@ async def get_metrics(runtime: RuntimeDep) -> PlainTextResponse:
     lines = [
         "# HELP resilient_triage_requests_total Total incident triage requests handled by gateway",
         "# TYPE resilient_triage_requests_total counter",
-        f'resilient_triage_requests_total{{cache="hit"}} {counts.hit}',
-        f'resilient_triage_requests_total{{cache="miss"}} {counts.miss}',
-        f'resilient_triage_requests_total{{cache="saturated"}} {counts.saturated}',
+        f'resilient_triage_requests_total{{cache="hit"}} {counts.answered_from_cache}',
+        f'resilient_triage_requests_total{{cache="miss"}} {counts.answered_by_run}',
+        f'resilient_triage_requests_total{{cache="saturated"}} {counts.shed}',
         "",
         (
             "# HELP resilient_triage_circuit_breaker_state Active circuit breaker state (1 if "

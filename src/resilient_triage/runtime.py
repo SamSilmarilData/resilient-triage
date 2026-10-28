@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from functools import partial
+from typing import Protocol, TypeVar
 
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -15,6 +17,7 @@ from resilient_triage.graph.llm import GroqQuotaTracker, build_triage_llm, new_g
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
 from resilient_triage.schemas.api import LLMQuotaSnapshot
 from resilient_triage.schemas.incident import IncidentTriageReport
+from resilient_triage.schemas.telemetry import ChaosTelemetryResponse
 from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
 from resilient_triage.telemetry.statuspage import (
     SUMMARY_CACHE_TTL_SECONDS,
@@ -23,6 +26,8 @@ from resilient_triage.telemetry.statuspage import (
 )
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 # Concurrency boundary: max concurrent graph executions per app, to prevent stampedes.
 GRAPH_CONCURRENCY_LIMIT = 10
@@ -66,7 +71,7 @@ class CacheWriter(Protocol):
 
 @dataclass(frozen=True)
 class TelemetrySources:
-    """Today's telemetry clients, bound to one runtime's chaos manager and breakers."""
+    """Today's telemetry sources, bound to one runtime's chaos manager and breakers."""
 
     statuspage: StatuspageClient
     chaos: ChaosClient
@@ -98,11 +103,11 @@ class ResilienceSnapshot:
 
 @dataclass
 class RequestCounters:
-    """Triage request outcomes for one app, exported on /metrics."""
+    """Triage outcomes for one app, exported on /metrics as cache=hit/miss/saturated."""
 
-    hit: int = 0
-    miss: int = 0
-    saturated: int = 0
+    answered_from_cache: int = 0
+    answered_by_run: int = 0
+    shed: int = 0
 
 
 class AppRuntime:
@@ -126,11 +131,13 @@ class AppRuntime:
         self.deps = deps
         self.active_model = active_model
         self._http_clients = http_clients
+        # Captured up front so a degraded snapshot can still name the configured model.
+        self._configured_quota_model = quota.active_model
         self.graph_semaphore = asyncio.Semaphore(GRAPH_CONCURRENCY_LIMIT)
         self.requests = RequestCounters()
 
     async def start(self) -> None:
-        """Connect the cache (or fall back to memory) and register the default breakers."""
+        """Connect the cache (else use memory) and register default breakers; never raises."""
         try:
             await self.cache.initialize()
         except Exception as exc:
@@ -143,8 +150,14 @@ class AppRuntime:
             )
         except Exception as exc:
             logger.warning("Embedding pre-warmup warning: %s", exc)
-        self.breakers.get_or_create("statuspage")
-        self.breakers.get_or_create("chaos")
+        for name in ("statuspage", "chaos"):
+            _guarded(
+                f"Registering the {name} breaker", partial(self.breakers.get_or_create, name), None
+            )
+
+    async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:
+        """Probe Cluster Sentinel through this runtime's retries and breaker; raises on failure."""
+        return await self.deps.telemetry.chaos.probe()
 
     async def aclose(self) -> None:
         """Close every client this runtime owns."""
@@ -159,21 +172,37 @@ class AppRuntime:
                 logger.warning("HTTP client close failed: %s", exc)
 
     async def snapshot(self) -> ResilienceSnapshot:
-        """Return the current resilience state."""
+        """Return the current resilience state; never raises, degrading any unreadable member."""
         try:
             cache_connected = await self.cache.check_connection()
         except Exception as exc:
             logger.warning("Cache connectivity check failed: %s", exc)
             cache_connected = False
         return ResilienceSnapshot(
-            breakers=self.breakers.get_all_statuses(),
+            breakers=_guarded("Reading breaker statuses", self.breakers.get_all_statuses, {}),
+            # driver and count are plain in-memory reads with no failure path.
             cache_driver=self.cache.driver,
             cache_connected=cache_connected,
             cache_entries=self.cache.count,
-            chaos_active=self.chaos.get_config().active,
+            chaos_active=_guarded(
+                "Reading the chaos config", lambda: self.chaos.get_config().active, False
+            ),
             active_model=self.active_model,
-            llm_quota=self.quota.get_snapshot(),
+            llm_quota=_guarded(
+                "Reading the LLM quota",
+                self.quota.get_snapshot,
+                LLMQuotaSnapshot(active_model=self._configured_quota_model),
+            ),
         )
+
+
+def _guarded(what: str, read: Callable[[], T], default: T) -> T:
+    """Return read(), or log and return default if it raises."""
+    try:
+        return read()
+    except Exception as exc:
+        logger.warning("%s failed: %s", what, exc)
+        return default
 
 
 def build_runtime(
@@ -187,7 +216,7 @@ def build_runtime(
     cache = SemanticCacheManager(redis_url=settings.redis_url, embedding_provider=embedder)
     breakers = CircuitBreakerRegistry()
     chaos = ChaosManager()
-    quota = GroqQuotaTracker()
+    quota = GroqQuotaTracker(active_model=settings.groq_model)
     if statuspage_http is None:
         statuspage_http = new_statuspage_http_client()
     http_clients: list[httpx.AsyncClient] = [statuspage_http]
@@ -195,16 +224,19 @@ def build_runtime(
         url=settings.statuspage_url,
         client=statuspage_http,
         cache_ttl_seconds=SUMMARY_CACHE_TTL_SECONDS,
-        summary_cache={},
         breaker_registry=breakers,
     )
     if llm_adapter is not None:
         llm = llm_adapter
+        # BaseChatModel has no public type label across the supported langchain-core range
+        # (asdict() only exists from 1.4.2, dict() is deprecated), so read LangChain's own
+        # _llm_type hook to keep this label stable.
         active_model = f"Test Override ({llm_adapter._llm_type})"
     else:
         groq_http = new_groq_http_client()
         http_clients.append(groq_http)
-        llm, active_model = build_triage_llm(settings, quota_tracker=quota, http_client=groq_http)
+        triage_llm = build_triage_llm(settings, quota_tracker=quota, http_client=groq_http)
+        llm, active_model = triage_llm.model, triage_llm.label
     deps = TriageDeps(
         llm=llm,
         telemetry=TelemetrySources(

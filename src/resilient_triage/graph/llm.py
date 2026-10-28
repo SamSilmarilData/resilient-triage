@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -39,10 +40,10 @@ def new_groq_http_client(timeout: float = GROQ_TIMEOUT_SECONDS) -> httpx.AsyncCl
 class GroqQuotaTracker:
     """Thread-safe tracker of Groq rate-limit headers, token budgets, and failover metrics."""
 
-    def __init__(self) -> None:
+    def __init__(self, active_model: str | None = None) -> None:
         self._lock = threading.Lock()
         self.provider: str = "groq"
-        self.active_model: str = settings.groq_model
+        self.active_model: str = active_model or settings.groq_model
         self.fallback_model: str = "llama-3.1-8b-instant"
         self.remaining_requests: int | None = None
         self.limit_requests: int | None = None
@@ -412,12 +413,20 @@ class MockTriageChatModel(BaseChatModel):
         return "mock-triage-llm"
 
 
+@dataclass(frozen=True)
+class TriageLLM:
+    """The chat model the triage graph calls, with the label shown as the active model."""
+
+    model: BaseChatModel
+    label: str
+
+
 def build_triage_llm(
     app_settings: Settings,
     *,
     quota_tracker: GroqQuotaTracker,
     http_client: httpx.AsyncClient,
-) -> tuple[BaseChatModel, str]:
+) -> TriageLLM:
     """Return the configured provider (Groq, OpenAI, Gemini, else mock) and its display label."""
     # 1. Groq LPU (Sub-1.5s SOTA inference)
     groq_key = app_settings.groq_api_key or os.environ.get("GROQ_API_KEY")
@@ -428,14 +437,14 @@ def build_triage_llm(
             quota_tracker=quota_tracker,
             http_client=http_client,
         )
-        return groq, f"Groq LPU ({app_settings.groq_model})"
+        return TriageLLM(groq, f"Groq LPU ({app_settings.groq_model})")
 
     # 2. OpenAI Provider
     if os.environ.get("OPENAI_API_KEY"):
         try:
             from langchain_openai import ChatOpenAI
 
-            return ChatOpenAI(model="gpt-4o", temperature=0), "OpenAI GPT-4o"
+            return TriageLLM(ChatOpenAI(model="gpt-4o", temperature=0), "OpenAI GPT-4o")
         except ImportError:
             pass
 
@@ -445,9 +454,9 @@ def build_triage_llm(
             from langchain_google_genai import ChatGoogleGenerativeAI
 
             gemini = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0)
-            return gemini, "Google Gemini 1.5"
+            return TriageLLM(gemini, "Google Gemini 1.5")
         except ImportError:
             pass
 
     # 4. Default to deterministic mock model
-    return MockTriageChatModel(), "Zero-Config SRE Simulation"
+    return TriageLLM(MockTriageChatModel(), "Zero-Config SRE Simulation")

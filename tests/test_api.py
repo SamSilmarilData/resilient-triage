@@ -625,10 +625,10 @@ async def test_lifespan_closes_telemetry_and_llm_clients(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_status_routes_ping_the_cache_at_most_once(
+async def test_status_routes_ping_the_cache_exactly_once(
     client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
 ):
-    """Verify /health, /resilience/status and /metrics each ping Redis at most once."""
+    """Verify /health, /resilience/status and /metrics each ping Redis exactly once."""
     pings: list[str] = []
     real_check = runtime.cache.check_connection
 
@@ -642,7 +642,7 @@ async def test_status_routes_ping_the_cache_at_most_once(
         pings.clear()
         resp = await client.get(route)
         assert resp.status_code == 200
-        assert len(pings) <= 1, route
+        assert len(pings) == 1, route
 
 
 @pytest.mark.asyncio
