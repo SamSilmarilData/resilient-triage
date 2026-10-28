@@ -47,7 +47,6 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
                 action="Manually inspect service dashboards and verify telemetry signals",
                 target_system="Monitoring",
                 action_type="diagnostic",
-                requires_approval=False,
             )
         ],
         confidence_score=0.20,
