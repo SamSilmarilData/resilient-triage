@@ -19,6 +19,8 @@ class ResilienceSnapshot:
     """Point-in-time view of breakers, chaos, cache and LLM quota for one runtime."""
 
     breakers: dict[str, CircuitBreakerInfo]
+    cache_driver: str
+    cache_connected: bool
 
 
 class AppRuntime:
@@ -36,7 +38,11 @@ class AppRuntime:
         self.chaos = chaos
 
     async def start(self) -> None:
-        """Register the default breakers."""
+        """Connect the cache (or fall back to memory) and register the default breakers."""
+        try:
+            await self.cache.initialize()
+        except Exception as exc:
+            logger.warning("Semantic cache initialization failed: %s", exc)
         self.breakers.get_or_create("statuspage")
         self.breakers.get_or_create("chaos")
 
@@ -45,7 +51,16 @@ class AppRuntime:
 
     async def snapshot(self) -> ResilienceSnapshot:
         """Return the current resilience state."""
-        return ResilienceSnapshot(breakers=self.breakers.get_all_statuses())
+        try:
+            cache_connected = await self.cache.check_connection()
+        except Exception as exc:
+            logger.warning("Cache connectivity check failed: %s", exc)
+            cache_connected = False
+        return ResilienceSnapshot(
+            breakers=self.breakers.get_all_statuses(),
+            cache_driver=self.cache.driver,
+            cache_connected=cache_connected,
+        )
 
 
 def build_runtime(
