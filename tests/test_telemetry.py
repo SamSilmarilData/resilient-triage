@@ -386,3 +386,11 @@ async def test_telemetry_clients_built_without_a_registry_do_not_share_breakers(
 
     assert fresh.circuit_breaker.info().is_open is False
     assert source_b.circuit_breaker.info().is_open is False
+
+
+def test_telemetry_clients_require_the_breaker_registry_health_reports_on():
+    """Chaos and Statuspage clients refuse to build a hidden registry /health would never see."""
+    with pytest.raises(TypeError):
+        ChaosClient(manager=ChaosManager())  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        StatuspageClient(client=AsyncMock(spec=httpx.AsyncClient))  # type: ignore[call-arg]
