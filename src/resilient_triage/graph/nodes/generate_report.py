@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 from langgraph.runtime import Runtime
 
 from resilient_triage.config import settings
-from resilient_triage.runtime import TriageDeps
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.schemas.state import TriageState
 
 logger = logging.getLogger(__name__)

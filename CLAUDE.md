@@ -30,6 +30,8 @@ Statuspage, or the LLM is down — degrade instead.
   collaborators, else `<name>_node(state)`; returns a partial state update `dict[str, Any]` and reads
   collaborators only from `runtime.context`.
 - `runtime.py` — `AppRuntime` (cache, breakers, chaos, quota, `TriageDeps`), built by `build_runtime()`; one per app.
+- `graph/deps.py` — `TriageDeps` (the run context nodes see) and its protocols; no imports of
+  `runtime` or the graph, so nodes can import it without a cycle. `runtime.py` re-exports it.
 - `graph/llm.py` — Groq client, `MockTriageChatModel`, `build_triage_llm()`, quota tracker / 429 failover.
 - `cache/semantic_cache.py` — `SemanticCacheManager` (Redis ↔ in-memory failover). `cache/embeddings.py` — providers.
 - `resilience/` — `CircuitBreakerRegistry`, retry decorators. `telemetry/` — Statuspage probe, `ChaosManager`.

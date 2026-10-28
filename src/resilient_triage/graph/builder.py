@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from resilient_triage.config import settings
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.graph.nodes import (
     analyze_query_node,
     collect_telemetry_node,
@@ -21,7 +22,6 @@ from resilient_triage.graph.nodes import (
     synthesize_telemetry_node,
     validate_report_node,
 )
-from resilient_triage.runtime import TriageDeps
 from resilient_triage.schemas.state import TriageState
 
 logger = logging.getLogger(__name__)

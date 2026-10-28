@@ -28,7 +28,7 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
 </p>
 
 ### App runtime
-Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(settings)` and started and closed by the FastAPI lifespan. It holds every stateful module: the semantic cache, the circuit breaker registry, the chaos manager, the Groq quota tracker, and the Statuspage and Groq HTTP clients (the Statuspage summary cache lives inside its Statuspage source). Graph nodes see these only through `TriageDeps`, passed as LangGraph's run context (`triage_graph.ainvoke(..., context=runtime.deps)`). There are no module-level singletons; only `settings`, the FastEmbed embedder and its LRU, and the compiled `triage_graph` are process-wide. Tests build a fresh runtime per test.
+Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(settings)` and started and closed by the FastAPI lifespan. It holds every stateful module: the semantic cache, the circuit breaker registry, the chaos manager, the Groq quota tracker, and the Statuspage and Groq HTTP clients (the Statuspage summary cache lives inside its Statuspage source). Graph nodes see these only through `TriageDeps` (`graph/deps.py`), passed as LangGraph's run context (`triage_graph.ainvoke(..., context=runtime.deps)`). There are no module-level singletons; only `settings`, the FastEmbed embedder and its LRU, and the compiled `triage_graph` are process-wide. Tests build a fresh runtime per test.
 
 ---
 

@@ -5,7 +5,7 @@ from typing import Any
 
 from langgraph.runtime import Runtime
 
-from resilient_triage.runtime import TriageDeps
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import SIGNAL_STATUS_UNAVAILABLE

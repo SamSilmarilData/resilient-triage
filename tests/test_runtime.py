@@ -1,9 +1,12 @@
 """Tests for AppRuntime: per-runtime isolation, lifecycle, and the resilience snapshot."""
 
 import socket
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Callable
 
 import httpx
+import pytest
 import pytest_asyncio
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
@@ -314,3 +317,20 @@ async def test_snapshot_never_raises_when_the_quota_snapshot_fails(make_runtime)
     assert snapshot.llm_quota.active_model == "runtime-specific-model"
     assert snapshot.llm_quota.total_calls == 0
     assert snapshot.chaos_active is False
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "resilient_triage.runtime",
+        "resilient_triage.graph.builder",
+        "resilient_triage.graph.nodes.collect_telemetry",
+        "resilient_triage.api.app",
+    ],
+)
+def test_module_imports_first_in_a_fresh_interpreter(module: str) -> None:
+    """Each module is importable as the first import, so the runtime has no import cycle."""
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr

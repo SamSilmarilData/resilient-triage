@@ -4,8 +4,8 @@ from typing import Any
 
 from langgraph.runtime import Runtime
 
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
-from resilient_triage.runtime import TriageDeps
 from resilient_triage.schemas.state import TriageState
 
 

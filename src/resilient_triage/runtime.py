@@ -5,18 +5,18 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Protocol, TypeVar
+from typing import TypeVar
 
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from resilient_triage.cache.embeddings import BaseEmbeddingProvider
-from resilient_triage.cache.semantic_cache import CacheMatch, SemanticCacheManager
+from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
+from resilient_triage.graph.deps import CacheReader, CacheWriter, TelemetrySources, TriageDeps
 from resilient_triage.graph.llm import GroqQuotaTracker, build_triage_llm, new_groq_http_client
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
 from resilient_triage.schemas.api import LLMQuotaSnapshot
-from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosTelemetryResponse
 from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
 from resilient_triage.telemetry.statuspage import (
@@ -24,6 +24,17 @@ from resilient_triage.telemetry.statuspage import (
     StatuspageClient,
     new_statuspage_http_client,
 )
+
+# Re-exported: the run-context contract lives in graph.deps so nodes avoid an import cycle.
+__all__ = [
+    "AppRuntime",
+    "CacheReader",
+    "CacheWriter",
+    "ResilienceSnapshot",
+    "TelemetrySources",
+    "TriageDeps",
+    "build_runtime",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -51,41 +62,6 @@ WARMUP_QUERIES: tuple[str, ...] = (
     "PostgreSQL primary connection pool exhausted under spike",
     "[scope: database] PostgreSQL primary connection pool exhausted under spike",
 )
-
-
-class CacheReader(Protocol):
-    """Read-only view of the semantic cache: the only cache access a graph node gets."""
-
-    async def lookup(
-        self, query: str, service_filter: str | None, threshold: float
-    ) -> CacheMatch | None: ...
-
-
-class CacheWriter(Protocol):
-    """Write side of the semantic cache (temporary: the Triage gateway, #17, takes it over)."""
-
-    async def store(
-        self, query: str, report: IncidentTriageReport, service_filter: str | None = None
-    ) -> None: ...
-
-
-@dataclass(frozen=True)
-class TelemetrySources:
-    """Today's telemetry sources, bound to one runtime's chaos manager and breakers."""
-
-    statuspage: StatuspageClient
-    chaos: ChaosClient
-    breakers: CircuitBreakerRegistry
-
-
-@dataclass(frozen=True)
-class TriageDeps:
-    """Everything a graph node can see (LangGraph context_schema)."""
-
-    llm: BaseChatModel
-    telemetry: TelemetrySources
-    history: CacheReader
-    cache_writer: CacheWriter
 
 
 @dataclass(frozen=True)
