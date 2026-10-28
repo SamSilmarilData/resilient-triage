@@ -107,6 +107,8 @@ class AsyncCircuitBreaker:
     ) -> None:
         self._breaker = breaker
         self._listener = listener
+        # Token of the half-open trial call in flight, if any; guarded by `_breaker._lock`.
+        self._trial: object | None = None
 
     @property
     def name(self) -> str:
@@ -144,13 +146,15 @@ class AsyncCircuitBreaker:
             T: Value returned by func.
 
         Raises:
-            BreakerOpen: If the breaker is open and its reset timeout has not elapsed, or
-                if this call's failure trips the breaker open.
+            BreakerOpen: If the breaker is open and its reset timeout has not elapsed, if
+                it is half-open and another call is already the trial, or if this call's
+                failure trips the breaker open.
             Exception: Any other exception raised by func; it counts as a failure.
             BaseException: A non-Exception error (e.g. CancelledError) raised by func;
                 it propagates and the breaker records neither success nor failure.
         """
-        # 1. Check state before execution
+        # 1. Check state before execution; in half-open, claim the single trial slot or refuse.
+        trial: object | None = None
         with self._breaker._lock:
             if str(self._breaker.current_state) == pybreaker.STATE_OPEN:
                 timeout = timedelta(seconds=self._breaker.reset_timeout)
@@ -160,9 +164,26 @@ class AsyncCircuitBreaker:
                 # Timeout elapsed: transition to half-open trial probe
                 self._breaker.half_open()
 
+            if str(self._breaker.current_state) == pybreaker.STATE_HALF_OPEN:
+                if self._trial is not None:
+                    raise BreakerOpen("Half-open trial call in progress, circuit breaker refusing")
+                trial = self._trial = object()
+
             for listener in self._breaker.listeners:
                 listener.before_call(self._breaker, func, *args, **kwargs)
 
+        try:
+            return await self._run(func, *args, **kwargs)
+        finally:
+            if trial is not None:
+                # Free the slot whatever the outcome; a cancelled trial leaves the breaker
+                # half-open, so the next caller becomes the new trial.
+                with self._breaker._lock:
+                    if self._trial is trial:
+                        self._trial = None
+
+    async def _run(self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
+        """Await func and record its outcome on the wrapped breaker."""
         try:
             # 2. Execute async coroutine
             result = await func(*args, **kwargs)
