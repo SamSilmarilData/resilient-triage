@@ -11,6 +11,7 @@ from resilient_triage.cache.semantic_cache import CacheMatch, SemanticCacheManag
 from resilient_triage.config import Settings
 from resilient_triage.graph.llm import GroqQuotaTracker, build_triage_llm, new_groq_http_client
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
+from resilient_triage.schemas.api import LLMQuotaSnapshot
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
 from resilient_triage.telemetry.statuspage import (
@@ -64,6 +65,10 @@ class ResilienceSnapshot:
     breakers: dict[str, CircuitBreakerInfo]
     cache_driver: str
     cache_connected: bool
+    cache_entries: int
+    chaos_active: bool
+    active_model: str
+    llm_quota: LLMQuotaSnapshot
 
 
 class AppRuntime:
@@ -77,12 +82,14 @@ class AppRuntime:
         chaos: ChaosManager,
         quota: GroqQuotaTracker,
         deps: TriageDeps,
+        active_model: str,
     ) -> None:
         self.cache = cache
         self.breakers = breakers
         self.chaos = chaos
         self.quota = quota
         self.deps = deps
+        self.active_model = active_model
 
     async def start(self) -> None:
         """Connect the cache (or fall back to memory) and register the default breakers."""
@@ -107,6 +114,10 @@ class AppRuntime:
             breakers=self.breakers.get_all_statuses(),
             cache_driver=self.cache.driver,
             cache_connected=cache_connected,
+            cache_entries=self.cache.count,
+            chaos_active=self.chaos.get_config().active,
+            active_model=self.active_model,
+            llm_quota=self.quota.get_snapshot(),
         )
 
 
@@ -130,8 +141,9 @@ def build_runtime(
     )
     if llm_adapter is not None:
         llm = llm_adapter
+        active_model = f"Test Override ({llm_adapter._llm_type})"
     else:
-        llm, _label = build_triage_llm(
+        llm, active_model = build_triage_llm(
             settings, quota_tracker=quota, http_client=new_groq_http_client()
         )
     deps = TriageDeps(
@@ -144,4 +156,11 @@ def build_runtime(
         history=cache,
         cache_writer=cache,
     )
-    return AppRuntime(cache=cache, breakers=breakers, chaos=chaos, quota=quota, deps=deps)
+    return AppRuntime(
+        cache=cache,
+        breakers=breakers,
+        chaos=chaos,
+        quota=quota,
+        deps=deps,
+        active_model=active_model,
+    )
