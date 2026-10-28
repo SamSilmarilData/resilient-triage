@@ -268,9 +268,16 @@ def test_groq_chat_model_formatting_and_factory():
     """Verify GroqChatModel message formatting and active model reporting."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    from resilient_triage.graph.llm import GroqChatModel, get_active_model_name
+    from resilient_triage.config import Settings
+    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
+    from resilient_triage.runtime import build_runtime
 
-    model = GroqChatModel(api_key="mock_key", model_name="qwen/qwen3.8-27b")
+    model = GroqChatModel(
+        api_key="mock_key",
+        model_name="qwen/qwen3.8-27b",
+        quota_tracker=GroqQuotaTracker(),
+        http_client=httpx.AsyncClient(),
+    )
     assert model._llm_type == "groq-lpu-chat-model"
 
     msgs = [SystemMessage(content="You are SRE."), HumanMessage(content="Is Actions down?")]
@@ -281,9 +288,11 @@ def test_groq_chat_model_formatting_and_factory():
     ]
 
     # Verify active model name reporting
-    active_name = get_active_model_name()
+    runtime = build_runtime(Settings(groq_api_key="mock_key", groq_model="qwen/qwen3.8-27b"))
+    active_name = runtime.active_model
     assert isinstance(active_name, str)
     assert len(active_name) > 0
+    assert active_name == "Groq LPU (qwen/qwen3.8-27b)"
 
 
 @pytest.mark.asyncio
@@ -675,3 +684,15 @@ async def test_groq_models_with_separate_quota_trackers_do_not_share_rate_limit_
     assert tracker_b.get_snapshot().rate_limit_hits == 0
     assert tracker_b.get_snapshot().total_calls == 1
     assert client_b.post.call_args[1]["json"]["model"] == "qwen/qwen3.8-27b"
+
+
+def test_groq_model_requires_its_quota_tracker_and_http_client():
+    """A Groq model can't silently fall back to shared state: both collaborators are required."""
+    from pydantic import ValidationError
+
+    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
+
+    with pytest.raises(ValidationError, match="http_client"):
+        GroqChatModel(api_key="k", quota_tracker=GroqQuotaTracker())
+    with pytest.raises(ValidationError, match="quota_tracker"):
+        GroqChatModel(api_key="k", http_client=httpx.AsyncClient())

@@ -300,7 +300,3 @@ class CircuitBreakerRegistry:
         with self._lock:
             for cb in self._breakers.values():
                 cb.reset()
-
-
-# Global registry singleton
-circuit_breaker_registry = CircuitBreakerRegistry()

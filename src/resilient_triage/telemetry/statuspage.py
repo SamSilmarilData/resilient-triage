@@ -10,7 +10,6 @@ from resilient_triage.resilience.circuit_breaker import (
     AsyncCircuitBreaker,
     BreakerOpen,
     CircuitBreakerRegistry,
-    circuit_breaker_registry,
 )
 from resilient_triage.resilience.retry import with_retry
 from resilient_triage.schemas.incident import TelemetrySignal
@@ -21,11 +20,8 @@ logger = logging.getLogger(__name__)
 # Strict timeouts agreed upon during design interview
 STATUSPAGE_TIMEOUT = httpx.Timeout(connect=2.0, read=3.0, write=2.0, pool=1.0)
 
-# Short-TTL in-memory cache that skips redundant ~700ms fetches.
-# Maps url -> (StatuspageSummary, timestamp).
+# Short-TTL per-source cache that skips redundant ~700ms fetches.
 SUMMARY_CACHE_TTL_SECONDS = 10.0
-_SUMMARY_CACHE: dict[str, tuple[StatuspageSummary, float]] = {}
-_statuspage_async_client: httpx.AsyncClient | None = None
 
 
 def new_statuspage_http_client() -> httpx.AsyncClient:
@@ -36,53 +32,30 @@ def new_statuspage_http_client() -> httpx.AsyncClient:
     )
 
 
-def _get_statuspage_client() -> httpx.AsyncClient:
-    """Return shared, persistent httpx.AsyncClient with keep-alive connection pooling."""
-    global _statuspage_async_client
-    if _statuspage_async_client is None or _statuspage_async_client.is_closed:
-        _statuspage_async_client = new_statuspage_http_client()
-    return _statuspage_async_client
-
-
-def clear_statuspage_cache() -> None:
-    """Flush the in-memory Statuspage summary cache."""
-    _SUMMARY_CACHE.clear()
-
-
-async def close_statuspage_client() -> None:
-    """Close the shared persistent httpx.AsyncClient connection pool."""
-    global _statuspage_async_client
-    if _statuspage_async_client is not None and not _statuspage_async_client.is_closed:
-        await _statuspage_async_client.aclose()
-        _statuspage_async_client = None
-
-
 class StatuspageClient:
     """Async Atlassian Statuspage consumer guarded against network and upstream failures."""
 
     def __init__(
         self,
+        *,
+        client: httpx.AsyncClient,
         url: str | None = None,
         circuit_breaker: AsyncCircuitBreaker | None = None,
-        client: httpx.AsyncClient | None = None,
-        cache_ttl_seconds: float | None = None,
-        *,
+        cache_ttl_seconds: float = SUMMARY_CACHE_TTL_SECONDS,
         summary_cache: dict[str, tuple[StatuspageSummary, float]] | None = None,
         breaker_registry: CircuitBreakerRegistry | None = None,
     ) -> None:
         self.url = url or settings.statuspage_url
-        registry = breaker_registry if breaker_registry is not None else circuit_breaker_registry
+        registry = breaker_registry if breaker_registry is not None else CircuitBreakerRegistry()
         self.circuit_breaker = circuit_breaker or registry.get_or_create(
             name="statuspage",
             fail_max=settings.circuit_breaker_fail_max,
             reset_timeout=settings.circuit_breaker_reset_timeout,
         )
-        self._external_client = client
-        self._summary_cache = summary_cache if summary_cache is not None else _SUMMARY_CACHE
-        if cache_ttl_seconds is not None:
-            self.cache_ttl_seconds = cache_ttl_seconds
-        else:
-            self.cache_ttl_seconds = 0.0 if client is not None else SUMMARY_CACHE_TTL_SECONDS
+        self._client = client
+        # Maps url -> (StatuspageSummary, timestamp); private to this source unless passed in.
+        self._summary_cache = summary_cache if summary_cache is not None else {}
+        self.cache_ttl_seconds = cache_ttl_seconds
 
     async def _fetch_raw(self) -> StatuspageSummary:
         """Fetch raw JSON from Statuspage endpoint and parse into summary model with 10s caching."""
@@ -95,16 +68,7 @@ class StatuspageClient:
                 )
                 return cached_summary
 
-        if self._external_client is not None:
-            resp = await self._external_client.get(self.url, timeout=STATUSPAGE_TIMEOUT)
-            resp.raise_for_status()
-            summary = StatuspageSummary.from_api_response(resp.json())
-            if self.cache_ttl_seconds > 0:
-                self._summary_cache[self.url] = (summary, now)
-            return summary
-
-        client = _get_statuspage_client()
-        resp = await client.get(self.url)
+        resp = await self._client.get(self.url, timeout=STATUSPAGE_TIMEOUT)
         resp.raise_for_status()
         summary = StatuspageSummary.from_api_response(resp.json())
         if self.cache_ttl_seconds > 0:

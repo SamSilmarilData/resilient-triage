@@ -29,7 +29,7 @@ Standard LLM applications are fragile because they treat external dependencies a
 ## 2. Circuit Breakers (Pybreaker)
 
 ### Finite State Machine
-Circuit breakers guard external HTTP integrations (`statuspage`, `chaos`). They implement a 3-state finite state machine managed by `CircuitBreakerRegistry`:
+Circuit breakers guard external HTTP integrations (`statuspage`, `chaos`). They implement a 3-state finite state machine managed by a `CircuitBreakerRegistry`. Each `AppRuntime` owns its own registry, so breakers never leak between app instances or tests:
 
 ```mermaid
 stateDiagram-v2
@@ -167,7 +167,7 @@ The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED)
 To operate safely within Groq free-tier constraints (1,000 output tokens/minute ceiling):
 
 1. **Header Extraction**:
-   Every response through `GroqChatModel` is recorded by `GroqQuotaTracker`:
+   Every response through `GroqChatModel` is recorded by its `GroqQuotaTracker` (one per `AppRuntime`, passed in by `build_runtime`):
    - `x-ratelimit-remaining-tokens` / `x-ratelimit-limit-tokens`
    - `x-ratelimit-remaining-requests` / `x-ratelimit-limit-requests`
 2. **Automated Secondary Failover**:

@@ -623,7 +623,3 @@ class SemanticCacheManager:
             finally:
                 self._redis = None
                 self._initialized = False
-
-
-# Global singleton
-semantic_cache = SemanticCacheManager()
