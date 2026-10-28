@@ -175,3 +175,24 @@ async def test_cancelled_call_does_not_count_as_failure():
 
     assert cb.state == "closed"
     assert cb.info().fail_counter == 0
+
+
+async def test_cancelled_call_does_not_reset_consecutive_failures():
+    """With fail_max=3, the sequence fail, fail, cancel, fail opens the breaker."""
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create(name="cancel_between_failures", fail_max=3, reset_timeout=30)
+
+    async def failing_task():
+        raise RuntimeError("Downstream service crashed")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            await cb.call(failing_task)
+
+    await _cancel_in_flight(cb)
+    assert cb.info().fail_counter == 2
+
+    with pytest.raises(BreakerOpen) as exc_info:
+        await cb.call(failing_task)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert cb.state == "open"
