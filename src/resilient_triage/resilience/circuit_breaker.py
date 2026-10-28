@@ -1,5 +1,6 @@
 """Circuit breaker: project-owned async breaker interface; the only module importing pybreaker."""
 
+import contextlib
 import logging
 import threading
 from collections.abc import Awaitable, Callable
@@ -105,9 +106,9 @@ class AsyncCircuitBreaker:
     function: the breaker is open and its reset timeout has not elapsed, or it is half-open
     and another call is already the trial. An `Exception` from the guarded function counts as
     a failure and propagates unchanged, including on the call whose failure trips the
-    breaker open. A non-`Exception` `BaseException`
-    (e.g. `CancelledError`) propagates and records nothing. In half-open only the current
-    trial's outcome is recorded; see docs/resilience.md.
+    breaker open. A non-`Exception` `BaseException` (e.g. `CancelledError`) propagates and
+    records nothing. In half-open only the current trial's outcome is recorded; see
+    docs/resilience.md.
     """
 
     def __init__(
@@ -190,12 +191,11 @@ class AsyncCircuitBreaker:
             # records nothing.
             with self._breaker._lock:
                 if self._may_record(trial):
-                    try:
+                    # pybreaker raises its own error on the tripping failure. The breaker is now
+                    # open, but fn did run, so the caller gets fn's own error; BreakerOpen is
+                    # only for refused calls.
+                    with contextlib.suppress(pybreaker.CircuitBreakerError):
                         self._breaker.state._handle_error(exc, reraise=False)
-                    except pybreaker.CircuitBreakerError:
-                        # The tripping failure: the breaker is now open, but fn did run, so the
-                        # caller gets fn's own error; BreakerOpen is only for refused calls.
-                        pass
             raise
         else:
             # 4. Handle success inside lock

@@ -13,7 +13,7 @@ Statuspage, or the LLM is down — degrade instead.
 
 ## Commands (run inside `.venv`)
 - Setup: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[test,lint]"`
-- Test: `pytest -q` (124 tests, ~4s; Redis optional — falls back to in-memory)
+- Test: `pytest -q` (125 tests, ~4s; Redis optional — falls back to in-memory)
 - Lint: `ruff check . && ruff format --check .`
 - Types: `mypy src/`
 - Run: `./scripts/run_local.sh` (UI :8000, docs /docs, /health)
