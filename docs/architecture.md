@@ -103,6 +103,8 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
 - `circuit_breakers_tripped` = the sorted tripped-breaker set. Whatever the LLM wrote is discarded.
 - `degradation_status` = the maximum (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED) of: synthesis fallback ⇒ SEVERELY_DEGRADED; two or more tripped breakers ⇒ SEVERELY_DEGRADED; exactly one ⇒ PARTIALLY_DEGRADED; otherwise HEALTHY. The LLM's value is discarded and `UNKNOWN` is never produced.
 
+**Approval rule.** `reconcile` also sets `requires_approval=True` on every recommended action whose `action_type.strip().lower()` is not `"diagnostic"`, so an unexpected label such as `"Remediation"` or `"mutating"` fails safe. The rule only raises the flag, never lowers it, and is the only code that writes `requires_approval`; `validate_report` just parses and fills defaults.
+
 ---
 
 ### 6. Dual-Mode Self-Booting Container Packaging
