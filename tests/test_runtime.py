@@ -257,3 +257,11 @@ async def test_snapshot_never_raises_when_the_redis_ping_errors(make_runtime):
 
     assert snapshot.cache_connected is False
     assert snapshot.cache_driver == "in_memory"
+
+
+async def test_quota_starts_on_the_groq_model_of_the_settings_it_was_built_with(make_runtime):
+    runtime = make_runtime(_settings(groq_model="runtime-specific-model"))
+
+    snapshot = await runtime.snapshot()
+
+    assert snapshot.llm_quota.active_model == "runtime-specific-model"
