@@ -219,7 +219,6 @@ def build_runtime(
         url=settings.statuspage_url,
         client=statuspage_http,
         cache_ttl_seconds=SUMMARY_CACHE_TTL_SECONDS,
-        summary_cache={},
         breaker_registry=breakers,
     )
     if llm_adapter is not None:

@@ -10,7 +10,6 @@ import httpx
 
 from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
-    AsyncCircuitBreaker,
     BreakerOpen,
     CircuitBreakerRegistry,
 )
@@ -67,13 +66,11 @@ class ChaosClient:
     def __init__(
         self,
         manager: ChaosManager,
-        circuit_breaker: AsyncCircuitBreaker | None = None,
         *,
-        breaker_registry: CircuitBreakerRegistry | None = None,
+        breaker_registry: CircuitBreakerRegistry,
     ) -> None:
         self.manager = manager
-        registry = breaker_registry if breaker_registry is not None else CircuitBreakerRegistry()
-        self.circuit_breaker = circuit_breaker or registry.get_or_create(
+        self.circuit_breaker = breaker_registry.get_or_create(
             name="chaos",
             fail_max=settings.circuit_breaker_fail_max,
             reset_timeout=settings.circuit_breaker_reset_timeout,
