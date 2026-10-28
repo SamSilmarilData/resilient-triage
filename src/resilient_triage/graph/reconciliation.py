@@ -35,7 +35,7 @@ def _degradation_status(evidence: DegradationEvidence) -> DegradationStatus:
     """Return the degradation status implied by the evidence."""
     if evidence.synthesis_fell_back or len(evidence.tripped_breakers) >= 2:
         return DegradationStatus.SEVERELY_DEGRADED
-    if len(evidence.tripped_breakers) == 1:
+    if len(evidence.tripped_breakers) == 1 or evidence.unavailable_sources:
         return DegradationStatus.PARTIALLY_DEGRADED
     return DegradationStatus.HEALTHY
 

@@ -1,5 +1,7 @@
 """Tests for report reconciliation: degradation evidence and the degradation rule."""
 
+import pytest
+
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.schemas.incident import (
     ActionRecommendation,
@@ -33,10 +35,14 @@ def _action(action_type: str, requires_approval: bool = False) -> ActionRecommen
     )
 
 
-def _evidence(tripped: set[str] | None = None, fell_back: bool = False) -> DegradationEvidence:
+def _evidence(
+    tripped: set[str] | None = None,
+    fell_back: bool = False,
+    unavailable: set[str] | None = None,
+) -> DegradationEvidence:
     return DegradationEvidence(
         tripped_breakers=frozenset(tripped or set()),
-        unavailable_sources=frozenset(),
+        unavailable_sources=frozenset(unavailable or set()),
         synthesis_fell_back=fell_back,
     )
 
@@ -45,6 +51,26 @@ def test_synthesis_fallback_is_severely_degraded():
     """A synthesis fallback with no tripped breakers is SEVERELY_DEGRADED."""
     result = reconcile(_report(), _evidence(fell_back=True))
     assert result.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+
+
+@pytest.mark.parametrize(
+    ("tripped", "fell_back", "expected"),
+    [
+        (set(), False, DegradationStatus.PARTIALLY_DEGRADED),
+        ({"statuspage"}, False, DegradationStatus.PARTIALLY_DEGRADED),
+        (set(), True, DegradationStatus.SEVERELY_DEGRADED),
+        ({"statuspage", "redis"}, False, DegradationStatus.SEVERELY_DEGRADED),
+    ],
+    ids=["alone", "plus-one-breaker", "plus-synthesis-fallback", "plus-two-breakers"],
+)
+def test_unavailable_source_degrades_combined_by_maximum(
+    tripped: set[str], fell_back: bool, expected: DegradationStatus
+):
+    """An unavailable source gives at least PARTIALLY_DEGRADED, combined with the other rules."""
+    evidence = _evidence(tripped=tripped, fell_back=fell_back, unavailable={"chaos"})
+    result = reconcile(_report(), evidence)
+    assert result.degradation_status == expected
+    assert result.circuit_breakers_tripped == sorted(tripped)
 
 
 def test_maximum_of_rules_is_taken():

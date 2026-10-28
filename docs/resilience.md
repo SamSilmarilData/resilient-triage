@@ -122,6 +122,7 @@ A report's `degradation_status` and `circuit_breakers_tripped` are system facts,
 
 The evidence is:
 - **Tripped breakers**: targeted tools whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
+- **Unavailable sources**: targeted tools that could not be read while their breaker was *not* tripped: the fetch task raised, or a signal it returned has `status == "UNAVAILABLE"`. `collect_telemetry` records them as `unavailable_sources`. A tool whose breaker is tripped counts only as a tripped breaker, never also as an unavailable source.
 - **Synthesis fallback**: the report was built by `fallback_report`.
 
 The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED):
@@ -131,6 +132,7 @@ The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED)
 | Synthesis fallback | `SEVERELY_DEGRADED` |
 | 2 or more tripped breakers | `SEVERELY_DEGRADED` |
 | Exactly 1 tripped breaker | `PARTIALLY_DEGRADED` |
+| Any unavailable source | `PARTIALLY_DEGRADED` |
 | None of the above | `HEALTHY` |
 
 `circuit_breakers_tripped` becomes the sorted tripped-breaker set; breaker names the LLM made up are dropped. `UNKNOWN` is never produced.
