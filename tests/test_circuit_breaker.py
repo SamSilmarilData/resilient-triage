@@ -151,3 +151,48 @@ async def test_circuit_breaker_half_open_recovery_and_failure(monkeypatch):
 
     # Breaker re-opens
     assert cb2.state == "open"
+
+
+async def _cancel_in_flight(cb) -> None:
+    """Start a slow guarded call, cancel it mid-flight, and assert the caller sees CancelledError."""
+
+    async def slow_task():
+        await asyncio.sleep(10)
+
+    task = asyncio.create_task(cb.call(slow_task))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_cancelled_call_does_not_count_as_failure():
+    """A cancelled in-flight call leaves a fail_max=1 breaker closed with no recorded failure."""
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create(name="cancelled_service", fail_max=1, reset_timeout=30)
+
+    await _cancel_in_flight(cb)
+
+    assert cb.state == "closed"
+    assert cb.info().fail_counter == 0
+
+
+async def test_cancelled_call_does_not_reset_consecutive_failures():
+    """With fail_max=3, the sequence fail, fail, cancel, fail opens the breaker."""
+    registry = CircuitBreakerRegistry()
+    cb = registry.get_or_create(name="cancel_between_failures", fail_max=3, reset_timeout=30)
+
+    async def failing_task():
+        raise RuntimeError("Downstream service crashed")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            await cb.call(failing_task)
+
+    await _cancel_in_flight(cb)
+    assert cb.info().fail_counter == 2
+
+    with pytest.raises(BreakerOpen) as exc_info:
+        await cb.call(failing_task)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert cb.state == "open"
