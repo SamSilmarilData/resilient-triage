@@ -53,15 +53,6 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
 
         report = IncidentTriageReport.model_validate(data)
 
-        # Enforce safety policy: state-mutating (remediative) actions must require approval
-        for action in report.recommended_actions:
-            if action.action_type.lower() == "remediative" and not action.requires_approval:
-                logger.warning(
-                    "Programmatic safety policy enforced: setting requires_approval=True on remediative action '%s'",
-                    action.action,
-                )
-                action.requires_approval = True
-
         logger.info("Candidate report successfully validated against IncidentTriageReport schema.")
         return {
             "final_report": report,

@@ -2,6 +2,7 @@
 
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.schemas.incident import (
+    ActionRecommendation,
     DegradationStatus,
     IncidentTriageReport,
     SeverityLevel,
@@ -11,6 +12,7 @@ from resilient_triage.schemas.incident import (
 def _report(
     status: DegradationStatus = DegradationStatus.HEALTHY,
     tripped: list[str] | None = None,
+    actions: list[ActionRecommendation] | None = None,
 ) -> IncidentTriageReport:
     return IncidentTriageReport(
         summary="Payment API elevated errors",
@@ -18,6 +20,16 @@ def _report(
         root_cause_analysis="Connection pool exhaustion",
         degradation_status=status,
         circuit_breakers_tripped=tripped or [],
+        recommended_actions=actions or [],
+    )
+
+
+def _action(action_type: str, requires_approval: bool = False) -> ActionRecommendation:
+    return ActionRecommendation(
+        action=f"run {action_type} step",
+        target_system="payment-api",
+        action_type=action_type,
+        requires_approval=requires_approval,
     )
 
 
@@ -84,3 +96,28 @@ def test_other_fields_are_untouched():
     result = reconcile(report, _evidence(tripped={"chaos"}))
     unchanged = {"circuit_breakers_tripped", "degradation_status"}
     assert result.model_dump(exclude=unchanged) == report.model_dump(exclude=unchanged)
+
+
+def test_approval_check_fails_safe():
+    """Any non-diagnostic action_type ends with requires_approval=True; diagnostic keeps its value."""
+    actions = [
+        _action("Remediation"),
+        _action("mutating"),
+        _action("REMEDIATIVE"),
+        _action(" Diagnostic "),
+    ]
+    result = reconcile(_report(actions=actions), _evidence())
+    assert [a.requires_approval for a in result.recommended_actions] == [True, True, True, False]
+
+
+def test_approval_rule_never_lowers_the_flag():
+    """A diagnostic action the LLM marked requires_approval=True is left as is."""
+    result = reconcile(_report(actions=[_action("diagnostic", True)]), _evidence())
+    assert result.recommended_actions[0].requires_approval is True
+
+
+def test_approval_rule_does_not_mutate_input_actions():
+    """reconcile raises the flag on copies, leaving the input report's actions untouched."""
+    report = _report(actions=[_action("remediative")])
+    reconcile(report, _evidence())
+    assert report.recommended_actions[0].requires_approval is False

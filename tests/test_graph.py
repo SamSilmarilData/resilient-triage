@@ -328,10 +328,9 @@ async def test_collect_telemetry_dynamic_probe_routing():
     assert signals_gw[0]["source"] == "api_gateway_probe"
 
 
-def test_validate_report_enforces_remediation_approval_safety():
-    """Verify validate_report_node programmatically overrides mutating actions to requires_approval=True."""
-    from resilient_triage.graph.nodes.validate_report import validate_report_node
-
+@pytest.mark.asyncio
+async def test_graph_enforces_remediation_approval_safety():
+    """Verify the graph's final report forces requires_approval=True on non-diagnostic actions."""
     candidate_with_unapproved_remediation = json.dumps(
         {
             "summary": "Kubernetes worker node pool CPU saturation",
@@ -350,7 +349,7 @@ def test_validate_report_enforces_remediation_approval_safety():
                     "priority": "P0",
                     "action": "kubectl drain node-pool-primary --delete-emptydir-data --force",
                     "target_system": "Kubelet",
-                    "action_type": "remediative",
+                    "action_type": "Remediation",
                     "requires_approval": False,  # Safety violation from LLM
                 },
                 {
@@ -367,17 +366,16 @@ def test_validate_report_enforces_remediation_approval_safety():
         }
     )
 
-    state = {
-        "candidate_report_raw": candidate_with_unapproved_remediation,
-        "repair_attempts": 0,
-        "circuit_breaker_status": {},
-    }
+    mock_llm = MockTriageChatModel()
+    mock_llm.responses = [candidate_with_unapproved_remediation]
+    set_triage_llm(mock_llm)
 
-    result = validate_report_node(state)
-    report = result["final_report"]
-    assert report is not None
-    # Remediative action must be programmatically forced to requires_approval=True
-    assert report.recommended_actions[0].action_type == "remediative"
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "Kubernetes worker node pool CPU saturation"})
+    report = final_state["final_report"]
+    assert isinstance(report, IncidentTriageReport)
+    # Non-diagnostic action must be programmatically forced to requires_approval=True
+    assert report.recommended_actions[0].action_type == "Remediation"
     assert report.recommended_actions[0].requires_approval is True
     # Diagnostic action remains requires_approval=False
     assert report.recommended_actions[1].action_type == "diagnostic"
