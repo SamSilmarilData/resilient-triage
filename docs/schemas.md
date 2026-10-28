@@ -17,8 +17,8 @@ The primary validated output produced by the triage agent.
 | `affected_services` | `list[ServiceImpact]` | List of impacted components | Non-hallucinated list |
 | `telemetry_signals` | `list[TelemetrySignal]`| Signals gathered from telemetry | Recorded observations |
 | `recommended_actions` | `list[ActionRecommendation]` | Remediation steps | Priority tagged |
-| `degradation_status` | `DegradationStatus` | Agent operational mode | `HEALTHY`, `PARTIALLY_DEGRADED`, `SEVERELY_DEGRADED`, `UNKNOWN` |
-| `circuit_breakers_tripped` | `list[str]` | Names of tripped breakers | E.g. `["statuspage", "chaos"]` |
+| `degradation_status` | `DegradationStatus` | Agent operational mode | `HEALTHY`, `PARTIALLY_DEGRADED`, `SEVERELY_DEGRADED`, `UNKNOWN`. Set by report reconciliation (the LLM's value is discarded); `UNKNOWN` is never produced |
+| `circuit_breakers_tripped` | `list[str]` | Names of tripped breakers | E.g. `["statuspage", "chaos"]`. Set by report reconciliation from the targeted breakers open at collection (the LLM's value is discarded) |
 | `confidence_score` | `float` | Model confidence score | Constrained between `0.0` and `1.0` |
 
 ### Enums
