@@ -366,3 +366,48 @@ async def test_straggler_failure_during_half_open_does_not_reopen_breaker():
     trial_release.set()
     assert await asyncio.wait_for(trial_task, timeout=0.5) == "recovered"
     assert cb.state == "closed"
+
+
+async def test_reset_during_trial_frees_the_slot_for_the_next_half_open_cycle():
+    """After reset mid-trial, the next half-open cycle admits a new trial; the stale one can't free it."""
+    cb = await _half_open_breaker("reset_during_trial_service")
+    stale_release = asyncio.Event()
+    new_release = asyncio.Event()
+    reached: list[str] = []
+
+    async def stale_probe() -> str:
+        reached.append("stale")
+        await stale_release.wait()
+        return "stale"
+
+    async def new_probe() -> str:
+        reached.append("new")
+        await new_release.wait()
+        return "recovered"
+
+    async def failing_task() -> None:
+        raise RuntimeError("Outage ongoing")
+
+    stale = asyncio.create_task(cb.call(stale_probe))
+    await asyncio.sleep(0.01)
+    cb.reset()
+    with pytest.raises(BreakerOpen):
+        await cb.call(failing_task)
+    await asyncio.sleep(0.07)
+
+    new = asyncio.create_task(cb.call(new_probe))
+    await asyncio.sleep(0.01)
+    assert reached == ["stale", "new"]
+    assert cb.state == "half-open"
+
+    # The stale trial returning must neither settle the breaker nor free the new trial's slot.
+    stale_release.set()
+    assert await asyncio.wait_for(stale, timeout=0.5) == "stale"
+    assert cb.state == "half-open"
+    with pytest.raises(BreakerOpen):
+        await asyncio.wait_for(cb.call(new_probe), timeout=0.5)
+    assert reached == ["stale", "new"]
+
+    new_release.set()
+    assert await asyncio.wait_for(new, timeout=0.5) == "recovered"
+    assert cb.state == "closed"

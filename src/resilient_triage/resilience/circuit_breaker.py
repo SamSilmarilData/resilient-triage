@@ -219,8 +219,11 @@ class AsyncCircuitBreaker:
         return trial is not None and self._trial is trial
 
     def reset(self) -> None:
-        """Manually close the circuit breaker and reset failure counters."""
-        self._breaker.close()
+        """Manually close the breaker, reset failure counters and free any trial slot."""
+        with self._breaker._lock:
+            # A trial still running after reset is stale: it no longer holds the slot.
+            self._trial = None
+            self._breaker.close()
 
 
 def force_open_for_tests(breaker: AsyncCircuitBreaker) -> None:
