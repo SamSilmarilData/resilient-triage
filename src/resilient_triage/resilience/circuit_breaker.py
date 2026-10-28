@@ -146,7 +146,9 @@ class AsyncCircuitBreaker:
         Raises:
             BreakerOpen: If the breaker is open and its reset timeout has not elapsed, or
                 if this call's failure trips the breaker open.
-            BaseException: Any other exception raised by func during execution.
+            Exception: Any other exception raised by func; it counts as a failure.
+            BaseException: A non-Exception error (e.g. CancelledError) raised by func;
+                it propagates and the breaker records neither success nor failure.
         """
         # 1. Check state before execution
         with self._breaker._lock:
@@ -164,8 +166,10 @@ class AsyncCircuitBreaker:
         try:
             # 2. Execute async coroutine
             result = await func(*args, **kwargs)
-        except BaseException as exc:
-            # 3. Handle error inside lock; pybreaker raises its own error on the tripping failure
+        except Exception as exc:
+            # 3. Handle error inside lock; pybreaker raises its own error on the tripping failure.
+            # Only `Exception` counts: a non-Exception BaseException such as CancelledError
+            # (run deadline, client disconnect) propagates untouched and records nothing.
             with self._breaker._lock:
                 try:
                     self._breaker.state._handle_error(exc, reraise=False)
