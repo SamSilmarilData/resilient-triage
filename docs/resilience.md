@@ -54,6 +54,16 @@ stateDiagram-v2
    - If successful, resets `fail_counter = 0` and restores state to `CLOSED`.
    - If it fails, resets the 30-second timer and returns to `OPEN`.
 
+### Cancellation is neither success nor failure
+Only an `Exception` raised by the guarded call counts as a failure. If the call is interrupted by
+a `BaseException` that is not an `Exception` (typically `asyncio.CancelledError` when a run
+deadline passes or the client disconnects), `AsyncCircuitBreaker.call` records **nothing**: the
+failure counter is neither incremented nor reset, the state does not change, and the exception
+propagates to the caller unchanged. A cancelled run therefore cannot trip a healthy source's
+breaker, and it cannot hide earlier failures either: with `fail_max = 3`, the sequence
+fail, fail, cancel, fail opens the breaker. The call whose `Exception` trips the breaker still
+raises `BreakerOpen` chained (`from`) the original error.
+
 ---
 
 ## 3. Exponential Backoff with Randomized Jitter (Tenacity)
