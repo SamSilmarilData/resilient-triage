@@ -12,15 +12,13 @@ Statuspage, or the LLM is down — degrade instead.
 - LLM: Groq (`qwen/qwen3.8-27b`) via direct async HTTP, JSON response mode
 
 ## Commands (run inside `.venv`)
-- Setup: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[test,lint]"`
-- Test: `pytest -q` (125 tests, ~4s; Redis optional — falls back to in-memory)
-- Lint: `ruff check . && ruff format --check .`
-- Types: `mypy src/`
+- Setup: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[test,lint]"`, then
+  `git config core.hooksPath .githooks` (pre-commit runs ruff)
+- Check: `./scripts/check.sh` — ruff, ruff format, mypy, pytest, as CI runs them; extra args go
+  to pytest. Redis is optional: tests fall back to the in-memory cache.
 - Run: `./scripts/run_local.sh` (UI :8000, docs /docs, /health)
 - Docker: `docker compose up`; smoke test: `python scripts/smoke_test.py`
 - CI (`.github/workflows/ci.yml`) runs exactly: ruff check, ruff format --check, mypy src/, pytest, docker build + /health
-
-Baseline (2026-10-29): all four checks green.
 
 ## Project Map (`src/resilient_triage/`)
 - `api/app.py` — routes: `POST /triage`, `/health`, `/metrics`, `/resilience/status`, `/llm/quota`,
@@ -39,14 +37,8 @@ Deeper docs (load only the one relevant to the task): `docs/architecture.md`, `d
 `docs/schemas.md`, `docs/api.md`, `docs/deployment.md`, ADRs in `docs/decisions/`.
 
 ## Conventions
-- Enums inherit `(str, Enum)` (this is why ruff `UP042` is ignored — don't "fix" it to `StrEnum`).
-- `logger = logging.getLogger(__name__)` per module; %-style log args, not f-strings.
-- Module docstring on every file (`"""Node: x - does y."""` for nodes); function docstrings one line.
-- New config goes in `config.py` as a bounded `Field` **and** in `.env.example`.
-- External calls (HTTP, Redis, LLM) must be guarded: breaker and/or retry, and a degraded path that still yields a valid `IncidentTriageReport`.
-- Every non-diagnostic action must end with `requires_approval=True` — enforced in `reconcile` (`graph/reconciliation.py`), the only code that writes it; don't weaken it.
-- Line length 100 (ruff); full type hints on new code.
-- Commits: Conventional Commits with scope — `feat(graph): …`, `fix(resilience): …`, `test(suite): …`. Update `CHANGELOG.md` for user-visible changes.
+Code conventions live in `CODING_STANDARDS.md`; read it before adding a module, node, config
+field or external call. Commits: Conventional Commits with scope (`fix(resilience): …`).
 
 ## Testing
 - `tests/conftest.py` has an autouse fixture that resets **all** singletons (breakers, chaos, quota,
@@ -57,6 +49,8 @@ Deeper docs (load only the one relevant to the task): `docs/architecture.md`, `d
 ## Boundaries
 - Never commit `.env` or API keys (`GROQ_API_KEY`, `ADMIN_API_KEY`).
 - Don't add dependencies without asking; keep the Docker image non-root.
+- `requires_approval=True` on non-diagnostic actions is written only by `reconcile`
+  (`graph/reconciliation.py`); keep that invariant intact.
 - Ask before changing the `IncidentTriageReport` schema or the cache key/index format (`triage_vector_idx`, `triage:doc:*`) — both are contracts.
 - Don't skip, delete, or loosen tests/assertions to get green.
 
