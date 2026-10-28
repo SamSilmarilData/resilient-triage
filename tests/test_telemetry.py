@@ -337,3 +337,15 @@ async def test_statuspage_sources_with_separate_caches_do_not_share_summaries():
     assert (await source_a.fetch_summary()).indicator == "major"
     assert client_a.get.call_count == 1
     assert client_b.get.call_count == 1
+
+
+def test_telemetry_clients_register_breakers_in_the_registry_they_are_given():
+    """Chaos and Statuspage clients built with a registry take their breakers from it."""
+    registry = CircuitBreakerRegistry()
+
+    chaos = ChaosClient(manager=ChaosManager(), breaker_registry=registry)
+    statuspage = StatuspageClient(breaker_registry=registry)
+
+    assert registry.get("chaos") is chaos.circuit_breaker
+    assert registry.get("statuspage") is statuspage.circuit_breaker
+    assert set(registry.get_all_statuses()) == {"chaos", "statuspage"}
