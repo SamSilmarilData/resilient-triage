@@ -203,3 +203,56 @@ async def test_building_two_runtimes_opens_no_connections(make_runtime, monkeypa
     # Sanity check: the guard does see I/O once a runtime starts.
     await make_runtime(groq_settings).start()
     assert attempts != []
+
+
+class RecordingEmbedder(DeterministicEmbeddingProvider):
+    """Deterministic embedder that records queries, optionally failing every call."""
+
+    def __init__(self, fail: bool = False) -> None:
+        super().__init__()
+        self.queries: list[str] = []
+        self.fail = fail
+
+    def embed_query(self, text: str) -> list[float]:
+        self.queries.append(text)
+        if self.fail:
+            raise RuntimeError("embedding model unavailable")
+        return super().embed_query(text)
+
+
+async def test_start_warms_the_injected_embedder(make_runtime):
+    embedder = RecordingEmbedder()
+    runtime = make_runtime(embedder=embedder)
+
+    await runtime.start()
+
+    assert "warmup telemetry query" in embedder.queries
+    assert len(embedder.queries) > 1
+
+
+async def test_start_never_raises_and_still_registers_default_breakers(make_runtime):
+    runtime = make_runtime(embedder=RecordingEmbedder(fail=True))
+
+    async def broken_initialize() -> None:
+        raise RuntimeError("cache init exploded")
+
+    runtime.cache.initialize = broken_initialize  # type: ignore[method-assign]
+
+    await runtime.start()
+
+    assert set((await runtime.snapshot()).breakers) == {"statuspage", "chaos"}
+
+
+async def test_snapshot_never_raises_when_the_redis_ping_errors(make_runtime):
+    runtime = make_runtime()
+    await runtime.start()
+
+    async def broken_ping() -> bool:
+        raise RuntimeError("ping exploded")
+
+    runtime.cache.check_connection = broken_ping  # type: ignore[method-assign]
+
+    snapshot = await runtime.snapshot()
+
+    assert snapshot.cache_connected is False
+    assert snapshot.cache_driver == "in_memory"
