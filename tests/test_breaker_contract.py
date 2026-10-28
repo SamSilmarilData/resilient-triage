@@ -1,4 +1,4 @@
-"""Contract tests: the pybreaker internals AsyncCircuitBreaker relies on, and its import boundary."""
+"""Contract tests: pybreaker internals AsyncCircuitBreaker relies on, and its import boundary."""
 
 import ast
 import inspect
@@ -48,7 +48,7 @@ def test_pybreaker_half_open_transitions_state():
 
 
 def test_pybreaker_handle_error_accepts_reraise_false_and_counts():
-    """`state._handle_error(exc, reraise=False)` records a failure without raising below fail_max."""
+    """`state._handle_error(exc, reraise=False)` records a failure, no raise below fail_max."""
     cb = CircuitBreakerRegistry().get_or_create("contract_handle_error", fail_max=3)
     handle_error = _wrapped(cb).state._handle_error
     assert "reraise" in inspect.signature(handle_error).parameters

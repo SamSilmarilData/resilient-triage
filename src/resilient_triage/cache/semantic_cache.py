@@ -363,14 +363,20 @@ class SemanticCacheManager:
                 OSError,
             ) as conn_err:
                 logger.warning(
-                    "RediSearch connection failure: %s. Disconnecting and checking in-memory store.",
+                    (
+                        "RediSearch connection failure: %s. Disconnecting and checking in-memory "
+                        "store."
+                    ),
                     conn_err,
                 )
                 self._redis = None
                 self._has_redisearch = False
             except Exception as e:
                 logger.warning(
-                    "RediSearch query execution error: %s. Query falling back to in-memory store without disconnecting Redis.",
+                    (
+                        "RediSearch query execution error: %s. Query falling back to in-memory "
+                        "store without disconnecting Redis."
+                    ),
                     e,
                 )
 

@@ -59,7 +59,10 @@ def run_battery(base_url: str):
 
     # 2. Triage Cache Miss (Live Inference)
     print_step("Step 2: Live Incident Triage Query (Cache MISS)")
-    q1 = "GitHub Actions runner queue is stalled with 504 gateway timeout and elevated webhook latency"
+    q1 = (
+        "GitHub Actions runner queue is stalled with 504 gateway timeout "
+        "and elevated webhook latency"
+    )
     start = time.monotonic()
 
     res1 = client.post("/triage", json={"query": q1})
@@ -97,7 +100,8 @@ def run_battery(base_url: str):
         f"Status: HTTP 200 | Cache: {BOLD}{GREEN}HIT{RESET} | Cosine Similarity: {similarity:.4f}"
     )
     print_pass(
-        f"Turnaround Latency: {BOLD}{GREEN}{elapsed2:.2f}ms{RESET} (Strict sub-20ms requirement met!)"
+        f"Turnaround Latency: {BOLD}{GREEN}{elapsed2:.2f}ms{RESET} "
+        "(Strict sub-20ms requirement met!)"
     )
 
     # 4. Force Refresh Bypass
@@ -209,11 +213,13 @@ def main():
                 target_port = sock.getsockname()[1]
             target_url = f"http://{target_host}:{target_port}"
             print(
-                f"{YELLOW}Port was occupied by another process. Relocating ephemeral instance to {target_url}...{RESET}"
+                f"{YELLOW}Port was occupied by another process. Relocating ephemeral "
+                f"instance to {target_url}...{RESET}"
             )
         else:
             print(
-                f"{YELLOW}No running server found at {target_url}. Launching ephemeral instance...{RESET}"
+                f"{YELLOW}No running server found at {target_url}. Launching ephemeral "
+                f"instance...{RESET}"
             )
 
         log_file = tempfile.NamedTemporaryFile(mode="w+", delete=False, prefix="smoke_uvicorn_")

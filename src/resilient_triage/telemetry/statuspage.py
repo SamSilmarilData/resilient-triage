@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 # Strict timeouts agreed upon during design interview
 STATUSPAGE_TIMEOUT = httpx.Timeout(connect=2.0, read=3.0, write=2.0, pool=1.0)
 
-# In-memory short-TTL cache to eliminate redundant 700ms external network calls: url -> (StatuspageSummary, timestamp)
+# Short-TTL in-memory cache that skips redundant ~700ms fetches.
+# Maps url -> (StatuspageSummary, timestamp).
 _SUMMARY_CACHE: dict[str, tuple[StatuspageSummary, float]] = {}
 _statuspage_async_client: httpx.AsyncClient | None = None
 
@@ -171,7 +172,10 @@ class StatuspageClient:
                     status="CIRCUIT_OPEN",
                     latency_ms=round(elapsed_ms, 2),
                     error_rate=1.0,
-                    raw_snippet=f"Circuit breaker '{self.circuit_breaker.name}' tripped OPEN; failing fast without hanging.",
+                    raw_snippet=(
+                        f"Circuit breaker '{self.circuit_breaker.name}' tripped OPEN; failing "
+                        "fast without hanging."
+                    ),
                 )
             ]
         except Exception as exc:

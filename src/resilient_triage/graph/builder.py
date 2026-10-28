@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from resilient_triage.config import settings
 from resilient_triage.graph.nodes import (
@@ -109,7 +110,9 @@ def route_after_validation(
     return "fallback"
 
 
-def build_triage_graph(enable_checkpointing: bool = True, max_checkpoint_threads: int = 1000):
+def build_triage_graph(
+    enable_checkpointing: bool = True, max_checkpoint_threads: int = 1000
+) -> CompiledStateGraph:
     """Build and compile the LangGraph cyclic state graph with BoundedMemorySaver checkpointing.
 
     Args:

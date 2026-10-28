@@ -29,7 +29,9 @@ def test_valid_incident_triage_report():
         "timestamp": datetime.now(UTC).isoformat(),
         "summary": "GitHub Actions is failing across all workflow runs.",
         "severity": "CRITICAL",
-        "root_cause_analysis": "Upstream webhook processing failure detected in external statuspage.",
+        "root_cause_analysis": (
+            "Upstream webhook processing failure detected in external statuspage."
+        ),
         "affected_services": [
             {
                 "service_name": "Actions Runner",

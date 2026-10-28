@@ -22,7 +22,7 @@ from resilient_triage.schemas.incident import (
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_cache_instances():
-    """Track and close any SemanticCacheManager instances created during tests to prevent socket leaks."""
+    """Track and close SemanticCacheManager instances created in tests to prevent socket leaks."""
     created: list[SemanticCacheManager] = []
     original_init = SemanticCacheManager.__init__
 
@@ -279,7 +279,7 @@ async def test_redis_connectivity_and_driver():
 
 @pytest.mark.asyncio
 async def test_redis_disconnect_and_in_memory_failover():
-    """Verify that if Redis drops or is unreachable, cache seamlessly falls back to in-memory mode with zero errors."""
+    """Verify the cache falls back to in-memory without errors if Redis drops or is unreachable."""
     provider = DeterministicEmbeddingProvider()
     # Point to an unreachable port
     unreachable_cache = SemanticCacheManager(
@@ -419,7 +419,7 @@ async def test_scan_iter_key_enumeration(mocker):
 
 
 def test_fastembed_fallback_to_deterministic_when_offline(mocker):
-    """Verify FastEmbedProvider gracefully falls back to DeterministicEmbeddingProvider if download/init fails."""
+    """Verify FastEmbedProvider falls back to DeterministicEmbeddingProvider if init fails."""
     provider = FastEmbedProvider(model_name="nonexistent/model")
     mocker.patch(
         "fastembed.TextEmbedding", side_effect=RuntimeError("Offline network error: 403 Forbidden")

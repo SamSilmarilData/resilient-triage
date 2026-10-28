@@ -15,7 +15,8 @@ def degraded_fallback_node(state: TriageState) -> dict[str, Any]:
         f"Cluster Sentinel [{name}]" if name == "chaos" else name for name in tripped
     )
     degradation_reason = (
-        f"Circuit breaker(s) [{tripped_desc}] tripped OPEN. Upstream telemetry unavailable; protecting downstream services."
+        f"Circuit breaker(s) [{tripped_desc}] tripped OPEN. Upstream telemetry unavailable; "
+        "protecting downstream services."
         if tripped
         else "Upstream telemetry unavailable due to failures."
     )

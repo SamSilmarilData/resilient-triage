@@ -263,7 +263,7 @@ async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
 
 @pytest.mark.asyncio
 async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient):
-    """Verify that when LLM inference fails (e.g., HTTP 429 or network error), the system returns 200 with a fallback report."""
+    """Verify a failed LLM call (e.g. HTTP 429, network error) still returns 200 with a fallback."""
     with patch("resilient_triage.graph.nodes.generate_report.get_triage_llm") as mock_get_llm:
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(
@@ -433,7 +433,7 @@ async def test_chaos_probe_latency_via_api(client: httpx.AsyncClient):
 
 @pytest.mark.asyncio
 async def test_chaos_probe_failure_rate_via_api(client: httpx.AsyncClient):
-    """Verify that POST /chaos/inject with failure_rate=1.0 causes GET /chaos/probe to fail with 503."""
+    """Verify POST /chaos/inject with failure_rate=1.0 makes GET /chaos/probe fail with 503."""
     resp = await client.post(
         "/chaos/inject",
         json={"active": True, "failure_rate": 1.0, "inject_503": False, "latency_ms": 0},
@@ -446,7 +446,7 @@ async def test_chaos_probe_failure_rate_via_api(client: httpx.AsyncClient):
 
 @pytest.mark.asyncio
 async def test_triage_internal_scope_only_targets_chaos(client: httpx.AsyncClient):
-    """Verify that triage requests with service_filter='internal' only target internal chaos telemetry and exclude external Statuspage."""
+    """Verify service_filter='internal' targets only chaos telemetry, not external Statuspage."""
     with (
         patch("resilient_triage.telemetry.statuspage.StatuspageClient.fetch_signals") as mock_sp,
         patch(
@@ -457,7 +457,10 @@ async def test_triage_internal_scope_only_targets_chaos(client: httpx.AsyncClien
         resp = await client.post(
             "/triage",
             json={
-                "query": "Internal API gateway cluster failing with 503 outage and elevated probe latency",
+                "query": (
+                    "Internal API gateway cluster failing with 503 outage and elevated probe "
+                    "latency"
+                ),
                 "service_filter": "internal",
                 "force_refresh": True,
             },
@@ -500,7 +503,7 @@ async def test_concurrency_semaphore_shedding(client: httpx.AsyncClient, monkeyp
     """Verify that semaphore exhaustion triggers 503 load shedding."""
     # Temporarily set semaphore to 0 to simulate full saturation
     saturated_sem = asyncio.Semaphore(0)
-    # api/__init__.py exposes `app` which shadows the submodule name; use sys.modules for module globals
+    # api/__init__.py exposes `app`, shadowing the submodule; reach module globals via sys.modules
     app_module = sys.modules["resilient_triage.api.app"]
     monkeypatch.setattr(app_module, "GRAPH_SEMAPHORE", saturated_sem)
 
@@ -522,7 +525,7 @@ async def test_concurrency_semaphore_shedding(client: httpx.AsyncClient, monkeyp
 
 @pytest.mark.asyncio
 async def test_triage_request_payload_bounds_rejection(client: httpx.AsyncClient):
-    """Verify TriageRequest rejects oversized queries or invalid service_filter characters with 422."""
+    """Verify TriageRequest rejects oversized queries or bad service_filter characters (422)."""
     # 1. Query too long (>2000 chars)
     oversized_query = "A" * 2001
     resp_over = await client.post("/triage", json={"query": oversized_query})
@@ -549,7 +552,7 @@ async def test_triage_request_payload_bounds_rejection(client: httpx.AsyncClient
 
 @pytest.mark.asyncio
 async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
-    """Verify mutating control-plane endpoints enforce X-Admin-Key authentication when configured."""
+    """Verify mutating control-plane endpoints enforce X-Admin-Key when it is configured."""
     from resilient_triage.config import settings
 
     # Configure secret admin key

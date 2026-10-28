@@ -130,7 +130,9 @@ class HealthResponse(BaseModel):
         description="Active cache driver: 'redisearch', 'redis_hash_fallback', or 'in_memory'",
     )
     circuits: dict[str, str] = Field(
-        description="Current state of all registered circuit breakers ('closed', 'open', 'half-open')"
+        description=(
+            "Current state of all registered circuit breakers ('closed', 'open', 'half-open')"
+        )
     )
     active_model: str = Field(
         default="Zero-Config SRE Simulation",

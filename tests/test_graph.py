@@ -49,7 +49,9 @@ def _make_valid_report_json(severity: str = "HIGH", confidence: float = 0.90) ->
             "recommended_actions": [
                 {
                     "priority": "P0",
-                    "action": "Check runner controller logs: kubectl logs -n actions deploy/controller",
+                    "action": (
+                        "Check runner controller logs: kubectl logs -n actions deploy/controller"
+                    ),
                     "target_system": "Actions Controller",
                     "action_type": "diagnostic",
                     "requires_approval": False,
@@ -125,7 +127,7 @@ async def test_graph_happy_path():
 
 @pytest.mark.asyncio
 async def test_graph_degraded_and_compensatory_routing():
-    """Verify graph routes through compensatory cache and degraded fallback when circuit breaker is OPEN."""
+    """Verify an OPEN breaker routes through compensatory cache and degraded fallback."""
     # Deliberately trip the chaos breaker
     chaos_cb = circuit_breaker_registry.get_or_create("chaos")
     force_open_for_tests(chaos_cb)
@@ -195,7 +197,7 @@ async def test_graph_self_repair_on_malformed_json():
 
 @pytest.mark.asyncio
 async def test_graph_self_repair_cap_routes_to_fallback():
-    """Verify that when 2 self-repair retries are exhausted, graph routes safely to fallback report."""
+    """Verify that after 2 exhausted self-repair retries the graph routes to the fallback report."""
     always_bad_json = "```Not json at all```"
 
     mock_llm = MockTriageChatModel()
@@ -308,7 +310,7 @@ async def test_groq_chat_model_429_failover(mocker):
 
 @pytest.mark.asyncio
 async def test_collect_telemetry_dynamic_probe_routing():
-    """Verify collect_telemetry_node passes incident context to produce domain-specific probe sources."""
+    """Verify collect_telemetry_node passes incident context to get domain-specific sources."""
     # Postgres query -> postgres_health_probe
     state_pg = {
         "query": "Database connection pool exhausted on orders-db",
@@ -486,7 +488,7 @@ def test_reconcile_overrides_hallucinated_healthy_when_circuit_tripped():
 
 @pytest.mark.asyncio
 async def test_groq_proactive_cooldown_routing(mocker):
-    """Verify GroqChatModel proactively routes to fallback_model during active rate-limit cooldown."""
+    """Verify GroqChatModel routes to fallback_model during an active rate-limit cooldown."""
     from langchain_core.messages import HumanMessage
 
     from resilient_triage.graph.llm import GroqChatModel, groq_quota_tracker

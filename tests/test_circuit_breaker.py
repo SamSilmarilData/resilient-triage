@@ -155,7 +155,7 @@ async def test_circuit_breaker_half_open_recovery_and_failure(monkeypatch):
 
 
 async def _cancel_in_flight(cb: AsyncCircuitBreaker) -> None:
-    """Start a slow guarded call, cancel it mid-flight, and assert the caller sees CancelledError."""
+    """Start a slow guarded call, cancel it mid-flight, assert the caller sees CancelledError."""
 
     async def slow_task() -> None:
         await asyncio.sleep(10)
@@ -373,7 +373,7 @@ async def test_straggler_success_during_half_open_does_not_close_breaker():
 
 
 async def test_straggler_failure_during_half_open_does_not_reopen_breaker():
-    """A call started while closed that fails during the trial raises its own error, records nothing."""
+    """A call started while closed that fails mid-trial raises its own error, records nothing."""
     cb, straggler_release, straggler_task, trial_release, trial_task = await _straggler_and_trial(
         "straggler_failure_service", straggler_fails=True
     )
@@ -389,7 +389,7 @@ async def test_straggler_failure_during_half_open_does_not_reopen_breaker():
 
 
 async def test_reset_during_trial_frees_the_slot_for_the_next_half_open_cycle():
-    """After reset mid-trial, the next half-open cycle admits a new trial; the stale one can't free it."""
+    """After a mid-trial reset, the next cycle admits a new trial the stale one can't free."""
     cb = await _half_open_breaker("reset_during_trial_service")
     stale_release = asyncio.Event()
     new_release = asyncio.Event()
