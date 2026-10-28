@@ -241,3 +241,37 @@ async def test_half_open_lets_exactly_one_concurrent_call_through():
     release.set()
     assert await trial == "recovered"
     assert cb.state == "closed"
+
+
+async def test_failed_half_open_trial_reopens_and_restarts_timeout():
+    """A failed trial re-opens the breaker, and the next caller is refused without reaching fn."""
+    cb = await _half_open_breaker("failed_trial_service")
+    reached = 0
+
+    async def failing_probe():
+        nonlocal reached
+        reached += 1
+        raise RuntimeError("Still down")
+
+    with pytest.raises(BreakerOpen) as exc_info:
+        await cb.call(failing_probe)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert cb.state == "open"
+
+    with pytest.raises(BreakerOpen):
+        await cb.call(failing_probe)
+    assert reached == 1
+
+
+async def test_cancelled_half_open_trial_frees_the_slot():
+    """A cancelled trial leaves the breaker half-open, and the next caller becomes the new trial."""
+    cb = await _half_open_breaker("cancelled_trial_service")
+
+    await _cancel_in_flight(cb)
+    assert cb.state == "half-open"
+
+    async def probe():
+        return "recovered"
+
+    assert await cb.call(probe) == "recovered"
+    assert cb.state == "closed"
