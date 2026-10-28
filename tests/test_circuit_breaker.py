@@ -276,3 +276,28 @@ async def test_cancelled_half_open_trial_frees_the_slot():
 
     assert await cb.call(probe) == "recovered"
     assert cb.state == "closed"
+
+
+async def test_callers_racing_in_as_reset_timeout_elapses_get_exactly_one_trial():
+    """N callers hitting an open breaker whose timeout just elapsed: exactly one reaches fn."""
+    cb = await _half_open_breaker("racing_trial_service")
+    assert cb.state == "open"  # timeout elapsed, but no call has claimed the trial yet
+    release = asyncio.Event()
+    reached = 0
+
+    async def probe() -> str:
+        nonlocal reached
+        reached += 1
+        await release.wait()
+        return "recovered"
+
+    tasks = [asyncio.create_task(cb.call(probe)) for _ in range(5)]
+    # Bound the wait so a regression fails rather than hangs; only the trial should be pending.
+    done, pending = await asyncio.wait(tasks, timeout=0.5)
+    assert len(pending) == 1
+    assert all(isinstance(task.exception(), BreakerOpen) for task in done)
+    assert reached == 1
+
+    release.set()
+    assert await asyncio.wait_for(pending.pop(), timeout=0.5) == "recovered"
+    assert cb.state == "closed"
