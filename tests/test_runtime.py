@@ -1,5 +1,6 @@
 """Tests for AppRuntime: per-runtime isolation, lifecycle, and the resilience snapshot."""
 
+import socket
 from collections.abc import AsyncIterator, Callable
 
 import httpx
@@ -182,3 +183,23 @@ async def test_aclose_closes_owned_http_clients_and_cache_and_is_idempotent(
     assert len(opened) == 2
     assert all(client.is_closed for client in opened)
     assert runtime.cache.is_redis_connected is False
+
+
+async def test_building_two_runtimes_opens_no_connections(make_runtime, monkeypatch):
+    attempts: list[object] = []
+
+    def record_connect(self: socket.socket, address: object) -> None:
+        attempts.append(address)
+        raise OSError("network disabled in test")
+
+    monkeypatch.setattr(socket.socket, "connect", record_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", record_connect)
+    groq_settings = _settings(redis_url=settings.redis_url, groq_api_key="test-key")
+
+    make_runtime(groq_settings, llm_adapter=None)
+    make_runtime(groq_settings, llm_adapter=None)
+    assert attempts == []
+
+    # Sanity check: the guard does see I/O once a runtime starts.
+    await make_runtime(groq_settings).start()
+    assert attempts != []
