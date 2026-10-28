@@ -48,8 +48,10 @@ async def collect_telemetry_node(state: TriageState) -> dict[str, Any]:
 
     statuses = circuit_breaker_registry.get_all_statuses()
     cb_status = {name: info.state for name, info in statuses.items()}
+    tripped_breakers = [name for name in task_names if name in statuses and statuses[name].is_open]
 
     return {
         "telemetry_signals": [s.model_dump() for s in aggregated_signals],
         "circuit_breaker_status": cb_status,
+        "tripped_breakers": tripped_breakers,
     }

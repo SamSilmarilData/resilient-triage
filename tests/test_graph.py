@@ -400,12 +400,12 @@ def test_bounded_memory_saver_eviction():
     assert set(saver.storage.keys()) == {"thread_2", "thread_3"}
 
 
-def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
-    """Verify validate_report_node elevates degradation_status from HEALTHY when breakers are open."""
-    from resilient_triage.graph.nodes.validate_report import validate_report_node
+def test_reconcile_overrides_hallucinated_healthy_when_circuit_tripped():
+    """Verify reconcile elevates degradation_status from HEALTHY when breakers are tripped."""
+    from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
     from resilient_triage.schemas.incident import DegradationStatus
 
-    raw_json = json.dumps(
+    report = IncidentTriageReport.model_validate(
         {
             "summary": "Partial database failover",
             "severity": "MEDIUM",
@@ -419,23 +419,23 @@ def test_validate_report_overrides_hallucinated_healthy_when_circuit_tripped():
         }
     )
 
-    # 1 breaker open -> PARTIALLY_DEGRADED
-    state_single = {
-        "candidate_report_raw": raw_json,
-        "repair_attempts": 0,
-        "circuit_breaker_status": {"chaos": "open"},
-    }
-    rep_single = validate_report_node(state_single)["final_report"]
+    # 1 breaker tripped -> PARTIALLY_DEGRADED
+    single = DegradationEvidence(
+        tripped_breakers=frozenset({"chaos"}),
+        unavailable_sources=frozenset(),
+        synthesis_fell_back=False,
+    )
+    rep_single = reconcile(report, single)
     assert rep_single.degradation_status == DegradationStatus.PARTIALLY_DEGRADED
     assert rep_single.circuit_breakers_tripped == ["chaos"]
 
-    # 2 breakers open -> SEVERELY_DEGRADED
-    state_double = {
-        "candidate_report_raw": raw_json,
-        "repair_attempts": 0,
-        "circuit_breaker_status": {"chaos": "open", "statuspage": "open"},
-    }
-    rep_double = validate_report_node(state_double)["final_report"]
+    # 2 breakers tripped -> SEVERELY_DEGRADED
+    double = DegradationEvidence(
+        tripped_breakers=frozenset({"chaos", "statuspage"}),
+        unavailable_sources=frozenset(),
+        synthesis_fell_back=False,
+    )
+    rep_double = reconcile(report, double)
     assert rep_double.degradation_status == DegradationStatus.SEVERELY_DEGRADED
     assert set(rep_double.circuit_breakers_tripped) == {"chaos", "statuspage"}
 
@@ -473,3 +473,62 @@ async def test_groq_proactive_cooldown_routing(mocker):
     assert call_payload["model"] == "llama-3.1-8b-instant"
 
     groq_quota_tracker.reset_counters()
+
+
+@pytest.mark.asyncio
+async def test_synthesis_fallback_status_is_never_downgraded():
+    """Synthesis fallback with one tripped breaker gives SEVERELY_DEGRADED, not PARTIALLY."""
+    circuit_breaker_registry.get_or_create("chaos").breaker.open()
+
+    mock_llm = MockTriageChatModel()
+    mock_llm.responses = ["not json"] * 5
+    set_triage_llm(mock_llm)
+
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "Internal chaos probe failing on auth-service"})
+
+    report = final_state["final_report"]
+    assert isinstance(report, IncidentTriageReport)
+    assert report.confidence_score == 0.20
+    assert report.circuit_breakers_tripped == ["chaos"]
+    assert report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+
+
+@pytest.mark.asyncio
+async def test_only_targeted_breakers_degrade_the_report(mocker):
+    """An open breaker the query never targets leaves the report HEALTHY."""
+    circuit_breaker_registry.get_or_create("chaos").breaker.open()
+    mocker.patch(
+        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
+        new=mocker.AsyncMock(return_value=[]),
+    )
+
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+
+    assert final_state["target_tools"] == ["statuspage"]
+    report = final_state["final_report"]
+    assert report.degradation_status == DegradationStatus.HEALTHY
+    assert report.circuit_breakers_tripped == []
+
+
+@pytest.mark.asyncio
+async def test_llm_invented_breaker_names_are_dropped(mocker):
+    """An LLM report claiming a tripped 'redis' breaker with no evidence gets an empty list."""
+    mocker.patch(
+        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
+        new=mocker.AsyncMock(return_value=[]),
+    )
+    claimed = json.loads(_make_valid_report_json())
+    claimed["circuit_breakers_tripped"] = ["redis"]
+
+    mock_llm = MockTriageChatModel()
+    mock_llm.responses = [json.dumps(claimed)]
+    set_triage_llm(mock_llm)
+
+    app = build_triage_graph(enable_checkpointing=False)
+    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+
+    report = final_state["final_report"]
+    assert report.circuit_breakers_tripped == []
+    assert report.degradation_status == DegradationStatus.HEALTHY

@@ -4,7 +4,6 @@ from typing import Any
 
 from resilient_triage.schemas.incident import (
     ActionRecommendation,
-    DegradationStatus,
     IncidentTriageReport,
     PriorityLevel,
     SeverityLevel,
@@ -17,8 +16,6 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
     """Emit guaranteed valid IncidentTriageReport when LLM self-repair retries are exhausted."""
     query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
     validation_errors = state.get("validation_errors", [])
-    cb_status = state.get("circuit_breaker_status", {})
-    tripped = [name for name, st in cb_status.items() if st == "open"]
 
     raw_signals = state.get("telemetry_signals", [])
     signals = []
@@ -53,12 +50,11 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
                 requires_approval=False,
             )
         ],
-        degradation_status=DegradationStatus.SEVERELY_DEGRADED,
-        circuit_breakers_tripped=tripped,
         confidence_score=0.20,
     )
 
     return {
         "final_report": report,
         "is_degraded": True,
+        "synthesis_fell_back": True,
     }

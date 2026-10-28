@@ -8,8 +8,7 @@ from resilient_triage.schemas.state import TriageState
 
 def degraded_fallback_node(state: TriageState) -> dict[str, Any]:
     """Annotate state when one or more circuit breakers are OPEN."""
-    cb_status = state.get("circuit_breaker_status", {})
-    tripped = [name for name, st in cb_status.items() if st == "open"]
+    tripped = state.get("tripped_breakers", [])
     signals = list(state.get("telemetry_signals", []))
 
     tripped_desc = ", ".join(
