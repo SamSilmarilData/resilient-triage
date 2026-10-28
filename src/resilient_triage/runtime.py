@@ -223,11 +223,15 @@ def build_runtime(
     )
     if llm_adapter is not None:
         llm = llm_adapter
+        # BaseChatModel has no public type label across the supported langchain-core range
+        # (asdict() only exists from 1.4.2, dict() is deprecated), so read LangChain's own
+        # _llm_type hook to keep this label stable.
         active_model = f"Test Override ({llm_adapter._llm_type})"
     else:
         groq_http = new_groq_http_client()
         http_clients.append(groq_http)
-        llm, active_model = build_triage_llm(settings, quota_tracker=quota, http_client=groq_http)
+        triage_llm = build_triage_llm(settings, quota_tracker=quota, http_client=groq_http)
+        llm, active_model = triage_llm.model, triage_llm.label
     deps = TriageDeps(
         llm=llm,
         telemetry=TelemetrySources(
