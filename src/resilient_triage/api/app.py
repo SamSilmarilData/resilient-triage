@@ -22,11 +22,12 @@ from resilient_triage.graph.builder import triage_graph
 from resilient_triage.graph.llm import (
     close_groq_async_client,
     get_active_model_name,
+    get_triage_llm,
     groq_quota_tracker,
 )
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
-from resilient_triage.runtime import WARMUP_QUERIES
+from resilient_triage.runtime import WARMUP_QUERIES, TelemetrySources, TriageDeps
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
     CircuitSnapshot,
@@ -39,7 +40,7 @@ from resilient_triage.schemas.api import (
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
 from resilient_triage.telemetry.chaos import ChaosClient, chaos_manager
-from resilient_triage.telemetry.statuspage import close_statuspage_client
+from resilient_triage.telemetry.statuspage import StatuspageClient, close_statuspage_client
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,20 @@ _metrics: dict[str, int] = {
     "requests_miss": 0,
     "requests_saturated": 0,
 }
+
+
+def _triage_deps_from_singletons() -> TriageDeps:
+    """Temporary shim (#35): graph run context built from module singletons until #38."""
+    return TriageDeps(
+        llm=get_triage_llm(),
+        telemetry=TelemetrySources(
+            statuspage=StatuspageClient(),
+            chaos=ChaosClient(),
+            breakers=circuit_breaker_registry,
+        ),
+        history=semantic_cache,
+        cache_writer=semantic_cache,
+    )
 
 
 @asynccontextmanager
@@ -221,7 +236,9 @@ async def triage_incident(payload: TriageRequest, request: Request) -> JSONRespo
         # Isolate per-execution thread to prevent previous query errors from contaminating state
         execution_thread_id = f"{thread_id}_{uuid.uuid4().hex[:8]}"
         config: RunnableConfig = {"configurable": {"thread_id": execution_thread_id}}
-        state_result = await triage_graph.ainvoke(initial_state, config=config)
+        state_result = await triage_graph.ainvoke(
+            cast(TriageState, initial_state), config=config, context=_triage_deps_from_singletons()
+        )
     finally:
         GRAPH_SEMAPHORE.release()
 

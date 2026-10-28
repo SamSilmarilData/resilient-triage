@@ -6,16 +6,15 @@ import uuid
 
 import httpx
 import pytest
+from fakes import make_triage_deps
+from langgraph.runtime import Runtime
 
 from resilient_triage.graph.builder import build_triage_graph
-from resilient_triage.graph.llm import MockTriageChatModel, set_triage_llm
+from resilient_triage.graph.llm import MockTriageChatModel
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
-from resilient_triage.resilience.circuit_breaker import (
-    circuit_breaker_registry,
-    force_open_for_tests,
-)
+from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.schemas.incident import (
     DegradationStatus,
     IncidentTriageReport,
@@ -106,7 +105,7 @@ async def test_graph_happy_path():
     inputs = {"query": "GitHub Actions jobs are queued indefinitely"}
     config = {"configurable": {"thread_id": thread_id}}
 
-    final_state = await app.ainvoke(inputs, config=config)
+    final_state = await app.ainvoke(inputs, config=config, context=make_triage_deps())
 
     assert "final_report" in final_state
     report = final_state["final_report"]
@@ -129,7 +128,8 @@ async def test_graph_happy_path():
 async def test_graph_degraded_and_compensatory_routing():
     """Verify an OPEN breaker routes through compensatory cache and degraded fallback."""
     # Deliberately trip the chaos breaker
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    deps = make_triage_deps()
+    chaos_cb = deps.telemetry.breakers.get_or_create("chaos")
     force_open_for_tests(chaos_cb)
     assert chaos_cb.info().is_open is True
 
@@ -139,7 +139,7 @@ async def test_graph_degraded_and_compensatory_routing():
         "service_filter": "auth-service",
     }
 
-    final_state = await app.ainvoke(inputs)
+    final_state = await app.ainvoke(inputs, context=deps)
 
     assert final_state["is_degraded"] is True
     report = final_state["final_report"]
@@ -164,10 +164,12 @@ async def test_graph_self_repair_on_bad_enum():
 
     mock_llm = MockTriageChatModel()
     mock_llm.responses = [bad_enum_json, valid_json]
-    set_triage_llm(mock_llm)
+    deps = make_triage_deps(llm=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "Critical production outage on Actions"})
+    final_state = await app.ainvoke(
+        {"query": "Critical production outage on Actions"}, context=deps
+    )
 
     assert final_state["repair_attempts"] == 1
     report = final_state["final_report"]
@@ -184,10 +186,10 @@ async def test_graph_self_repair_on_malformed_json():
 
     mock_llm = MockTriageChatModel()
     mock_llm.responses = [malformed_raw, valid_json]
-    set_triage_llm(mock_llm)
+    deps = make_triage_deps(llm=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "Actions queue failing"})
+    final_state = await app.ainvoke({"query": "Actions queue failing"}, context=deps)
 
     assert final_state["repair_attempts"] == 1
     report = final_state["final_report"]
@@ -202,10 +204,10 @@ async def test_graph_self_repair_cap_routes_to_fallback():
 
     mock_llm = MockTriageChatModel()
     mock_llm.responses = [always_bad_json, always_bad_json, always_bad_json]
-    set_triage_llm(mock_llm)
+    deps = make_triage_deps(llm=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "Permanent parser failure scenario"})
+    final_state = await app.ainvoke({"query": "Permanent parser failure scenario"}, context=deps)
 
     # Should have attempted 2 repairs
     assert final_state["repair_attempts"] >= 2
@@ -226,10 +228,10 @@ async def test_graph_confidence_refinement_cycle():
 
     mock_llm = MockTriageChatModel()
     mock_llm.responses = [low_conf_json, refined_conf_json]
-    set_triage_llm(mock_llm)
+    deps = make_triage_deps(llm=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "Uncertain intermittent latency spike"})
+    final_state = await app.ainvoke({"query": "Uncertain intermittent latency spike"}, context=deps)
 
     assert final_state["refinement_attempts"] == 1
     report = final_state["final_report"]
@@ -244,13 +246,18 @@ async def test_graph_thread_checkpointing():
     app = build_triage_graph(enable_checkpointing=True)
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
+    deps = make_triage_deps()
 
     # Call 1
-    res1 = await app.ainvoke({"query": "Initial incident report on GitHub Actions"}, config=config)
+    res1 = await app.ainvoke(
+        {"query": "Initial incident report on GitHub Actions"}, config=config, context=deps
+    )
     messages_after_call1 = len(res1["messages"])
 
     # Call 2 with same thread_id
-    res2 = await app.ainvoke({"query": "What is the status of the runners now?"}, config=config)
+    res2 = await app.ainvoke(
+        {"query": "What is the status of the runners now?"}, config=config, context=deps
+    )
     messages_after_call2 = len(res2["messages"])
 
     # Message history should have accumulated across turns
@@ -284,9 +291,9 @@ async def test_groq_chat_model_429_failover(mocker):
     """Verify GroqChatModel automatically fails over to fallback_model on HTTP 429."""
     from langchain_core.messages import HumanMessage
 
-    from resilient_triage.graph.llm import GroqChatModel
+    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
 
-    mock_client = mocker.AsyncMock()
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
     resp_429 = mocker.MagicMock(status_code=429, text="Rate limit exceeded")
     resp_429.raise_for_status.side_effect = httpx.HTTPStatusError(
         "429", request=mocker.MagicMock(), response=resp_429
@@ -296,12 +303,13 @@ async def test_groq_chat_model_429_failover(mocker):
         json=lambda: {"choices": [{"message": {"content": '{"summary": "Fallback OK"}'}}]},
     )
     mock_client.post.side_effect = [resp_429, resp_200]
-    mocker.patch("resilient_triage.graph.llm.get_groq_async_client", return_value=mock_client)
 
     model = GroqChatModel(
         api_key="test_key",
         model_name="qwen/qwen3.8-27b",
         fallback_model="llama-3.1-8b-instant",
+        quota_tracker=GroqQuotaTracker(),
+        http_client=mock_client,
     )
     res = await model.ainvoke([HumanMessage(content="test")])
     assert res.content == '{"summary": "Fallback OK"}'
@@ -317,7 +325,7 @@ async def test_collect_telemetry_dynamic_probe_routing():
         "service_filter": "postgres",
         "target_tools": ["chaos"],
     }
-    res_pg = await collect_telemetry_node(state_pg)
+    res_pg = await collect_telemetry_node(state_pg, Runtime(context=make_triage_deps()))
     signals_pg = res_pg.get("telemetry_signals", [])
     assert len(signals_pg) == 1
     assert signals_pg[0]["source"] == "postgres_health_probe"
@@ -328,13 +336,12 @@ async def test_collect_telemetry_dynamic_probe_routing():
         "service_filter": "api-gateway",
         "target_tools": ["chaos"],
     }
-    res_gw = await collect_telemetry_node(state_gw)
+    res_gw = await collect_telemetry_node(state_gw, Runtime(context=make_triage_deps()))
     signals_gw = res_gw.get("telemetry_signals", [])
     assert len(signals_gw) == 1
     assert signals_gw[0]["source"] == "api_gateway_probe"
 
 
-_STATUSPAGE_FETCH = "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals"
 _UNAVAILABLE_SIGNAL = TelemetrySignal(
     source="statuspage:global", status="UNAVAILABLE", raw_snippet="Statuspage unavailable"
 )
@@ -343,9 +350,16 @@ _UNAVAILABLE_SIGNAL = TelemetrySignal(
 @pytest.mark.asyncio
 async def test_collect_telemetry_records_source_whose_task_raised(mocker):
     """A targeted source whose fetch task raised is recorded as unavailable."""
-    mocker.patch(_STATUSPAGE_FETCH, new=mocker.AsyncMock(side_effect=RuntimeError("boom")))
+    deps = make_triage_deps()
+    mocker.patch.object(
+        deps.telemetry.statuspage,
+        "fetch_signals",
+        new=mocker.AsyncMock(side_effect=RuntimeError("boom")),
+    )
 
-    result = await collect_telemetry_node({"query": "q", "target_tools": ["statuspage"]})
+    result = await collect_telemetry_node(
+        {"query": "q", "target_tools": ["statuspage"]}, Runtime(context=deps)
+    )
 
     assert result["unavailable_sources"] == ["statuspage"]
     assert result["tripped_breakers"] == []
@@ -354,10 +368,17 @@ async def test_collect_telemetry_records_source_whose_task_raised(mocker):
 @pytest.mark.asyncio
 async def test_collect_telemetry_tripped_breaker_is_not_unavailable(mocker):
     """A source whose breaker is tripped counts as a tripped breaker, not an unavailable source."""
-    force_open_for_tests(circuit_breaker_registry.get_or_create("statuspage"))
-    mocker.patch(_STATUSPAGE_FETCH, new=mocker.AsyncMock(return_value=[_UNAVAILABLE_SIGNAL]))
+    deps = make_triage_deps()
+    force_open_for_tests(deps.telemetry.breakers.get_or_create("statuspage"))
+    mocker.patch.object(
+        deps.telemetry.statuspage,
+        "fetch_signals",
+        new=mocker.AsyncMock(return_value=[_UNAVAILABLE_SIGNAL]),
+    )
 
-    result = await collect_telemetry_node({"query": "q", "target_tools": ["statuspage"]})
+    result = await collect_telemetry_node(
+        {"query": "q", "target_tools": ["statuspage"]}, Runtime(context=deps)
+    )
 
     assert result["tripped_breakers"] == ["statuspage"]
     assert result["unavailable_sources"] == []
@@ -366,10 +387,16 @@ async def test_collect_telemetry_tripped_breaker_is_not_unavailable(mocker):
 @pytest.mark.asyncio
 async def test_collect_telemetry_never_records_untargeted_source(mocker):
     """A source the query does not target is never recorded as unavailable."""
-    fetch = mocker.patch(_STATUSPAGE_FETCH, new=mocker.AsyncMock(side_effect=RuntimeError("x")))
+    deps = make_triage_deps()
+    fetch = mocker.patch.object(
+        deps.telemetry.statuspage,
+        "fetch_signals",
+        new=mocker.AsyncMock(side_effect=RuntimeError("x")),
+    )
 
     result = await collect_telemetry_node(
-        {"query": "Database connection pool exhausted", "target_tools": ["chaos"]}
+        {"query": "Database connection pool exhausted", "target_tools": ["chaos"]},
+        Runtime(context=deps),
     )
 
     fetch.assert_not_called()
@@ -416,10 +443,12 @@ async def test_graph_enforces_remediation_approval_safety():
 
     mock_llm = MockTriageChatModel()
     mock_llm.responses = [candidate_with_unapproved_remediation]
-    set_triage_llm(mock_llm)
+    deps = make_triage_deps(llm=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "Kubernetes worker node pool CPU saturation"})
+    final_state = await app.ainvoke(
+        {"query": "Kubernetes worker node pool CPU saturation"}, context=deps
+    )
     report = final_state["final_report"]
     assert isinstance(report, IncidentTriageReport)
     # Non-diagnostic action must be programmatically forced to requires_approval=True
@@ -491,23 +520,25 @@ async def test_groq_proactive_cooldown_routing(mocker):
     """Verify GroqChatModel routes to fallback_model during an active rate-limit cooldown."""
     from langchain_core.messages import HumanMessage
 
-    from resilient_triage.graph.llm import GroqChatModel, groq_quota_tracker
+    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
 
     # Set active cooldown window
-    groq_quota_tracker.rate_limit_cooldown_until = time.monotonic() + 10.0
+    quota_tracker = GroqQuotaTracker()
+    quota_tracker.rate_limit_cooldown_until = time.monotonic() + 10.0
 
-    mock_client = mocker.AsyncMock()
+    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
     mock_resp = mocker.MagicMock(
         status_code=200,
         json=lambda: {"choices": [{"message": {"content": '{"summary": "Fallback Cooldown OK"}'}}]},
     )
     mock_client.post.return_value = mock_resp
-    mocker.patch("resilient_triage.graph.llm.get_groq_async_client", return_value=mock_client)
 
     model = GroqChatModel(
         api_key="test_key",
         model_name="qwen/qwen3.8-27b",
         fallback_model="llama-3.1-8b-instant",
+        quota_tracker=quota_tracker,
+        http_client=mock_client,
     )
 
     res = await model.ainvoke([HumanMessage(content="test query")])
@@ -518,20 +549,19 @@ async def test_groq_proactive_cooldown_routing(mocker):
     call_payload = mock_client.post.call_args[1]["json"]
     assert call_payload["model"] == "llama-3.1-8b-instant"
 
-    groq_quota_tracker.reset_counters()
-
 
 @pytest.mark.asyncio
 async def test_synthesis_fallback_status_is_never_downgraded():
     """Synthesis fallback with one tripped breaker gives SEVERELY_DEGRADED, not PARTIALLY."""
-    force_open_for_tests(circuit_breaker_registry.get_or_create("chaos"))
-
     mock_llm = MockTriageChatModel()
     mock_llm.responses = ["not json"] * 5
-    set_triage_llm(mock_llm)
+    deps = make_triage_deps(llm=mock_llm)
+    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "Internal chaos probe failing on auth-service"})
+    final_state = await app.ainvoke(
+        {"query": "Internal chaos probe failing on auth-service"}, context=deps
+    )
 
     report = final_state["final_report"]
     assert isinstance(report, IncidentTriageReport)
@@ -543,14 +573,16 @@ async def test_synthesis_fallback_status_is_never_downgraded():
 @pytest.mark.asyncio
 async def test_only_targeted_breakers_degrade_the_report(mocker):
     """An open breaker the query never targets leaves the report HEALTHY."""
-    force_open_for_tests(circuit_breaker_registry.get_or_create("chaos"))
-    mocker.patch(
-        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
-        new=mocker.AsyncMock(return_value=[]),
+    deps = make_triage_deps()
+    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
+    mocker.patch.object(
+        deps.telemetry.statuspage, "fetch_signals", new=mocker.AsyncMock(return_value=[])
     )
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+    final_state = await app.ainvoke(
+        {"query": "GitHub Actions webhook delivery failing"}, context=deps
+    )
 
     assert final_state["target_tools"] == ["statuspage"]
     report = final_state["final_report"]
@@ -561,19 +593,20 @@ async def test_only_targeted_breakers_degrade_the_report(mocker):
 @pytest.mark.asyncio
 async def test_llm_invented_breaker_names_are_dropped(mocker):
     """An LLM report claiming a tripped 'redis' breaker with no evidence gets an empty list."""
-    mocker.patch(
-        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
-        new=mocker.AsyncMock(return_value=[]),
-    )
     claimed = json.loads(_make_valid_report_json())
     claimed["circuit_breakers_tripped"] = ["redis"]
 
     mock_llm = MockTriageChatModel()
     mock_llm.responses = [json.dumps(claimed)]
-    set_triage_llm(mock_llm)
+    deps = make_triage_deps(llm=mock_llm)
+    mocker.patch.object(
+        deps.telemetry.statuspage, "fetch_signals", new=mocker.AsyncMock(return_value=[])
+    )
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+    final_state = await app.ainvoke(
+        {"query": "GitHub Actions webhook delivery failing"}, context=deps
+    )
 
     report = final_state["final_report"]
     assert report.circuit_breakers_tripped == []
@@ -583,8 +616,10 @@ async def test_llm_invented_breaker_names_are_dropped(mocker):
 @pytest.mark.asyncio
 async def test_unavailable_source_degrades_the_report(mocker):
     """A targeted source returning UNAVAILABLE with a closed breaker gives PARTIALLY_DEGRADED."""
-    mocker.patch(
-        "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
+    deps = make_triage_deps()
+    mocker.patch.object(
+        deps.telemetry.statuspage,
+        "fetch_signals",
         new=mocker.AsyncMock(
             return_value=[
                 TelemetrySignal(
@@ -597,10 +632,12 @@ async def test_unavailable_source_degrades_the_report(mocker):
     )
 
     app = build_triage_graph(enable_checkpointing=False)
-    final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
+    final_state = await app.ainvoke(
+        {"query": "GitHub Actions webhook delivery failing"}, context=deps
+    )
 
     assert final_state["target_tools"] == ["statuspage"]
-    assert not circuit_breaker_registry.get_or_create("statuspage").info().is_open
+    assert not deps.telemetry.breakers.get_or_create("statuspage").info().is_open
     report = final_state["final_report"]
     assert report.circuit_breakers_tripped == []
     assert report.degradation_status == DegradationStatus.PARTIALLY_DEGRADED

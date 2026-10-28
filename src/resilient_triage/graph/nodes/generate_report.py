@@ -4,17 +4,18 @@ import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage
+from langgraph.runtime import Runtime
 
 from resilient_triage.config import settings
-from resilient_triage.graph.llm import get_triage_llm
+from resilient_triage.runtime import TriageDeps
 from resilient_triage.schemas.state import TriageState
 
 logger = logging.getLogger(__name__)
 
 
-async def generate_report_node(state: TriageState) -> dict[str, Any]:
+async def generate_report_node(state: TriageState, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
     """Call LLM with accumulated messages to generate candidate triage JSON."""
-    llm = get_triage_llm()
+    llm = runtime.context.llm
     messages = state.get("messages", [])
 
     try:
