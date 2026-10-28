@@ -6,7 +6,6 @@ from resilient_triage.resilience.circuit_breaker import (
     CircuitBreakerInfo,
     CircuitBreakerMetricsListener,
     CircuitBreakerRegistry,
-    circuit_breaker_registry,
 )
 from resilient_triage.resilience.retry import (
     execute_with_retry,
@@ -23,5 +22,4 @@ __all__ = [
     "CircuitBreakerInfo",
     "CircuitBreakerMetricsListener",
     "CircuitBreakerRegistry",
-    "circuit_breaker_registry",
 ]

@@ -151,9 +151,6 @@ async def test_chaos_manager_and_client_trip():
 @pytest.mark.asyncio
 async def test_statuspage_client_short_ttl_cache():
     """Verify StatuspageClient short-TTL cache prevents redundant network fetches."""
-    from resilient_triage.telemetry.statuspage import clear_statuspage_cache
-
-    clear_statuspage_cache()
     payload = {
         "page": {"id": "test_page", "name": "CacheTest Status", "url": "https://status.test"},
         "status": {"indicator": "none", "description": "All Systems Operational"},
@@ -188,7 +185,16 @@ async def test_statuspage_client_short_ttl_cache():
     assert summary2.page_name == "CacheTest Status"
     assert mock_client.get.call_count == 1
 
-    clear_statuspage_cache()
+    # A fresh source starts with an empty cache of its own and fetches again
+    fresh_client = StatuspageClient(
+        url="https://cache.test/summary.json",
+        circuit_breaker=cb,
+        client=mock_client,
+        cache_ttl_seconds=10.0,
+    )
+    summary3 = await fresh_client.fetch_summary()
+    assert summary3.page_name == "CacheTest Status"
+    assert mock_client.get.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -344,7 +350,9 @@ def test_telemetry_clients_register_breakers_in_the_registry_they_are_given():
     registry = CircuitBreakerRegistry()
 
     chaos = ChaosClient(manager=ChaosManager(), breaker_registry=registry)
-    statuspage = StatuspageClient(breaker_registry=registry)
+    statuspage = StatuspageClient(
+        client=AsyncMock(spec=httpx.AsyncClient), breaker_registry=registry
+    )
 
     assert registry.get("chaos") is chaos.circuit_breaker
     assert registry.get("statuspage") is statuspage.circuit_breaker

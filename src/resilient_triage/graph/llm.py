@@ -27,8 +27,6 @@ logger = logging.getLogger(__name__)
 
 GROQ_TIMEOUT_SECONDS = 20.0
 
-_groq_async_client: httpx.AsyncClient | None = None
-
 
 def new_groq_http_client(timeout: float = GROQ_TIMEOUT_SECONDS) -> httpx.AsyncClient:
     """Build a keep-alive pooled httpx.AsyncClient for Groq LPU calls (no I/O until used)."""
@@ -36,22 +34,6 @@ def new_groq_http_client(timeout: float = GROQ_TIMEOUT_SECONDS) -> httpx.AsyncCl
         timeout=timeout,
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
     )
-
-
-def get_groq_async_client(timeout: float = GROQ_TIMEOUT_SECONDS) -> httpx.AsyncClient:
-    """Return persistent, keep-alive pooled httpx.AsyncClient for Groq LPU calls."""
-    global _groq_async_client
-    if _groq_async_client is None or _groq_async_client.is_closed:
-        _groq_async_client = new_groq_http_client(timeout)
-    return _groq_async_client
-
-
-async def close_groq_async_client() -> None:
-    """Close the shared persistent Groq httpx.AsyncClient connection pool."""
-    global _groq_async_client
-    if _groq_async_client is not None and not _groq_async_client.is_closed:
-        await _groq_async_client.aclose()
-        _groq_async_client = None
 
 
 class GroqQuotaTracker:
@@ -178,9 +160,6 @@ class GroqQuotaTracker:
             )
 
 
-groq_quota_tracker = GroqQuotaTracker()
-
-
 class GroqChatModel(BaseChatModel):
     """Native high-speed Groq LPU chat model client supporting structured JSON generation."""
 
@@ -188,18 +167,8 @@ class GroqChatModel(BaseChatModel):
     model_name: str = "qwen/qwen3.8-27b"
     fallback_model: str = "llama-3.1-8b-instant"
     timeout: float = GROQ_TIMEOUT_SECONDS
-    quota_tracker: GroqQuotaTracker | None = Field(default=None, exclude=True)
-    http_client: httpx.AsyncClient | None = Field(default=None, exclude=True)
-
-    def _quota_tracker(self) -> GroqQuotaTracker:
-        """Return the injected quota tracker, else the process-wide one."""
-        return self.quota_tracker if self.quota_tracker is not None else groq_quota_tracker
-
-    def _async_client(self) -> httpx.AsyncClient:
-        """Return the injected async HTTP client, else the shared pooled one."""
-        if self.http_client is not None:
-            return self.http_client
-        return get_groq_async_client(timeout=self.timeout)
+    quota_tracker: GroqQuotaTracker = Field(exclude=True)
+    http_client: httpx.AsyncClient = Field(exclude=True)
 
     def _format_messages(self, messages: list[BaseMessage]) -> list[dict[str, str]]:
         formatted = []
@@ -223,7 +192,7 @@ class GroqChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         use_fallback_directly = bool(
-            self.fallback_model and self._quota_tracker().is_primary_rate_limited()
+            self.fallback_model and self.quota_tracker.is_primary_rate_limited()
         )
         target_model = self.fallback_model if use_fallback_directly else self.model_name
         payload = {
@@ -239,7 +208,7 @@ class GroqChatModel(BaseChatModel):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            self._quota_tracker().record_response(
+            self.quota_tracker.record_response(
                 resp, model_name=target_model, is_failover=use_fallback_directly
             )
 
@@ -256,7 +225,7 @@ class GroqChatModel(BaseChatModel):
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=fb_payload,
                 )
-                self._quota_tracker().record_response(
+                self.quota_tracker.record_response(
                     fb_resp, model_name=self.fallback_model, is_failover=True
                 )
                 if fb_resp.status_code < 400:
@@ -289,7 +258,7 @@ class GroqChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         use_fallback_directly = bool(
-            self.fallback_model and self._quota_tracker().is_primary_rate_limited()
+            self.fallback_model and self.quota_tracker.is_primary_rate_limited()
         )
         target_model = self.fallback_model if use_fallback_directly else self.model_name
         payload = {
@@ -304,13 +273,13 @@ class GroqChatModel(BaseChatModel):
 
         @with_retry(max_attempts=2, min_wait=0.5, max_wait=3.0)
         async def _send_request() -> str:
-            client = self._async_client()
+            client = self.http_client
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             )
-            self._quota_tracker().record_response(
+            self.quota_tracker.record_response(
                 resp, model_name=target_model, is_failover=use_fallback_directly
             )
 
@@ -327,7 +296,7 @@ class GroqChatModel(BaseChatModel):
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=fb_payload,
                 )
-                self._quota_tracker().record_response(
+                self.quota_tracker.record_response(
                     fb_resp, model_name=self.fallback_model, is_failover=True
                 )
                 if fb_resp.status_code < 400:
@@ -443,58 +412,11 @@ class MockTriageChatModel(BaseChatModel):
         return "mock-triage-llm"
 
 
-_override_llm: BaseChatModel | None = None
-
-
-def set_triage_llm(llm: BaseChatModel | None) -> None:
-    """Set global override LLM (primarily for test execution and mock injection).
-
-    Args:
-        llm: Custom BaseChatModel instance to use globally, or None to revert to auto-discovery.
-    """
-    global _override_llm
-    _override_llm = llm
-
-
-def get_active_model_name() -> str:
-    """Return friendly display label of currently active model engine.
-
-    Returns:
-        str: Human-readable model label (e.g., 'Groq LPU (qwen/qwen3.8-27b)', 'OpenAI GPT-4o').
-    """
-    if _override_llm is not None:
-        return f"Test Override ({getattr(_override_llm, '_llm_type', 'mock')})"
-
-    groq_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY")
-    if groq_key:
-        return f"Groq LPU ({settings.groq_model})"
-
-    if os.environ.get("OPENAI_API_KEY"):
-        return "OpenAI GPT-4o"
-
-    if os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
-        return "Google Gemini 1.5"
-
-    return "Zero-Config SRE Simulation"
-
-
-def get_triage_llm() -> BaseChatModel:
-    """Factory returning active chat model: test override, Groq, real provider, or mock default.
-
-    Returns:
-        BaseChatModel: LangChain-compatible chat model configured for incident triage.
-    """
-    if _override_llm is not None:
-        return _override_llm
-    llm, _label = build_triage_llm(settings)
-    return llm
-
-
 def build_triage_llm(
     app_settings: Settings,
     *,
-    quota_tracker: GroqQuotaTracker | None = None,
-    http_client: httpx.AsyncClient | None = None,
+    quota_tracker: GroqQuotaTracker,
+    http_client: httpx.AsyncClient,
 ) -> tuple[BaseChatModel, str]:
     """Return the configured provider (Groq, OpenAI, Gemini, else mock) and its display label."""
     # 1. Groq LPU (Sub-1.5s SOTA inference)

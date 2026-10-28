@@ -8,7 +8,7 @@ import pytest_asyncio
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import Settings, settings
-from resilient_triage.graph.llm import MockTriageChatModel, groq_quota_tracker
+from resilient_triage.graph.llm import MockTriageChatModel
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
@@ -141,7 +141,8 @@ async def test_groq_llm_calls_through_this_runtimes_http_client_and_quota_tracke
     assert snapshot.llm_quota.remaining_requests == 41
     assert snapshot.active_model == "Groq LPU (qwen/qwen3.8-27b)"
     assert (await other.snapshot()).llm_quota.total_calls == 0
-    assert groq_quota_tracker.get_snapshot().total_calls == 0
+    assert other.quota is not runtime.quota
+    assert other.quota.get_snapshot().remaining_requests is None
 
 
 async def test_snapshot_reports_chaos_cache_entries_and_injected_model(make_runtime):

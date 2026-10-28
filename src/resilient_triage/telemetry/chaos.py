@@ -13,7 +13,6 @@ from resilient_triage.resilience.circuit_breaker import (
     AsyncCircuitBreaker,
     BreakerOpen,
     CircuitBreakerRegistry,
-    circuit_breaker_registry,
 )
 from resilient_triage.resilience.retry import with_retry
 from resilient_triage.schemas.incident import TelemetrySignal
@@ -48,9 +47,6 @@ class ChaosManager:
             self._config = ChaosConfig()
 
 
-chaos_manager = ChaosManager()
-
-
 def resolve_probe_source(service_hint: str | None = None, query: str | None = None) -> str:
     """Dynamically determine probe telemetry identifier matching the queried subsystem."""
     combined = f"{service_hint or ''} {query or ''}".lower()
@@ -70,13 +66,13 @@ class ChaosClient:
 
     def __init__(
         self,
-        manager: ChaosManager | None = None,
+        manager: ChaosManager,
         circuit_breaker: AsyncCircuitBreaker | None = None,
         *,
         breaker_registry: CircuitBreakerRegistry | None = None,
     ) -> None:
-        self.manager = manager or chaos_manager
-        registry = breaker_registry if breaker_registry is not None else circuit_breaker_registry
+        self.manager = manager
+        registry = breaker_registry if breaker_registry is not None else CircuitBreakerRegistry()
         self.circuit_breaker = circuit_breaker or registry.get_or_create(
             name="chaos",
             fail_max=settings.circuit_breaker_fail_max,

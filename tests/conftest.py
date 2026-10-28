@@ -1,60 +1,27 @@
-"""Pytest configuration and global fixtures for resilient-triage test suite.
+"""Pytest configuration and shared fixtures for the resilient-triage test suite.
 
-Provides centralized singleton lifecycle resets, fast retry wait boundaries for testing,
-and shared client fixtures.
+Every test gets fast retry waits; tests that need app state take the `runtime` fixture, a fresh
+AppRuntime per test, so there are no module-level singletons to reset.
 """
 
 from collections.abc import AsyncIterator
 
 import httpx
+import pytest
 import pytest_asyncio
 from fakes import fake_statuspage_http
 
 from resilient_triage.api.app import create_app
-from resilient_triage.cache.semantic_cache import semantic_cache
 from resilient_triage.config import settings
-from resilient_triage.graph.llm import (
-    MockTriageChatModel,
-    close_groq_async_client,
-    groq_quota_tracker,
-    set_triage_llm,
-)
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from resilient_triage.graph.llm import MockTriageChatModel
 from resilient_triage.runtime import AppRuntime, build_runtime
-from resilient_triage.telemetry.chaos import chaos_manager
-from resilient_triage.telemetry.statuspage import (
-    clear_statuspage_cache,
-    close_statuspage_client,
-)
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def reset_global_test_environment(monkeypatch):
-    """Reset app singletons, clear caches, and minimise retry delays so tests run fast."""
-    # Compress retry wait intervals in tests to eliminate idle sleeps while testing retry logic
+@pytest.fixture(autouse=True)
+def fast_retry_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compress retry wait intervals so retry tests don't sleep."""
     monkeypatch.setattr(settings, "retry_min_wait_seconds", 0.001)
     monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.005)
-
-    # 1. Reset state before test execution
-    circuit_breaker_registry.reset_all()
-    chaos_manager.reset()
-    groq_quota_tracker.reset_counters()
-    clear_statuspage_cache()
-    await semantic_cache.clear()
-    set_triage_llm(MockTriageChatModel())
-
-    yield
-
-    # 2. Reset and release connections after test execution
-    circuit_breaker_registry.reset_all()
-    chaos_manager.reset()
-    groq_quota_tracker.reset_counters()
-    clear_statuspage_cache()
-    await semantic_cache.clear()
-    set_triage_llm(None)
-    await close_statuspage_client()
-    await close_groq_async_client()
-    await semantic_cache.close()
 
 
 @pytest_asyncio.fixture

@@ -10,7 +10,6 @@ from resilient_triage.cache.semantic_cache import (
     CacheMatch,
     SemanticCacheManager,
     format_scoped_query,
-    semantic_cache,
 )
 
 __all__ = [
@@ -21,5 +20,4 @@ __all__ = [
     "CacheMatch",
     "SemanticCacheManager",
     "format_scoped_query",
-    "semantic_cache",
 ]
