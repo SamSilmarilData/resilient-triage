@@ -7,7 +7,7 @@ A fault-tolerant incident triage gateway: it turns an incident query into a stri
 ### Degradation
 
 **Tripped breaker**:
-A circuit breaker that is open *and* targeted by the current query, as observed when telemetry is collected. An open breaker the query never targets is not tripped for that report.
+A circuit breaker that is refusing calls *and* is targeted by the current query, as observed when telemetry is collected. An open breaker the query never targets is not tripped for that report.
 _Avoid_: open breaker (when meaning the per-report set), failed breaker
 
 **Degradation status**:
@@ -45,3 +45,35 @@ _Avoid_: fallback (unqualified), synthesis fallback (that is the deterministic r
 **Service scope**:
 The service a query is constrained to, or no service at all. Part of a cached answer's identity: a query reuses only answers given under exactly the same scope, and "no scope" is a scope of its own, not a wildcard.
 _Avoid_: service filter (the request field that sets it), component
+
+### Request path
+
+**Triage outcome**:
+How a triage request ended: answered from the cache, answered by a run, or shed. A run that ends in a synthesis fallback is still an answer, not a separate outcome.
+_Avoid_: result, response (that is the HTTP layer)
+
+**Shed request**:
+A triage request refused because no run slot freed up in time. The caller is told to retry later; no report is produced.
+_Avoid_: saturated (except as the existing metric label), rejected, throttled
+
+**Run deadline**:
+The longest a single run may take. When it passes, the request is answered with a synthesis fallback instead of waiting further.
+_Avoid_: timeout (unqualified), request timeout
+
+### Telemetry
+
+**Telemetry source**:
+A system the agent reads incident signals from: Statuspage (external) or Cluster Sentinel (internal).
+_Avoid_: tool, client, probe (when meaning the source)
+
+**Targeted source**:
+A telemetry source the current query was routed to read. Only targeted sources can make a report degraded.
+_Avoid_: target tool, selected tool
+
+**Cluster Sentinel**:
+The internal cluster-health telemetry source.
+_Avoid_: chaos, chaos probe (when meaning the source)
+
+**Chaos injection**:
+Faults an operator deliberately applies to Cluster Sentinel (latency, forced or random failures) to exercise degradation.
+_Avoid_: chaos (unqualified), simulation
