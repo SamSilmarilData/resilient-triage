@@ -46,10 +46,11 @@ Code conventions live in `CODING_STANDARDS.md`; read it before adding a module, 
 field or external call. Commits: Conventional Commits with scope (`fix(resilience): …`).
 
 ## Testing
-- `tests/conftest.py`'s only autouse fixture shortens retry waits. The `runtime` fixture builds a fresh `AppRuntime`
-  (mock LLM, canned Statuspage, emptied cache) per test. Stateful modules are members of `AppRuntime` (`runtime.py`).
-  Don't add module-level singletons; tests get a fresh runtime per test.
-- Use the `client` fixture (httpx `ASGITransport` + app lifespan) for API tests; never hit real Groq/Statuspage in tests.
+- `tests/conftest.py`'s autouse fixtures shorten retry waits and fail any test that connects beyond loopback
+  (`offline_only`). A cold FastEmbed model cache trips it: run any `TextEmbedding` load once outside pytest.
+- The `runtime` fixture builds a fresh `AppRuntime` (mock LLM, canned Statuspage, emptied cache) per test.
+  Stateful modules are members of `AppRuntime` (`runtime.py`). Don't add module-level singletons.
+- Use the `client` fixture (httpx `ASGITransport` + app lifespan) for API tests.
 - `asyncio_mode = "auto"` — async tests need no marker.
 
 ## Boundaries

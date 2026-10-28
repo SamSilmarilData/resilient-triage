@@ -33,6 +33,8 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      # FastEmbed reads FASTEMBED_CACHE_PATH (default: $TMPDIR/fastembed_cache); the download
+      # step below points it here so this cache actually holds the model.
       - name: Cache FastEmbed Model Weights
         uses: actions/cache@v4
         with:
@@ -45,6 +47,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test,lint]"
+
+      # Tests run offline (tests/conftest.py blocks non-loopback connections), so fetch the
+      # embedding model here. TextEmbedding raises if it can't load, unlike FastEmbedProvider.
+      - name: Download Embedding Model
+        run: |
+          echo "FASTEMBED_CACHE_PATH=$HOME/.cache/fastembed" >> "$GITHUB_ENV"
+          export FASTEMBED_CACHE_PATH="$HOME/.cache/fastembed"
+          python -c "from fastembed import TextEmbedding; from resilient_triage.config import settings; TextEmbedding(model_name=settings.embedding_model)"
 
       - name: Run Ruff Checks
         run: |
