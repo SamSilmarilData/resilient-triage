@@ -18,12 +18,12 @@ If external calls are made unguarded:
 3. Unhandled network exceptions bubble up to users as HTTP 500 errors.
 
 ## Decision
-We adopted a dual-layer resilience architecture combining **Pybreaker (1.2+)** for circuit breaking and **Tenacity (8.2+)** for adaptive retries with exponential backoff and randomized jitter:
+We adopted a dual-layer resilience architecture combining **Pybreaker (>=1.3.0,<1.5)** for circuit breaking and **Tenacity (8.2+)** for adaptive retries with exponential backoff and randomized jitter:
 
 1. **Circuit Breakers via Pybreaker**:
    - Every external telemetry integration is managed by a centralized `CircuitBreakerRegistry`.
    - Breakers trip `OPEN` after `fail_max = 3` consecutive failures within a 60-second window.
-   - When `OPEN`, subsequent calls fail fast in $< 0.01\text{ms}$ by raising `CircuitBreakerError`, instantly routing execution to `DegradedFallbackNode`.
+   - When `OPEN`, subsequent calls fail fast in $< 0.01\text{ms}$ by raising `BreakerOpen` (the project exception defined in `resilience/circuit_breaker.py`, the only module that imports pybreaker), instantly routing execution to `DegradedFallbackNode`.
    - Breakers transition to `HALF_OPEN` after `reset_timeout = 30.0s`, allowing a single probe request through to verify upstream recovery before closing.
 2. **Exponential Backoff with Randomized Jitter via Tenacity**:
    - The `@with_retry` decorator wraps calls with randomized exponential backoff:

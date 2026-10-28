@@ -2,6 +2,7 @@
 
 from resilient_triage.resilience.circuit_breaker import (
     AsyncCircuitBreaker,
+    BreakerOpen,
     CircuitBreakerInfo,
     CircuitBreakerMetricsListener,
     CircuitBreakerRegistry,
@@ -18,6 +19,7 @@ __all__ = [
     "execute_with_retry",
     "is_transient_error",
     "AsyncCircuitBreaker",
+    "BreakerOpen",
     "CircuitBreakerInfo",
     "CircuitBreakerMetricsListener",
     "CircuitBreakerRegistry",

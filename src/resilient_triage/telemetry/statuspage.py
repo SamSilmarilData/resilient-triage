@@ -4,11 +4,11 @@ import logging
 import time
 
 import httpx
-from pybreaker import CircuitBreakerError
 
 from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
     AsyncCircuitBreaker,
+    BreakerOpen,
     circuit_breaker_registry,
 )
 from resilient_triage.resilience.retry import with_retry
@@ -105,7 +105,7 @@ class StatuspageClient:
             StatuspageSummary: Validated summary payload model.
 
         Raises:
-            pybreaker.CircuitBreakerError: If the statuspage circuit breaker is OPEN.
+            BreakerOpen: If the statuspage circuit breaker is OPEN.
             httpx.HTTPStatusError: If upstream returns 5xx or transient errors after retries.
         """
         retry_fn = with_retry()(self._fetch_raw)
@@ -162,7 +162,7 @@ class StatuspageClient:
 
             return signals
 
-        except CircuitBreakerError as cb_err:
+        except BreakerOpen as cb_err:
             elapsed_ms = (time.monotonic() - start_time) * 1000.0
             logger.warning("Statuspage circuit breaker OPEN: %s", cb_err)
             return [

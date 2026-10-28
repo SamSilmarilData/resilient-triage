@@ -45,7 +45,7 @@ stateDiagram-v2
    - Failure counter increments on exceptions matching `is_transient_error()`.
    - If failures reach `fail_max = 3`, the breaker transitions to `OPEN`.
 2. **`OPEN` (Failing Fast)**:
-   - Calls immediately raise `pybreaker.CircuitBreakerError` in $<0.01\text{ms}$ without executing network I/O.
+   - Calls immediately raise `BreakerOpen` (from `resilience/circuit_breaker.py`) in $<0.01\text{ms}$ without executing network I/O.
    - Protects the failing dependency from retry storms.
    - If the breaker belongs to a targeted tool, it is recorded as a tripped breaker and triggers `DegradedFallbackNode` in LangGraph.
 3. **`HALF_OPEN` (Trial Probe)**:
