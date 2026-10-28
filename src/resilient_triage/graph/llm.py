@@ -18,7 +18,7 @@ from langchain_core.callbacks.manager import (
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from resilient_triage.config import Settings, settings
 from resilient_triage.schemas.api import LLMQuotaSnapshot
@@ -163,6 +163,9 @@ class GroqQuotaTracker:
 
 class GroqChatModel(BaseChatModel):
     """Native high-speed Groq LPU chat model client supporting structured JSON generation."""
+
+    # A misspelled keyword would otherwise be dropped and fall back to a default.
+    model_config = ConfigDict(extra="forbid")
 
     api_key: str
     model_name: str = "qwen/qwen3.8-27b"

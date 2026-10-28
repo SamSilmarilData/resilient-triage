@@ -295,6 +295,21 @@ def test_groq_chat_model_formatting_and_factory():
     assert active_name == "Groq LPU (qwen/qwen3.8-27b)"
 
 
+def test_groq_chat_model_rejects_a_misspelled_argument():
+    """A typo'd keyword fails loudly instead of being dropped for a default."""
+    from pydantic import ValidationError
+
+    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
+
+    with pytest.raises(ValidationError, match="fallback_modle"):
+        GroqChatModel(
+            api_key="mock_key",
+            quota_tracker=GroqQuotaTracker(),
+            http_client=httpx.AsyncClient(),
+            fallback_modle="llama-3.1-8b-instant",
+        )
+
+
 @pytest.mark.asyncio
 async def test_groq_chat_model_429_failover(mocker):
     """Verify GroqChatModel automatically fails over to fallback_model on HTTP 429."""
