@@ -6,6 +6,7 @@ from typing import Any
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
+from resilient_triage.schemas.telemetry import SIGNAL_STATUS_UNAVAILABLE
 from resilient_triage.telemetry.chaos import ChaosClient
 from resilient_triage.telemetry.statuspage import StatuspageClient
 
@@ -41,13 +42,13 @@ async def collect_telemetry_node(state: TriageState) -> dict[str, Any]:
             aggregated_signals.append(
                 TelemetrySignal(
                     source=f"{name}:error",
-                    status="UNAVAILABLE",
+                    status=SIGNAL_STATUS_UNAVAILABLE,
                     raw_snippet=f"Telemetry fetch failed: {res}",
                 )
             )
         elif isinstance(res, list):
             aggregated_signals.extend(res)
-            if any(sig.status == "UNAVAILABLE" for sig in res):
+            if any(sig.status == SIGNAL_STATUS_UNAVAILABLE for sig in res):
                 failed_sources.add(name)
 
     statuses = circuit_breaker_registry.get_all_statuses()

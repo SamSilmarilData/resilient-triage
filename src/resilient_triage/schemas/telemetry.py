@@ -5,6 +5,9 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# TelemetrySignal.status for a source that could not be read.
+SIGNAL_STATUS_UNAVAILABLE = "UNAVAILABLE"
+
 
 class StatuspageComponent(BaseModel):
     """Component representation from Atlassian Statuspage."""

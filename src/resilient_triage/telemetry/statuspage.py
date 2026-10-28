@@ -13,7 +13,7 @@ from resilient_triage.resilience.circuit_breaker import (
 )
 from resilient_triage.resilience.retry import with_retry
 from resilient_triage.schemas.incident import TelemetrySignal
-from resilient_triage.schemas.telemetry import StatuspageSummary
+from resilient_triage.schemas.telemetry import SIGNAL_STATUS_UNAVAILABLE, StatuspageSummary
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ class StatuspageClient:
             return [
                 TelemetrySignal(
                     source="statuspage:global",
-                    status="UNAVAILABLE",
+                    status=SIGNAL_STATUS_UNAVAILABLE,
                     latency_ms=round(elapsed_ms, 2),
                     error_rate=1.0,
                     raw_snippet=f"Statuspage unavailable: {exc}",
