@@ -32,7 +32,7 @@ We adopted a dual-layer resilience architecture combining **Pybreaker (1.2+)** f
    - Restricts retries exclusively to transient exceptions via `is_transient_error()` (`httpx.TimeoutException`, `httpx.NetworkError`, HTTP 429, 502, 503, 504).
 3. **Graceful State Degradation**:
    - Upstream outages never raise 500 errors to the client.
-   - Tripped circuit breakers are explicitly annotated in the report (`degradation_status = PARTIALLY_DEGRADED` and `circuit_breakers_tripped = ["statuspage", "chaos"]`).
+   - Tripped circuit breakers (targeted tools whose breaker is open) are explicitly annotated in the report by report reconciliation in `finalize`: one tripped breaker gives `degradation_status = PARTIALLY_DEGRADED`, two or more give `SEVERELY_DEGRADED` (e.g. `circuit_breakers_tripped = ["chaos", "statuspage"]`), and a synthesis fallback is always `SEVERELY_DEGRADED`.
 
 ## Alternatives Considered
 

@@ -5,6 +5,15 @@ All notable changes to the `resilient-triage` project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Report reconciliation owns the degradation fields**: `finalize` now runs `reconcile` (`graph/reconciliation.py`) on every report, so `degradation_status` and `circuit_breakers_tripped` follow one rule whichever path produced the report. The LLM no longer controls either field: its values, including breaker names it made up, are discarded.
+- **Only targeted breakers degrade a report**: an open circuit breaker for a telemetry source the query does not target no longer marks the report degraded or lists that breaker.
+
+### Fixed
+- A synthesis fallback report with one tripped breaker is now `SEVERELY_DEGRADED`; previously `finalize` downgraded it to `PARTIALLY_DEGRADED`.
+
 ## [1.3.0] - 2026-10-12 — Editorial Vector Visualizations & Documentation Upgrade
 
 ### Added

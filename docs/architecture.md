@@ -88,13 +88,20 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
 
 - **`analyze_query`**: Analyzes incident keywords and service scope to dynamically target telemetry tools (`statuspage`, `chaos`, or both).
 - **`collect_telemetry`**: Concurrently fetches telemetry through Tenacity retry wrappers and Pybreaker circuit breakers using `asyncio.gather(..., return_exceptions=True)`.
-- **`degraded_fallback`**: Invoked if any circuit breaker is `OPEN`. Annotates the incident with known blind spots and synthesizes available telemetry.
+- **`degraded_fallback`**: Invoked if any tripped breaker was recorded (a targeted tool whose circuit breaker is `OPEN`). Annotates the incident with known blind spots and synthesizes available telemetry.
 - **`synthesize`**: Merges telemetry signals and historical context.
 - **`generate_report`**: Emits a structured candidate JSON triage report via the active LLM engine.
 - **`validate_report`**: Markdown fence auto-cleaning (`clean_json_string`) and strict Pydantic validation. On failure, passes exact error paths to `self_repair`.
 - **`self_repair`**: Feeds `ValidationError` details back to the LLM context to correct malformed fields (max 2 retries).
 - **`fallback_report`**: Constructs a deterministic safe report if retries are exhausted.
-- **`finalize`**: Programmatically records tripped circuit breakers and commits the report to the semantic cache.
+- **`finalize`**: Runs **report reconciliation** (`reconcile` in `graph/reconciliation.py`) on the report, whichever path produced it, then commits it to the semantic cache. This is the only place a report's `degradation_status` and `circuit_breakers_tripped` are set.
+
+### Report reconciliation
+
+`collect_telemetry` records `tripped_breakers` in state: the *targeted* tools whose breaker is `OPEN` at collection time. An open breaker the query never targets does not count. `fallback_report` records `synthesis_fell_back: True`. `finalize` builds a `DegradationEvidence` from that state and calls the pure `reconcile(report, evidence)`, which returns a copy with:
+
+- `circuit_breakers_tripped` = the sorted tripped-breaker set. Whatever the LLM wrote is discarded.
+- `degradation_status` = the maximum (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED) of: synthesis fallback ⇒ SEVERELY_DEGRADED; two or more tripped breakers ⇒ SEVERELY_DEGRADED; exactly one ⇒ PARTIALLY_DEGRADED; otherwise HEALTHY. The LLM's value is discarded and `UNKNOWN` is never produced.
 
 ---
 
