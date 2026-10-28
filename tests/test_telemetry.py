@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
+from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
 from resilient_triage.schemas.telemetry import ChaosConfig
 from resilient_triage.telemetry.chaos import (
     ChaosClient,
@@ -349,3 +349,32 @@ def test_telemetry_clients_register_breakers_in_the_registry_they_are_given():
     assert registry.get("chaos") is chaos.circuit_breaker
     assert registry.get("statuspage") is statuspage.circuit_breaker
     assert set(registry.get_all_statuses()) == {"chaos", "statuspage"}
+
+
+async def test_statuspage_sources_built_without_a_cache_each_get_their_own():
+    """Two Statuspage sources built with default arguments never serve each other's summary."""
+    url = "https://statuspage.test/summary.json"
+    client_a = AsyncMock(spec=httpx.AsyncClient)
+    client_a.get.return_value = _summary_response("major")
+    client_b = AsyncMock(spec=httpx.AsyncClient)
+    client_b.get.return_value = _summary_response("none")
+    source_a = StatuspageClient(url=url, client=client_a, cache_ttl_seconds=60.0)
+    source_b = StatuspageClient(url=url, client=client_b, cache_ttl_seconds=60.0)
+
+    assert (await source_a.fetch_summary()).indicator == "major"
+    assert (await source_b.fetch_summary()).indicator == "none"
+    assert client_b.get.call_count == 1
+
+
+async def test_telemetry_clients_built_without_a_registry_do_not_share_breakers():
+    """Clients built without a breaker registry each get a fresh breaker, closed by default."""
+    tripped = ChaosClient(manager=ChaosManager())
+    fresh = ChaosClient(manager=ChaosManager())
+    source_a = StatuspageClient(client=AsyncMock(spec=httpx.AsyncClient))
+    source_b = StatuspageClient(client=AsyncMock(spec=httpx.AsyncClient))
+
+    force_open_for_tests(tripped.circuit_breaker)
+    force_open_for_tests(source_a.circuit_breaker)
+
+    assert fresh.circuit_breaker.info().is_open is False
+    assert source_b.circuit_breaker.info().is_open is False
