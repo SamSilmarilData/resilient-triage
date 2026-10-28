@@ -6,6 +6,7 @@ import time
 import pytest
 
 from resilient_triage.resilience.circuit_breaker import (
+    AsyncCircuitBreaker,
     BreakerOpen,
     CircuitBreakerRegistry,
 )
@@ -153,10 +154,10 @@ async def test_circuit_breaker_half_open_recovery_and_failure(monkeypatch):
     assert cb2.state == "open"
 
 
-async def _cancel_in_flight(cb) -> None:
+async def _cancel_in_flight(cb: AsyncCircuitBreaker) -> None:
     """Start a slow guarded call, cancel it mid-flight, and assert the caller sees CancelledError."""
 
-    async def slow_task():
+    async def slow_task() -> None:
         await asyncio.sleep(10)
 
     task = asyncio.create_task(cb.call(slow_task))
@@ -198,11 +199,11 @@ async def test_cancelled_call_does_not_reset_consecutive_failures():
     assert cb.state == "open"
 
 
-async def _half_open_breaker(name: str):
+async def _half_open_breaker(name: str) -> AsyncCircuitBreaker:
     """Return a breaker whose reset timeout has elapsed, so the next call is the half-open trial."""
     cb = CircuitBreakerRegistry().get_or_create(name=name, fail_max=1, reset_timeout=0.05)
 
-    async def failing_task():
+    async def failing_task() -> None:
         raise RuntimeError("Outage ongoing")
 
     with pytest.raises(BreakerOpen):
