@@ -265,3 +265,51 @@ async def test_quota_starts_on_the_groq_model_of_the_settings_it_was_built_with(
     snapshot = await runtime.snapshot()
 
     assert snapshot.llm_quota.active_model == "runtime-specific-model"
+
+
+def _explode(*args: object, **kwargs: object) -> object:
+    raise RuntimeError("member exploded")
+
+
+async def test_start_never_raises_when_registering_default_breakers_fails(make_runtime):
+    runtime = make_runtime()
+    runtime.breakers.get_or_create = _explode  # type: ignore[method-assign]
+
+    await runtime.start()
+
+    assert (await runtime.snapshot()).breakers == {}
+
+
+async def test_snapshot_never_raises_when_breaker_statuses_fail(make_runtime):
+    runtime = make_runtime()
+    await runtime.start()
+    runtime.breakers.get_all_statuses = _explode  # type: ignore[method-assign]
+
+    snapshot = await runtime.snapshot()
+
+    assert snapshot.breakers == {}
+    assert snapshot.cache_driver == "in_memory"
+
+
+async def test_snapshot_never_raises_when_the_chaos_config_read_fails(make_runtime):
+    runtime = make_runtime()
+    await runtime.start()
+    runtime.chaos.update_config(ChaosConfig(active=True, inject_503=True))
+    runtime.chaos.get_config = _explode  # type: ignore[method-assign]
+
+    snapshot = await runtime.snapshot()
+
+    assert snapshot.chaos_active is False
+    assert set(snapshot.breakers) == {"statuspage", "chaos"}
+
+
+async def test_snapshot_never_raises_when_the_quota_snapshot_fails(make_runtime):
+    runtime = make_runtime(_settings(groq_model="runtime-specific-model"))
+    await runtime.start()
+    runtime.quota.get_snapshot = _explode  # type: ignore[method-assign]
+
+    snapshot = await runtime.snapshot()
+
+    assert snapshot.llm_quota.active_model == "runtime-specific-model"
+    assert snapshot.llm_quota.total_calls == 0
+    assert snapshot.chaos_active is False
