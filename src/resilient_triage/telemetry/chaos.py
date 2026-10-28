@@ -7,11 +7,11 @@ import threading
 import time
 
 import httpx
-from pybreaker import CircuitBreakerError
 
 from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
     AsyncCircuitBreaker,
+    BreakerOpen,
     circuit_breaker_registry,
 )
 from resilient_triage.resilience.retry import with_retry
@@ -118,7 +118,7 @@ class ChaosClient:
             ChaosTelemetryResponse: Evaluated probe result with status and latency.
 
         Raises:
-            pybreaker.CircuitBreakerError: If the chaos circuit breaker is OPEN.
+            BreakerOpen: If the chaos circuit breaker is OPEN.
             httpx.HTTPStatusError: If injected 503 or transient failure persists after retries.
         """
         # Tenacity retry sits INSIDE the circuit breaker call
@@ -132,7 +132,7 @@ class ChaosClient:
     ) -> list[TelemetrySignal]:
         """Fetch telemetry signals with safe fallback for tripped circuit breakers.
 
-        Never raises uncaught network errors; catches CircuitBreakerError or unexpected
+        Never raises uncaught network errors; catches BreakerOpen or unexpected
         exceptions and returns degraded TelemetrySignal instances to protect the agent.
 
         Args:
@@ -156,7 +156,7 @@ class ChaosClient:
                     raw_snippet=resp.details,
                 )
             ]
-        except CircuitBreakerError as cb_err:
+        except BreakerOpen as cb_err:
             elapsed_ms = (time.monotonic() - start_time) * 1000.0
             logger.warning("Chaos probe circuit breaker OPEN: %s", cb_err)
             return [
@@ -165,7 +165,12 @@ class ChaosClient:
                     status="CIRCUIT_OPEN",
                     latency_ms=round(elapsed_ms, 2),
                     error_rate=1.0,
-                    raw_snippet=f"Circuit breaker '{self.circuit_breaker.name}' (Cluster Sentinel) tripped OPEN: consecutive failures exceeded threshold ({self.circuit_breaker.fail_max}). Failing fast without hanging.",
+                    raw_snippet=(
+                        f"Circuit breaker '{self.circuit_breaker.name}' (Cluster Sentinel) "
+                        "tripped OPEN: consecutive failures exceeded threshold "
+                        f"({self.circuit_breaker.info().fail_max}). "
+                        "Failing fast without hanging."
+                    ),
                 )
             ]
         except Exception as exc:

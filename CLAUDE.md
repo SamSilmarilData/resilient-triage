@@ -13,14 +13,14 @@ Statuspage, or the LLM is down — degrade instead.
 
 ## Commands (run inside `.venv`)
 - Setup: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[test,lint]"`
-- Test: `pytest -q` (85 tests, ~3s; Redis optional — falls back to in-memory)
+- Test: `pytest -q` (124 tests, ~4s; Redis optional — falls back to in-memory)
 - Lint: `ruff check . && ruff format --check .`
 - Types: `mypy src/`
 - Run: `./scripts/run_local.sh` (UI :8000, docs /docs, /health)
 - Docker: `docker compose up`; smoke test: `python scripts/smoke_test.py`
 - CI (`.github/workflows/ci.yml`) runs exactly: ruff check, ruff format --check, mypy src/, pytest, docker build + /health
 
-Baseline (2026-10-23): all four checks green.
+Baseline (2026-10-29): all four checks green.
 
 ## Project Map (`src/resilient_triage/`)
 - `api/app.py` — routes: `POST /triage`, `/health`, `/metrics`, `/resilience/status`, `/llm/quota`,

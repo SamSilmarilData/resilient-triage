@@ -99,7 +99,7 @@ async def test_statuspage_client_circuit_breaker_fallback():
         signals = await sp_client.fetch_signals()
         assert len(signals) == 1
 
-    assert cb.is_open is True
+    assert cb.info().is_open is True
 
     # 4th call should immediately return degraded signal with CIRCUIT_OPEN
     fallback_signals = await sp_client.fetch_signals()
@@ -121,7 +121,7 @@ async def test_chaos_manager_and_client_trip():
     signals = await client.fetch_signals()
     assert len(signals) == 1
     assert signals[0].status == "OK"
-    assert cb.current_state == "closed"
+    assert cb.state == "closed"
 
     # 2. Inject 503 chaos
     mgr.update_config(ChaosConfig(active=True, inject_503=True))
@@ -136,7 +136,7 @@ async def test_chaos_manager_and_client_trip():
             # On the 3rd operation, threshold reached and breaker trips
             assert signals[0].status in {"CIRCUIT_OPEN", "UNAVAILABLE"}
 
-    assert cb.is_open is True
+    assert cb.info().is_open is True
 
     # 4th call fails fast with CIRCUIT_OPEN
     tripped_signals = await client.fetch_signals()

@@ -38,6 +38,7 @@ stateDiagram-v2
     OPEN --> HALF_OPEN : reset_timeout = 30.0s elapsed
     HALF_OPEN --> CLOSED : Single trial probe succeeds
     HALF_OPEN --> OPEN : Trial probe fails
+    HALF_OPEN --> HALF_OPEN : Trial cancelled (slot freed)
 ```
 
 1. **`CLOSED` (Normal Operation)**:
@@ -45,14 +46,35 @@ stateDiagram-v2
    - Failure counter increments on exceptions matching `is_transient_error()`.
    - If failures reach `fail_max = 3`, the breaker transitions to `OPEN`.
 2. **`OPEN` (Failing Fast)**:
-   - Calls immediately raise `pybreaker.CircuitBreakerError` in $<0.01\text{ms}$ without executing network I/O.
+   - Calls immediately raise `BreakerOpen` (from `resilience/circuit_breaker.py`) in $<0.01\text{ms}$ without executing network I/O.
    - Protects the failing dependency from retry storms.
    - If the breaker belongs to a targeted tool, it is recorded as a tripped breaker and triggers `DegradedFallbackNode` in LangGraph.
 3. **`HALF_OPEN` (Trial Probe)**:
    - After `reset_timeout = 30` seconds, the breaker enters `HALF_OPEN`.
-   - Allows a single test request through.
-   - If successful, resets `fail_counter = 0` and restores state to `CLOSED`.
-   - If it fails, resets the 30-second timer and returns to `OPEN`.
+   - Exactly one call, the first caller after the timeout, becomes the **trial** and reaches the
+     source. Any caller that arrives while the trial is still running gets `BreakerOpen`
+     immediately; it does not wait for the trial's outcome.
+   - If the trial succeeds, resets `fail_counter = 0` and restores state to `CLOSED`.
+   - If the trial raises an `Exception`, it resets the 30-second timer and returns to `OPEN`;
+     the trial's caller gets `BreakerOpen` chained (`from`) the original error.
+   - If the trial is cancelled (see below), the breaker stays `HALF_OPEN` and the trial slot is
+     freed, so the next caller becomes the new trial.
+   - Only the trial's outcome settles a half-open breaker. A call that started earlier (while the
+     breaker was `CLOSED`) and finishes while it is `HALF_OPEN` records nothing: its caller still
+     gets its result or its original error, but the breaker neither closes nor re-opens.
+   - A manual `reset()` (e.g. `/resilience/reset`) also frees the trial slot. A trial still
+     running at that point is stale: when it returns it records nothing and cannot free the slot
+     of a newer trial.
+
+### Cancellation is neither success nor failure
+Only an `Exception` raised by the guarded call counts as a failure. If the call is interrupted by
+a `BaseException` that is not an `Exception` (typically `asyncio.CancelledError` when a run
+deadline passes or the client disconnects), `AsyncCircuitBreaker.call` records **nothing**: the
+failure counter is neither incremented nor reset, the state does not change, and the exception
+propagates to the caller unchanged. A cancelled run therefore cannot trip a healthy source's
+breaker, and it cannot hide earlier failures either: with `fail_max = 3`, the sequence
+fail, fail, cancel, fail opens the breaker. The call whose `Exception` trips the breaker still
+raises `BreakerOpen` chained (`from`) the original error.
 
 ---
 

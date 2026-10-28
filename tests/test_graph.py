@@ -12,7 +12,10 @@ from resilient_triage.graph.llm import MockTriageChatModel, set_triage_llm
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from resilient_triage.resilience.circuit_breaker import (
+    circuit_breaker_registry,
+    force_open_for_tests,
+)
 from resilient_triage.schemas.incident import (
     DegradationStatus,
     IncidentTriageReport,
@@ -125,8 +128,8 @@ async def test_graph_degraded_and_compensatory_routing():
     """Verify graph routes through compensatory cache and degraded fallback when circuit breaker is OPEN."""
     # Deliberately trip the chaos breaker
     chaos_cb = circuit_breaker_registry.get_or_create("chaos")
-    chaos_cb.breaker.open()
-    assert chaos_cb.is_open is True
+    force_open_for_tests(chaos_cb)
+    assert chaos_cb.info().is_open is True
 
     app = build_triage_graph(enable_checkpointing=False)
     inputs = {
@@ -349,7 +352,7 @@ async def test_collect_telemetry_records_source_whose_task_raised(mocker):
 @pytest.mark.asyncio
 async def test_collect_telemetry_tripped_breaker_is_not_unavailable(mocker):
     """A source whose breaker is tripped counts as a tripped breaker, not an unavailable source."""
-    circuit_breaker_registry.get_or_create("statuspage").breaker.open()
+    force_open_for_tests(circuit_breaker_registry.get_or_create("statuspage"))
     mocker.patch(_STATUSPAGE_FETCH, new=mocker.AsyncMock(return_value=[_UNAVAILABLE_SIGNAL]))
 
     result = await collect_telemetry_node({"query": "q", "target_tools": ["statuspage"]})
@@ -519,7 +522,7 @@ async def test_groq_proactive_cooldown_routing(mocker):
 @pytest.mark.asyncio
 async def test_synthesis_fallback_status_is_never_downgraded():
     """Synthesis fallback with one tripped breaker gives SEVERELY_DEGRADED, not PARTIALLY."""
-    circuit_breaker_registry.get_or_create("chaos").breaker.open()
+    force_open_for_tests(circuit_breaker_registry.get_or_create("chaos"))
 
     mock_llm = MockTriageChatModel()
     mock_llm.responses = ["not json"] * 5
@@ -538,7 +541,7 @@ async def test_synthesis_fallback_status_is_never_downgraded():
 @pytest.mark.asyncio
 async def test_only_targeted_breakers_degrade_the_report(mocker):
     """An open breaker the query never targets leaves the report HEALTHY."""
-    circuit_breaker_registry.get_or_create("chaos").breaker.open()
+    force_open_for_tests(circuit_breaker_registry.get_or_create("chaos"))
     mocker.patch(
         "resilient_triage.graph.nodes.collect_telemetry.StatuspageClient.fetch_signals",
         new=mocker.AsyncMock(return_value=[]),
@@ -595,7 +598,7 @@ async def test_unavailable_source_degrades_the_report(mocker):
     final_state = await app.ainvoke({"query": "GitHub Actions webhook delivery failing"})
 
     assert final_state["target_tools"] == ["statuspage"]
-    assert not circuit_breaker_registry.get_or_create("statuspage").is_open
+    assert not circuit_breaker_registry.get_or_create("statuspage").info().is_open
     report = final_state["final_report"]
     assert report.circuit_breakers_tripped == []
     assert report.degradation_status == DegradationStatus.PARTIALLY_DEGRADED
