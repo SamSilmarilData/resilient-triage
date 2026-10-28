@@ -44,7 +44,9 @@ stateDiagram-v2
 1. **`CLOSED` (Normal Operation)**:
    - External requests pass through normally.
    - Failure counter increments on exceptions matching `is_transient_error()`.
-   - If failures reach `fail_max = 3`, the breaker transitions to `OPEN`.
+   - If failures reach `fail_max = 3`, the breaker transitions to `OPEN`. The call whose
+     failure trips it gets its own original error; only later, refused calls get
+     `BreakerOpen`.
 2. **`OPEN` (Failing Fast)**:
    - Calls immediately raise `BreakerOpen` (from `resilience/circuit_breaker.py`) in $<0.01\text{ms}$ without executing network I/O.
    - Protects the failing dependency from retry storms.
@@ -56,7 +58,7 @@ stateDiagram-v2
      immediately; it does not wait for the trial's outcome.
    - If the trial succeeds, resets `fail_counter = 0` and restores state to `CLOSED`.
    - If the trial raises an `Exception`, it resets the 30-second timer and returns to `OPEN`;
-     the trial's caller gets `BreakerOpen` chained (`from`) the original error.
+     the trial's caller gets the trial's original error.
    - If the trial is cancelled (see below), the breaker stays `HALF_OPEN` and the trial slot is
      freed, so the next caller becomes the new trial.
    - Only the trial's outcome settles a half-open breaker. A call that started earlier (while the
@@ -73,8 +75,7 @@ deadline passes or the client disconnects), `AsyncCircuitBreaker.call` records *
 failure counter is neither incremented nor reset, the state does not change, and the exception
 propagates to the caller unchanged. A cancelled run therefore cannot trip a healthy source's
 breaker, and it cannot hide earlier failures either: with `fail_max = 3`, the sequence
-fail, fail, cancel, fail opens the breaker. The call whose `Exception` trips the breaker still
-raises `BreakerOpen` chained (`from`) the original error.
+fail, fail, cancel, fail opens the breaker.
 
 ---
 

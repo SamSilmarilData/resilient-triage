@@ -1,5 +1,6 @@
 """Circuit breaker: project-owned async breaker interface; the only module importing pybreaker."""
 
+import contextlib
 import logging
 import threading
 from collections.abc import Awaitable, Callable
@@ -101,12 +102,13 @@ class AsyncCircuitBreaker:
     Callers see only `call`, `name`, `state`, `info()` and `reset()`, and catch
     `BreakerOpen` when the breaker refuses a call.
 
-    `call` raises `BreakerOpen` when the breaker is open and its reset timeout has not
-    elapsed, when it is half-open and another call is already the trial, or when this call's
-    failure trips it open (chained from the original error). Any other `Exception` from the
-    guarded function counts as a failure and propagates. A non-`Exception` `BaseException`
-    (e.g. `CancelledError`) propagates and records nothing. In half-open only the current
-    trial's outcome is recorded; see docs/resilience.md.
+    `call` raises `BreakerOpen` only when it refuses a call without running the guarded
+    function: the breaker is open and its reset timeout has not elapsed, or it is half-open
+    and another call is already the trial. An `Exception` from the guarded function counts as
+    a failure and propagates unchanged, including on the call whose failure trips the
+    breaker open. A non-`Exception` `BaseException` (e.g. `CancelledError`) propagates and
+    records nothing. In half-open only the current trial's outcome is recorded; see
+    docs/resilience.md.
     """
 
     def __init__(
@@ -184,15 +186,16 @@ class AsyncCircuitBreaker:
             # 2. Execute async coroutine
             result = await func(*args, **kwargs)
         except Exception as exc:
-            # 3. Handle error inside lock; pybreaker raises its own error on the tripping failure.
-            # Only `Exception` counts: a non-Exception BaseException such as CancelledError
-            # (run deadline, client disconnect) propagates untouched and records nothing.
+            # 3. Handle error inside lock. Only `Exception` counts: a non-Exception BaseException
+            # such as CancelledError (run deadline, client disconnect) propagates untouched and
+            # records nothing.
             with self._breaker._lock:
                 if self._may_record(trial):
-                    try:
+                    # pybreaker raises its own error on the tripping failure. The breaker is now
+                    # open, but fn did run, so the caller gets fn's own error; BreakerOpen is
+                    # only for refused calls.
+                    with contextlib.suppress(pybreaker.CircuitBreakerError):
                         self._breaker.state._handle_error(exc, reraise=False)
-                    except pybreaker.CircuitBreakerError as trip:
-                        raise BreakerOpen(str(trip)) from exc
             raise
         else:
             # 4. Handle success inside lock
