@@ -1,5 +1,6 @@
 """AppRuntime: one object owning the app's stateful modules, built fresh per app or per test."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Protocol
@@ -22,6 +23,9 @@ from resilient_triage.telemetry.statuspage import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Concurrency boundary: max concurrent graph executions per app, to prevent stampedes.
+GRAPH_CONCURRENCY_LIMIT = 10
 
 # Embedded at start() so the first demo requests hit a warm model and embedding LRU.
 WARMUP_QUERIES: tuple[str, ...] = (
@@ -92,6 +96,15 @@ class ResilienceSnapshot:
     llm_quota: LLMQuotaSnapshot
 
 
+@dataclass
+class RequestCounters:
+    """Triage request outcomes for one app, exported on /metrics."""
+
+    hit: int = 0
+    miss: int = 0
+    saturated: int = 0
+
+
 class AppRuntime:
     """The app's stateful modules, with a start/aclose lifecycle and a resilience snapshot."""
 
@@ -113,6 +126,8 @@ class AppRuntime:
         self.deps = deps
         self.active_model = active_model
         self._http_clients = http_clients
+        self.graph_semaphore = asyncio.Semaphore(GRAPH_CONCURRENCY_LIMIT)
+        self.requests = RequestCounters()
 
     async def start(self) -> None:
         """Connect the cache (or fall back to memory) and register the default breakers."""
@@ -166,13 +181,15 @@ def build_runtime(
     *,
     llm_adapter: BaseChatModel | None = None,
     embedder: BaseEmbeddingProvider | None = None,
+    statuspage_http: httpx.AsyncClient | None = None,
 ) -> AppRuntime:
     """Construct a runtime with fresh stateful modules; performs no I/O."""
     cache = SemanticCacheManager(redis_url=settings.redis_url, embedding_provider=embedder)
     breakers = CircuitBreakerRegistry()
     chaos = ChaosManager()
     quota = GroqQuotaTracker()
-    statuspage_http = new_statuspage_http_client()
+    if statuspage_http is None:
+        statuspage_http = new_statuspage_http_client()
     http_clients: list[httpx.AsyncClient] = [statuspage_http]
     statuspage = StatuspageClient(
         url=settings.statuspage_url,
