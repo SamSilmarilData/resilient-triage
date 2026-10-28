@@ -26,8 +26,9 @@ Statuspage, or the LLM is down — degrade instead.
 - `graph/builder.py` — the topology and routers. Flow:
   `analyze_query → collect_telemetry →(route_after_telemetry)→ [compensate_blindspots → degraded_fallback →] synthesize_telemetry → generate_report → validate_report →(route_after_validation)→ refine | repair | fallback | finalize`.
   `self_repair` and `refine_reflection` loop back to `generate_report`.
-- `graph/nodes/` — one node per file, `<name>_node(state, runtime: Runtime[TriageDeps]) -> dict[str, Any]` returning a
-  partial state update; nodes read collaborators only from `runtime.context`.
+- `graph/nodes/` — one node per file, `<name>_node(state, runtime: Runtime[TriageDeps])` when it needs
+  collaborators, else `<name>_node(state)`; returns a partial state update `dict[str, Any]` and reads
+  collaborators only from `runtime.context`.
 - `runtime.py` — `AppRuntime` (cache, breakers, chaos, quota, `TriageDeps`), built by `build_runtime()`; one per app.
 - `graph/llm.py` — Groq client, `MockTriageChatModel`, `build_triage_llm()`, quota tracker / 429 failover.
 - `cache/semantic_cache.py` — `SemanticCacheManager` (Redis ↔ in-memory failover). `cache/embeddings.py` — providers.
