@@ -94,10 +94,12 @@ async def test_statuspage_client_circuit_breaker_fallback():
         client=mock_client,
     )
 
-    # Trigger 3 failed operations to trip breaker open
+    # Trigger 3 failed operations to trip breaker open; the tripping call reports the real error
     for _ in range(3):
         signals = await sp_client.fetch_signals()
         assert len(signals) == 1
+        assert signals[0].status == "UNAVAILABLE"
+        assert "500" in (signals[0].raw_snippet or "")
 
     assert cb.info().is_open is True
 
@@ -133,8 +135,9 @@ async def test_chaos_manager_and_client_trip():
         if i < 2:
             assert signals[0].status in {"UNAVAILABLE", "DEGRADED"}
         else:
-            # On the 3rd operation, threshold reached and breaker trips
-            assert signals[0].status in {"CIRCUIT_OPEN", "UNAVAILABLE"}
+            # The 3rd operation reaches the source and trips the breaker: it reports the real
+            # failure; only later calls, refused without reaching the source, are CIRCUIT_OPEN.
+            assert signals[0].status == "UNAVAILABLE"
 
     assert cb.info().is_open is True
 

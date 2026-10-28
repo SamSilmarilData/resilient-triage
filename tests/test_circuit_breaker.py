@@ -51,7 +51,7 @@ async def test_circuit_breaker_trips_open_on_3_failures():
         assert cb.info().fail_counter == i + 1
 
     # Invocation 3 reaches threshold: trips breaker to OPEN
-    with pytest.raises((RuntimeError, BreakerOpen)):
+    with pytest.raises(RuntimeError):
         await cb.call(failing_task)
 
     assert cb.state == "open"
@@ -115,7 +115,7 @@ async def test_circuit_breaker_half_open_recovery_and_failure(monkeypatch):
 
     # 1. Cause 2 failures to trip breaker to OPEN
     for _ in range(2):
-        with pytest.raises((RuntimeError, BreakerOpen)):
+        with pytest.raises(RuntimeError):
             await cb.call(flaky_service)
 
     assert cb.state == "open"
@@ -140,14 +140,14 @@ async def test_circuit_breaker_half_open_recovery_and_failure(monkeypatch):
     async def permanently_dead_service():
         raise RuntimeError("Service is dead")
 
-    with pytest.raises((RuntimeError, BreakerOpen)):
+    with pytest.raises(RuntimeError):
         await cb2.call(permanently_dead_service)
 
     assert cb2.state == "open"
     await asyncio.sleep(0.12)
 
     # Trial call fails
-    with pytest.raises((RuntimeError, BreakerOpen)):
+    with pytest.raises(RuntimeError):
         await cb2.call(permanently_dead_service)
 
     # Breaker re-opens
@@ -193,10 +193,31 @@ async def test_cancelled_call_does_not_reset_consecutive_failures():
     await _cancel_in_flight(cb)
     assert cb.info().fail_counter == 2
 
-    with pytest.raises(BreakerOpen) as exc_info:
+    with pytest.raises(RuntimeError, match="Downstream service crashed"):
         await cb.call(failing_task)
-    assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert cb.state == "open"
+
+
+async def test_tripping_call_reraises_the_original_error():
+    """The call whose failure trips the breaker gets fn's own exception, not BreakerOpen."""
+    cb = CircuitBreakerRegistry().get_or_create(name="trip_reraise", fail_max=1, reset_timeout=30)
+    original = RuntimeError("Downstream service crashed")
+    reached = 0
+
+    async def failing_task() -> None:
+        nonlocal reached
+        reached += 1
+        raise original
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await cb.call(failing_task)
+    assert exc_info.value is original
+    assert cb.state == "open"
+
+    # Only a refused call, one that never reaches fn, raises BreakerOpen.
+    with pytest.raises(BreakerOpen):
+        await cb.call(failing_task)
+    assert reached == 1
 
 
 async def _half_open_breaker(name: str) -> AsyncCircuitBreaker:
@@ -206,7 +227,7 @@ async def _half_open_breaker(name: str) -> AsyncCircuitBreaker:
     async def failing_task() -> None:
         raise RuntimeError("Outage ongoing")
 
-    with pytest.raises(BreakerOpen):
+    with pytest.raises(RuntimeError, match="Outage ongoing"):
         await cb.call(failing_task)
     assert cb.state == "open"
     await asyncio.sleep(0.07)
@@ -254,9 +275,8 @@ async def test_failed_half_open_trial_reopens_and_restarts_timeout():
         reached += 1
         raise RuntimeError("Still down")
 
-    with pytest.raises(BreakerOpen) as exc_info:
+    with pytest.raises(RuntimeError, match="Still down"):
         await cb.call(failing_probe)
-    assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert cb.state == "open"
 
     with pytest.raises(BreakerOpen):
@@ -328,7 +348,7 @@ async def _straggler_and_trial(
 
     straggler_task = asyncio.create_task(cb.call(straggler))
     await asyncio.sleep(0.01)
-    with pytest.raises(BreakerOpen):
+    with pytest.raises(RuntimeError, match="Outage ongoing"):
         await cb.call(failing_task)
     await asyncio.sleep(0.07)
     trial_task = asyncio.create_task(cb.call(trial))
@@ -391,7 +411,7 @@ async def test_reset_during_trial_frees_the_slot_for_the_next_half_open_cycle():
     stale = asyncio.create_task(cb.call(stale_probe))
     await asyncio.sleep(0.01)
     cb.reset()
-    with pytest.raises(BreakerOpen):
+    with pytest.raises(RuntimeError, match="Outage ongoing"):
         await cb.call(failing_task)
     await asyncio.sleep(0.07)
 
