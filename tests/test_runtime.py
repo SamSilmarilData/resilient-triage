@@ -277,7 +277,8 @@ async def test_start_never_raises_when_registering_default_breakers_fails(make_r
 
     await runtime.start()
 
-    assert (await runtime.snapshot()).breakers == {}
+    # The telemetry sources registered both breakers when the runtime was built.
+    assert set((await runtime.snapshot()).breakers) == {"statuspage", "chaos"}
 
 
 async def test_snapshot_never_raises_when_breaker_statuses_fail(make_runtime):
