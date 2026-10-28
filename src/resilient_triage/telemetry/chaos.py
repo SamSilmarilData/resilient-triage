@@ -165,7 +165,12 @@ class ChaosClient:
                     status="CIRCUIT_OPEN",
                     latency_ms=round(elapsed_ms, 2),
                     error_rate=1.0,
-                    raw_snippet=f"Circuit breaker '{self.circuit_breaker.name}' (Cluster Sentinel) tripped OPEN: consecutive failures exceeded threshold ({self.circuit_breaker.info().fail_max}). Failing fast without hanging.",
+                    raw_snippet=(
+                        f"Circuit breaker '{self.circuit_breaker.name}' (Cluster Sentinel) "
+                        "tripped OPEN: consecutive failures exceeded threshold "
+                        f"({self.circuit_breaker.info().fail_max}). "
+                        "Failing fast without hanging."
+                    ),
                 )
             ]
         except Exception as exc:
