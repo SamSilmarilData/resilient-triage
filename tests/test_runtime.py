@@ -46,3 +46,13 @@ async def test_tripping_a_breaker_in_one_runtime_leaves_the_other_closed(make_ru
     assert tripped.breakers["statuspage"].is_open
     assert untouched.breakers["statuspage"].state == "closed"
     assert not untouched.breakers["statuspage"].is_open
+
+
+async def test_redis_unreachable_start_and_snapshot_report_memory_cache(make_runtime):
+    runtime = make_runtime(_settings(redis_url=UNREACHABLE_REDIS))
+
+    await runtime.start()
+    snapshot = await runtime.snapshot()
+
+    assert snapshot.cache_driver == "in_memory"
+    assert snapshot.cache_connected is False
