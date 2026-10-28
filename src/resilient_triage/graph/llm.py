@@ -39,10 +39,10 @@ def new_groq_http_client(timeout: float = GROQ_TIMEOUT_SECONDS) -> httpx.AsyncCl
 class GroqQuotaTracker:
     """Thread-safe tracker of Groq rate-limit headers, token budgets, and failover metrics."""
 
-    def __init__(self) -> None:
+    def __init__(self, active_model: str | None = None) -> None:
         self._lock = threading.Lock()
         self.provider: str = "groq"
-        self.active_model: str = settings.groq_model
+        self.active_model: str = active_model or settings.groq_model
         self.fallback_model: str = "llama-3.1-8b-instant"
         self.remaining_requests: int | None = None
         self.limit_requests: int | None = None

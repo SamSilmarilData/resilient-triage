@@ -187,7 +187,7 @@ def build_runtime(
     cache = SemanticCacheManager(redis_url=settings.redis_url, embedding_provider=embedder)
     breakers = CircuitBreakerRegistry()
     chaos = ChaosManager()
-    quota = GroqQuotaTracker()
+    quota = GroqQuotaTracker(active_model=settings.groq_model)
     if statuspage_http is None:
         statuspage_http = new_statuspage_http_client()
     http_clients: list[httpx.AsyncClient] = [statuspage_http]
