@@ -23,18 +23,24 @@ STATUSPAGE_TIMEOUT = httpx.Timeout(connect=2.0, read=3.0, write=2.0, pool=1.0)
 
 # Short-TTL in-memory cache that skips redundant ~700ms fetches.
 # Maps url -> (StatuspageSummary, timestamp).
+SUMMARY_CACHE_TTL_SECONDS = 10.0
 _SUMMARY_CACHE: dict[str, tuple[StatuspageSummary, float]] = {}
 _statuspage_async_client: httpx.AsyncClient | None = None
+
+
+def new_statuspage_http_client() -> httpx.AsyncClient:
+    """Build a keep-alive pooled httpx.AsyncClient for Statuspage (no I/O until used)."""
+    return httpx.AsyncClient(
+        timeout=STATUSPAGE_TIMEOUT,
+        limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+    )
 
 
 def _get_statuspage_client() -> httpx.AsyncClient:
     """Return shared, persistent httpx.AsyncClient with keep-alive connection pooling."""
     global _statuspage_async_client
     if _statuspage_async_client is None or _statuspage_async_client.is_closed:
-        _statuspage_async_client = httpx.AsyncClient(
-            timeout=STATUSPAGE_TIMEOUT,
-            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
-        )
+        _statuspage_async_client = new_statuspage_http_client()
     return _statuspage_async_client
 
 
@@ -76,7 +82,7 @@ class StatuspageClient:
         if cache_ttl_seconds is not None:
             self.cache_ttl_seconds = cache_ttl_seconds
         else:
-            self.cache_ttl_seconds = 0.0 if client is not None else 10.0
+            self.cache_ttl_seconds = 0.0 if client is not None else SUMMARY_CACHE_TTL_SECONDS
 
     async def _fetch_raw(self) -> StatuspageSummary:
         """Fetch raw JSON from Statuspage endpoint and parse into summary model with 10s caching."""
