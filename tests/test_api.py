@@ -264,7 +264,7 @@ async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
 @pytest.mark.asyncio
 async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient):
     """Verify a failed LLM call (e.g. HTTP 429, network error) still returns 200 with a fallback."""
-    with patch("resilient_triage.graph.nodes.generate_report.get_triage_llm") as mock_get_llm:
+    with patch("resilient_triage.api.app.get_triage_llm") as mock_get_llm:
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(
             side_effect=httpx.HTTPStatusError(

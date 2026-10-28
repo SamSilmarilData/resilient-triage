@@ -3,29 +3,30 @@
 import asyncio
 from typing import Any
 
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from langgraph.runtime import Runtime
+
+from resilient_triage.runtime import TriageDeps
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import SIGNAL_STATUS_UNAVAILABLE
-from resilient_triage.telemetry.chaos import ChaosClient
-from resilient_triage.telemetry.statuspage import StatuspageClient
 
 
-async def collect_telemetry_node(state: TriageState) -> dict[str, Any]:
+async def collect_telemetry_node(
+    state: TriageState, runtime: Runtime[TriageDeps]
+) -> dict[str, Any]:
     """Execute concurrent telemetry collection on dynamically targeted tools."""
+    telemetry = runtime.context.telemetry
     target_tools = state.get("target_tools", ["statuspage", "chaos"])
     tasks = []
     task_names = []
 
     if "statuspage" in target_tools:
-        sp_client = StatuspageClient()
-        tasks.append(sp_client.fetch_signals())
+        tasks.append(telemetry.statuspage.fetch_signals())
         task_names.append("statuspage")
 
     if "chaos" in target_tools:
-        ch_client = ChaosClient()
         tasks.append(
-            ch_client.fetch_signals(
+            telemetry.chaos.fetch_signals(
                 service_hint=state.get("service_filter"),
                 query=state.get("query"),
             )
@@ -51,7 +52,7 @@ async def collect_telemetry_node(state: TriageState) -> dict[str, Any]:
             if any(sig.status == SIGNAL_STATUS_UNAVAILABLE for sig in res):
                 failed_sources.add(name)
 
-    statuses = circuit_breaker_registry.get_all_statuses()
+    statuses = telemetry.breakers.get_all_statuses()
     cb_status = {name: info.state for name, info in statuses.items()}
     tripped_breakers = [name for name in task_names if name in statuses and statuses[name].is_open]
     # A tripped breaker is already counted as such; it is not also an unavailable source.
