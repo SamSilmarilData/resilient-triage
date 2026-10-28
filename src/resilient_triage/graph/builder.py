@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from resilient_triage.config import settings
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.graph.nodes import (
     analyze_query_node,
     collect_telemetry_node,
@@ -112,7 +113,7 @@ def route_after_validation(
 
 def build_triage_graph(
     enable_checkpointing: bool = True, max_checkpoint_threads: int = 1000
-) -> CompiledStateGraph:
+) -> CompiledStateGraph[TriageState, TriageDeps, TriageState, TriageState]:
     """Build and compile the LangGraph cyclic state graph with BoundedMemorySaver checkpointing.
 
     Args:
@@ -122,7 +123,7 @@ def build_triage_graph(
     Returns:
         CompiledStateGraph: Runnable LangGraph workflow engine.
     """
-    graph = StateGraph(TriageState)
+    graph = StateGraph(TriageState, context_schema=TriageDeps)
 
     # 1. Register nodes
     graph.add_node("analyze_query", analyze_query_node)

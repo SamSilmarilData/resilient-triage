@@ -26,10 +26,15 @@ Statuspage, or the LLM is down — degrade instead.
 - `graph/builder.py` — the topology and routers. Flow:
   `analyze_query → collect_telemetry →(route_after_telemetry)→ [compensate_blindspots → degraded_fallback →] synthesize_telemetry → generate_report → validate_report →(route_after_validation)→ refine | repair | fallback | finalize`.
   `self_repair` and `refine_reflection` loop back to `generate_report`.
-- `graph/nodes/` — one node per file, `<name>_node(state: TriageState) -> dict[str, Any]` returning a partial state update.
-- `graph/llm.py` — Groq client, `MockTriageChatModel`, `set_triage_llm()`, quota tracker / 429 failover.
+- `graph/nodes/` — one node per file, `<name>_node(state, runtime: Runtime[TriageDeps])` when it needs
+  collaborators, else `<name>_node(state)`; returns a partial state update `dict[str, Any]` and reads
+  collaborators only from `runtime.context`.
+- `runtime.py` — `AppRuntime` (cache, breakers, chaos, quota, `TriageDeps`), built by `build_runtime()`; one per app.
+- `graph/deps.py` — `TriageDeps` (the run context nodes see) and its protocols; no imports of
+  `runtime` or the graph, so nodes can import it without a cycle. `runtime.py` re-exports it.
+- `graph/llm.py` — Groq client, `MockTriageChatModel`, `build_triage_llm()`, quota tracker / 429 failover.
 - `cache/semantic_cache.py` — `SemanticCacheManager` (Redis ↔ in-memory failover). `cache/embeddings.py` — providers.
-- `resilience/` — `circuit_breaker_registry`, retry decorators. `telemetry/` — Statuspage probe, `chaos_manager`.
+- `resilience/` — `CircuitBreakerRegistry`, retry decorators. `telemetry/` — Statuspage probe, `ChaosManager`.
 - `schemas/` — `incident.py` (report contract), `state.py` (`TriageState`), `api.py`, `telemetry.py`.
 - `config.py` — single `settings` object; every tunable is a `Field(..., description=...)` with bounds.
 
@@ -41,8 +46,9 @@ Code conventions live in `CODING_STANDARDS.md`; read it before adding a module, 
 field or external call. Commits: Conventional Commits with scope (`fix(resilience): …`).
 
 ## Testing
-- `tests/conftest.py` has an autouse fixture that resets **all** singletons (breakers, chaos, quota,
-  Statuspage cache, semantic cache) and installs `MockTriageChatModel`. Any new module-level singleton must be reset there too.
+- `tests/conftest.py`'s only autouse fixture shortens retry waits. The `runtime` fixture builds a fresh `AppRuntime`
+  (mock LLM, canned Statuspage, emptied cache) per test. Stateful modules are members of `AppRuntime` (`runtime.py`).
+  Don't add module-level singletons; tests get a fresh runtime per test.
 - Use the `client` fixture (httpx `ASGITransport` + app lifespan) for API tests; never hit real Groq/Statuspage in tests.
 - `asyncio_mode = "auto"` — async tests need no marker.
 

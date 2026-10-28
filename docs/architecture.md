@@ -27,6 +27,9 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
   <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation. <a href="architecture-diagram.html">Open interactive view &rarr;</a></em>
 </p>
 
+### App runtime
+Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(settings)` and started and closed by the FastAPI lifespan. It holds every stateful module: the semantic cache, the circuit breaker registry, the chaos manager, the Groq quota tracker, and the Statuspage and Groq HTTP clients (the Statuspage summary cache lives inside its Statuspage source). Graph nodes see these only through `TriageDeps` (`graph/deps.py`), passed as LangGraph's run context (`triage_graph.ainvoke(..., context=runtime.deps)`). There are no module-level singletons; only `settings`, the FastEmbed embedder and its LRU, and the compiled `triage_graph` are process-wide. Tests build a fresh runtime per test.
+
 ---
 
 ## 3. Deep-Dive Components
@@ -142,7 +145,7 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
 ### 8. Real-Time Groq Quota Monitoring & Model Failover (v1.2.0)
 - **Problem**: Groq free tier imposes a strict 1,000 output tokens/minute limit on `qwen/qwen3.8-27b`. Bursts of incident triage requests can hit HTTP 429 mid-incident.
 - **Header Telemetry (`GroqQuotaTracker`)**:
-  - Thread-safe singleton inspects response headers (`x-ratelimit-remaining-tokens`, `x-ratelimit-limit-tokens`, `x-ratelimit-reset-tokens`, etc.).
+  - Thread-safe tracker, one per `AppRuntime` and passed to `GroqChatModel`, inspects response headers (`x-ratelimit-remaining-tokens`, `x-ratelimit-limit-tokens`, `x-ratelimit-reset-tokens`, etc.).
   - Tracks rolling metrics: total calls, 429 rate limit hits, and fallback invocations.
   - Returns strict typed snapshot [`LLMQuotaSnapshot`](schemas.md#llmquotasnapshot) via `GET /llm/quota` and embeds into `GET /health`.
 - **Secondary Model Failover**:

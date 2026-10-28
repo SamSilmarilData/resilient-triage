@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
+from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
 from resilient_triage.schemas.telemetry import ChaosConfig
 from resilient_triage.telemetry.chaos import (
     ChaosClient,
@@ -50,11 +50,11 @@ async def test_statuspage_client_parsing_and_signals():
     mock_client.get.return_value = mock_resp
 
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_statuspage_cb", fail_max=3)
+    registry.get_or_create("statuspage", fail_max=3)
 
     sp_client = StatuspageClient(
         url="https://statuspage.test/summary.json",
-        circuit_breaker=cb,
+        breaker_registry=registry,
         client=mock_client,
     )
 
@@ -86,11 +86,11 @@ async def test_statuspage_client_circuit_breaker_fallback():
     mock_client.get.return_value = mock_resp
 
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_statuspage_failing", fail_max=3)
+    cb = registry.get_or_create("statuspage", fail_max=3)
 
     sp_client = StatuspageClient(
         url="https://statuspage.test/summary.json",
-        circuit_breaker=cb,
+        breaker_registry=registry,
         client=mock_client,
     )
 
@@ -115,8 +115,8 @@ async def test_chaos_manager_and_client_trip():
     """Verify ChaosManager runtime updates and ChaosClient circuit breaker tripping."""
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_chaos_cb", fail_max=3)
-    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+    cb = registry.get_or_create("chaos", fail_max=3)
+    client = ChaosClient(manager=mgr, breaker_registry=registry)
 
     # 1. Healthy state
     mgr.update_config(ChaosConfig(active=False))
@@ -151,9 +151,6 @@ async def test_chaos_manager_and_client_trip():
 @pytest.mark.asyncio
 async def test_statuspage_client_short_ttl_cache():
     """Verify StatuspageClient short-TTL cache prevents redundant network fetches."""
-    from resilient_triage.telemetry.statuspage import clear_statuspage_cache
-
-    clear_statuspage_cache()
     payload = {
         "page": {"id": "test_page", "name": "CacheTest Status", "url": "https://status.test"},
         "status": {"indicator": "none", "description": "All Systems Operational"},
@@ -169,11 +166,11 @@ async def test_statuspage_client_short_ttl_cache():
     mock_client.get.return_value = mock_resp
 
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_statuspage_cache_cb")
+    registry.get_or_create("statuspage")
 
     sp_client = StatuspageClient(
         url="https://cache.test/summary.json",
-        circuit_breaker=cb,
+        breaker_registry=registry,
         client=mock_client,
         cache_ttl_seconds=10.0,
     )
@@ -188,7 +185,16 @@ async def test_statuspage_client_short_ttl_cache():
     assert summary2.page_name == "CacheTest Status"
     assert mock_client.get.call_count == 1
 
-    clear_statuspage_cache()
+    # A fresh source starts with an empty cache of its own and fetches again
+    fresh_client = StatuspageClient(
+        url="https://cache.test/summary.json",
+        breaker_registry=registry,
+        client=mock_client,
+        cache_ttl_seconds=10.0,
+    )
+    summary3 = await fresh_client.fetch_summary()
+    assert summary3.page_name == "CacheTest Status"
+    assert mock_client.get.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -196,8 +202,8 @@ async def test_chaos_latency_injection():
     """Verify that configuring latency_ms introduces actual artificial execution delay."""
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_chaos_latency_cb", fail_max=5)
-    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+    registry.get_or_create("chaos", fail_max=5)
+    client = ChaosClient(manager=mgr, breaker_registry=registry)
 
     mgr.update_config(ChaosConfig(active=True, latency_ms=80, inject_503=False, failure_rate=0.0))
 
@@ -215,8 +221,8 @@ async def test_chaos_failure_rate_probabilistic():
     """Verify that failure_rate = 1.0 triggers 503 fault via the probabilistic path."""
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_chaos_failure_rate_cb", fail_max=5)
-    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+    registry.get_or_create("chaos", fail_max=5)
+    client = ChaosClient(manager=mgr, breaker_registry=registry)
 
     # Injected 503 is false, but failure rate is 100%
     mgr.update_config(ChaosConfig(active=True, inject_503=False, failure_rate=1.0))
@@ -232,8 +238,8 @@ async def test_chaos_inactive_ignores_faults():
     """Verify that when active is False, faults (latency, 503, failure_rate) are not injected."""
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_chaos_inactive_cb", fail_max=5)
-    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+    registry.get_or_create("chaos", fail_max=5)
+    client = ChaosClient(manager=mgr, breaker_registry=registry)
 
     # Active is False even with latency and 503 set
     mgr.update_config(ChaosConfig(active=False, latency_ms=500, inject_503=True, failure_rate=1.0))
@@ -273,8 +279,8 @@ async def test_chaos_fetch_signals_dynamic_attribution():
     """Verify fetch_signals uses context-aware probe naming and returns authentic error symptoms."""
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
-    cb = registry.get_or_create("test_dynamic_attribution_cb", fail_max=5)
-    client = ChaosClient(manager=mgr, circuit_breaker=cb)
+    registry.get_or_create("chaos", fail_max=5)
+    client = ChaosClient(manager=mgr, breaker_registry=registry)
 
     # 1. Healthy fetch with DB hint
     signals = await client.fetch_signals(service_hint="postgres", query="Pool timeout")
@@ -293,3 +299,106 @@ async def test_chaos_fetch_signals_dynamic_attribution():
     # Ensure simulator jargon is eliminated
     assert "Injected Chaos Fault" not in (signals_err[0].raw_snippet or "")
     assert "worker pool saturated" in (signals_err[0].raw_snippet or "")
+
+
+def _summary_response(indicator: str) -> httpx.Response:
+    """Build a minimal Statuspage summary response with the given indicator."""
+    return httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://statuspage.test/summary.json"),
+        json={
+            "page": {"name": "GitHub"},
+            "status": {"indicator": indicator, "description": f"{indicator} status"},
+            "components": [],
+            "incidents": [],
+        },
+    )
+
+
+async def test_statuspage_sources_with_separate_registries_do_not_share_summaries():
+    """Two Statuspage sources in separate registries each fetch their own summary."""
+    url = "https://statuspage.test/summary.json"
+    client_a = AsyncMock(spec=httpx.AsyncClient)
+    client_a.get.return_value = _summary_response("major")
+    client_b = AsyncMock(spec=httpx.AsyncClient)
+    client_b.get.return_value = _summary_response("none")
+
+    source_a = StatuspageClient(
+        url=url,
+        client=client_a,
+        cache_ttl_seconds=60.0,
+        breaker_registry=CircuitBreakerRegistry(),
+    )
+    source_b = StatuspageClient(
+        url=url,
+        client=client_b,
+        cache_ttl_seconds=60.0,
+        breaker_registry=CircuitBreakerRegistry(),
+    )
+
+    assert (await source_a.fetch_summary()).indicator == "major"
+    assert (await source_b.fetch_summary()).indicator == "none"
+    assert (await source_a.fetch_summary()).indicator == "major"
+    assert client_a.get.call_count == 1
+    assert client_b.get.call_count == 1
+
+
+def test_telemetry_clients_register_breakers_in_the_registry_they_are_given():
+    """Chaos and Statuspage clients built with a registry take their breakers from it."""
+    registry = CircuitBreakerRegistry()
+
+    chaos = ChaosClient(manager=ChaosManager(), breaker_registry=registry)
+    statuspage = StatuspageClient(
+        client=AsyncMock(spec=httpx.AsyncClient), breaker_registry=registry
+    )
+
+    assert registry.get("chaos") is chaos.circuit_breaker
+    assert registry.get("statuspage") is statuspage.circuit_breaker
+    assert set(registry.get_all_statuses()) == {"chaos", "statuspage"}
+
+
+async def test_statuspage_sources_sharing_a_registry_still_get_their_own_cache():
+    """Two Statuspage sources sharing a breaker registry never serve each other's summary."""
+    url = "https://statuspage.test/summary.json"
+    client_a = AsyncMock(spec=httpx.AsyncClient)
+    client_a.get.return_value = _summary_response("major")
+    client_b = AsyncMock(spec=httpx.AsyncClient)
+    client_b.get.return_value = _summary_response("none")
+    registry = CircuitBreakerRegistry()
+    source_a = StatuspageClient(
+        url=url, client=client_a, cache_ttl_seconds=60.0, breaker_registry=registry
+    )
+    source_b = StatuspageClient(
+        url=url, client=client_b, cache_ttl_seconds=60.0, breaker_registry=registry
+    )
+
+    assert (await source_a.fetch_summary()).indicator == "major"
+    assert (await source_b.fetch_summary()).indicator == "none"
+    assert client_b.get.call_count == 1
+
+
+async def test_telemetry_clients_in_separate_registries_do_not_share_breakers():
+    """Clients built on separate breaker registries each get a fresh breaker, closed by default."""
+    registry_a, registry_b = CircuitBreakerRegistry(), CircuitBreakerRegistry()
+    tripped = ChaosClient(manager=ChaosManager(), breaker_registry=registry_a)
+    fresh = ChaosClient(manager=ChaosManager(), breaker_registry=registry_b)
+    source_a = StatuspageClient(
+        client=AsyncMock(spec=httpx.AsyncClient), breaker_registry=registry_a
+    )
+    source_b = StatuspageClient(
+        client=AsyncMock(spec=httpx.AsyncClient), breaker_registry=registry_b
+    )
+
+    force_open_for_tests(tripped.circuit_breaker)
+    force_open_for_tests(source_a.circuit_breaker)
+
+    assert fresh.circuit_breaker.info().is_open is False
+    assert source_b.circuit_breaker.info().is_open is False
+
+
+def test_telemetry_clients_require_the_breaker_registry_health_reports_on():
+    """Chaos and Statuspage clients refuse to build a hidden registry /health would never see."""
+    with pytest.raises(TypeError):
+        ChaosClient(manager=ChaosManager())  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        StatuspageClient(client=AsyncMock(spec=httpx.AsyncClient))  # type: ignore[call-arg]

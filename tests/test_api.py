@@ -1,17 +1,19 @@
 """End-to-end integration and resilience test suite for FastAPI gateway."""
 
 import asyncio
-import sys
+import dataclasses
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fakes import fake_statuspage_http
 
-from resilient_triage.graph.llm import groq_quota_tracker
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from resilient_triage.api.app import create_app
+from resilient_triage.config import settings
+from resilient_triage.graph.llm import MockTriageChatModel
+from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import SeverityLevel
-from resilient_triage.telemetry.chaos import ChaosClient
 
 
 @pytest.mark.asyncio
@@ -137,12 +139,12 @@ async def test_chaos_injection_and_config(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_chaos_probe_trips_circuit_breaker(client: httpx.AsyncClient):
+async def test_chaos_probe_trips_circuit_breaker(client: httpx.AsyncClient, runtime: AppRuntime):
     """Verify injected 503 causes chaos probe to trip circuit breaker into OPEN state."""
     # 1. Enable 503 chaos
     await client.post("/chaos/inject", json={"active": True, "inject_503": True})
 
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    chaos_cb = runtime.breakers.get_or_create("chaos")
     assert chaos_cb.info().is_open is False
 
     # 2. Probe until fail_max is reached and breaker trips
@@ -163,10 +165,10 @@ async def test_chaos_probe_trips_circuit_breaker(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient):
+async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient, runtime: AppRuntime):
     """Verify system degrades gracefully and delivers report when circuit breaker trips."""
     # 1. Force chaos circuit breaker to trip OPEN
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    chaos_cb = runtime.breakers.get_or_create("chaos")
 
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
@@ -191,10 +193,10 @@ async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_resilience_status_and_reset(client: httpx.AsyncClient):
+async def test_resilience_status_and_reset(client: httpx.AsyncClient, runtime: AppRuntime):
     """Verify /resilience/status diagnostics and /resilience/reset recovery."""
     # Trip chaos breaker
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    chaos_cb = runtime.breakers.get_or_create("chaos")
 
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
@@ -262,33 +264,33 @@ async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient):
+async def test_triage_llm_failure_degrades_gracefully(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
     """Verify a failed LLM call (e.g. HTTP 429, network error) still returns 200 with a fallback."""
-    with patch("resilient_triage.graph.nodes.generate_report.get_triage_llm") as mock_get_llm:
-        mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(
-            side_effect=httpx.HTTPStatusError(
-                "429 Too Many Requests: Rate limit reached",
-                request=httpx.Request("POST", "https://api.groq.com"),
-                response=httpx.Response(429),
-            )
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(
+        side_effect=httpx.HTTPStatusError(
+            "429 Too Many Requests: Rate limit reached",
+            request=httpx.Request("POST", "https://api.groq.com"),
+            response=httpx.Response(429),
         )
-        mock_get_llm.return_value = mock_llm
+    )
+    monkeypatch.setattr(runtime, "deps", dataclasses.replace(runtime.deps, llm=mock_llm))
+    resp = await client.post(
+        "/triage",
+        json={"query": "High memory pressure on payment service", "force_refresh": True},
+    )
 
-        resp = await client.post(
-            "/triage",
-            json={"query": "High memory pressure on payment service", "force_refresh": True},
-        )
-
-        assert resp.status_code == 200
-        data = resp.json()
-        report = data["report"]
-        assert report["degradation_status"] == "SEVERELY_DEGRADED"
-        assert (
-            "429" in report["root_cause_analysis"]
-            or "rate limit" in report["root_cause_analysis"].lower()
-        )
-        assert len(report["recommended_actions"]) > 0
+    assert resp.status_code == 200
+    data = resp.json()
+    report = data["report"]
+    assert report["degradation_status"] == "SEVERELY_DEGRADED"
+    assert (
+        "429" in report["root_cause_analysis"]
+        or "rate limit" in report["root_cause_analysis"].lower()
+    )
+    assert len(report["recommended_actions"]) > 0
 
 
 def _graph_without_final_report():
@@ -319,9 +321,11 @@ async def test_emergency_fallback_report_is_severely_degraded(client: httpx.Asyn
 
 
 @pytest.mark.asyncio
-async def test_emergency_fallback_report_lists_tripped_breakers(client: httpx.AsyncClient):
+async def test_emergency_fallback_report_lists_tripped_breakers(
+    client: httpx.AsyncClient, runtime: AppRuntime
+):
     """The emergency fallback report names a targeted breaker that was open."""
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    chaos_cb = runtime.breakers.get_or_create("chaos")
 
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
@@ -384,7 +388,9 @@ async def test_health_and_resilience_status_contain_llm_quota(client: httpx.Asyn
 
 
 @pytest.mark.asyncio
-async def test_resilience_reset_clears_llm_quota_counters(client: httpx.AsyncClient):
+async def test_resilience_reset_clears_llm_quota_counters(
+    client: httpx.AsyncClient, runtime: AppRuntime
+):
     """Verify POST /resilience/reset resets LLM quota tracker metrics."""
     # Simulate some tracked calls
     mock_resp = httpx.Response(
@@ -395,8 +401,8 @@ async def test_resilience_reset_clears_llm_quota_counters(client: httpx.AsyncCli
         },
         request=httpx.Request("POST", "https://api.groq.com"),
     )
-    groq_quota_tracker.record_response(mock_resp, model_name="qwen/qwen3.8-27b")
-    snap_before = groq_quota_tracker.get_snapshot()
+    runtime.quota.record_response(mock_resp, model_name="qwen/qwen3.8-27b")
+    snap_before = runtime.quota.get_snapshot()
     assert snap_before.total_calls == 1
     assert snap_before.rate_limit_hits == 1
 
@@ -404,7 +410,7 @@ async def test_resilience_reset_clears_llm_quota_counters(client: httpx.AsyncCli
     reset_resp = await client.post("/resilience/reset")
     assert reset_resp.status_code == 200
 
-    snap_after = groq_quota_tracker.get_snapshot()
+    snap_after = runtime.quota.get_snapshot()
     assert snap_after.total_calls == 0
     assert snap_after.rate_limit_hits == 0
     assert snap_after.failover_events == 0
@@ -445,13 +451,15 @@ async def test_chaos_probe_failure_rate_via_api(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_triage_internal_scope_only_targets_chaos(client: httpx.AsyncClient):
+async def test_triage_internal_scope_only_targets_chaos(
+    client: httpx.AsyncClient, runtime: AppRuntime
+):
     """Verify service_filter='internal' targets only chaos telemetry, not external Statuspage."""
     with (
         patch("resilient_triage.telemetry.statuspage.StatuspageClient.fetch_signals") as mock_sp,
         patch(
             "resilient_triage.telemetry.chaos.ChaosClient.fetch_signals",
-            wraps=ChaosClient().fetch_signals,
+            wraps=runtime.deps.telemetry.chaos.fetch_signals,
         ) as mock_chaos,
     ):
         resp = await client.post(
@@ -499,13 +507,13 @@ async def test_prometheus_metrics_endpoint(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_concurrency_semaphore_shedding(client: httpx.AsyncClient, monkeypatch):
+async def test_concurrency_semaphore_shedding(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
     """Verify that semaphore exhaustion triggers 503 load shedding."""
     # Temporarily set semaphore to 0 to simulate full saturation
     saturated_sem = asyncio.Semaphore(0)
-    # api/__init__.py exposes `app`, shadowing the submodule; reach module globals via sys.modules
-    app_module = sys.modules["resilient_triage.api.app"]
-    monkeypatch.setattr(app_module, "GRAPH_SEMAPHORE", saturated_sem)
+    monkeypatch.setattr(runtime, "graph_semaphore", saturated_sem)
 
     # Patch wait_for timeout to 0.02s for fast test execution
     orig_wait_for = asyncio.wait_for
@@ -591,22 +599,79 @@ async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lifespan_closes_telemetry_and_llm_clients():
-    """Verify close_statuspage_client and close_groq_async_client execute safely without error."""
-    from resilient_triage.graph.llm import close_groq_async_client, get_groq_async_client
-    from resilient_triage.telemetry.statuspage import (
-        _get_statuspage_client,
-        close_statuspage_client,
+async def test_lifespan_closes_telemetry_and_llm_clients(monkeypatch):
+    """Verify the app lifespan starts its runtime and closes the Statuspage and Groq clients."""
+    groq_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    monkeypatch.setattr("resilient_triage.runtime.new_groq_http_client", lambda: groq_http)
+    statuspage_http = fake_statuspage_http()
+    rt = build_runtime(
+        settings.model_copy(update={"groq_api_key": "test-key"}), statuspage_http=statuspage_http
     )
+    app = create_app(lambda: rt)
 
-    # Instantiate clients
-    c1 = _get_statuspage_client()
-    assert not c1.is_closed
-    c2 = get_groq_async_client()
-    assert not c2.is_closed
+    async with app.router.lifespan_context(app):
+        # Clients open while the app serves
+        assert not statuspage_http.is_closed
+        assert not groq_http.is_closed
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            health = (await ac.get("/health")).json()
+        assert set(health["circuits"]) == {"statuspage", "chaos"}
 
     # Teardown
-    await close_statuspage_client()
-    assert c1.is_closed
-    await close_groq_async_client()
-    assert c2.is_closed
+    assert statuspage_http.is_closed
+    assert groq_http.is_closed
+
+
+@pytest.mark.asyncio
+async def test_status_routes_ping_the_cache_exactly_once(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
+    """Verify /health, /resilience/status and /metrics each ping Redis exactly once."""
+    pings: list[str] = []
+    real_check = runtime.cache.check_connection
+
+    async def counting_check() -> bool:
+        pings.append("ping")
+        return await real_check()
+
+    monkeypatch.setattr(runtime.cache, "check_connection", counting_check)
+
+    for route in ("/health", "/resilience/status", "/metrics"):
+        pings.clear()
+        resp = await client.get(route)
+        assert resp.status_code == 200
+        assert len(pings) == 1, route
+
+
+@pytest.mark.asyncio
+async def test_two_apps_keep_separate_breakers_and_request_metrics(
+    client: httpx.AsyncClient, runtime: AppRuntime
+):
+    """Verify a second app instance has its own runtime: breakers and counters don't leak."""
+    other_rt = build_runtime(
+        settings, llm_adapter=MockTriageChatModel(), statuspage_http=fake_statuspage_http()
+    )
+    other_app = create_app(lambda: other_rt)
+    async with other_app.router.lifespan_context(other_app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=other_app), base_url="http://testserver"
+        ) as other:
+            await client.post("/chaos/inject", json={"active": True, "inject_503": True})
+            for _ in range(runtime.breakers.get_or_create("chaos").info().fail_max):
+                await client.get("/chaos/probe")
+            await client.post(
+                "/triage", json={"query": "Payments API returning 503", "force_refresh": True}
+            )
+
+            assert (await client.get("/health")).json()["status"] == "degraded"
+            assert (await other.get("/health")).json()["status"] == "healthy"
+            assert (
+                'resilient_triage_requests_total{cache="miss"} 1'
+                in (await client.get("/metrics")).text
+            )
+            assert (
+                'resilient_triage_requests_total{cache="miss"} 0'
+                in (await other.get("/metrics")).text
+            )

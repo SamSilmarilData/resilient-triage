@@ -2,12 +2,16 @@
 
 from typing import Any
 
-from resilient_triage.cache.semantic_cache import semantic_cache
+from langgraph.runtime import Runtime
+
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
 
 
-async def compensate_blindspots_node(state: TriageState) -> dict[str, Any]:
+async def compensate_blindspots_node(
+    state: TriageState, runtime: Runtime[TriageDeps]
+) -> dict[str, Any]:
     """Query semantic cache to bridge blind spots left by offline or tripped telemetry sources."""
     query = state.get("query", "")
     service_filter = state.get("service_filter")
@@ -15,7 +19,9 @@ async def compensate_blindspots_node(state: TriageState) -> dict[str, Any]:
     historical_context: list[str] = []
 
     # Look up related historical incidents (lower similarity threshold 0.70 for breadth)
-    match = await semantic_cache.lookup(query=query, service_filter=service_filter, threshold=0.70)
+    match = await runtime.context.history.lookup(
+        query=query, service_filter=service_filter, threshold=0.70
+    )
     if match:
         snippet = (
             f"Previous incident on '{match.matched_query}': Root cause: "

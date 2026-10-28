@@ -7,25 +7,19 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from langchain_core.runnables import RunnableConfig
 
 from resilient_triage import __version__
-from resilient_triage.cache.semantic_cache import semantic_cache
 from resilient_triage.config import settings
 from resilient_triage.graph.builder import triage_graph
-from resilient_triage.graph.llm import (
-    close_groq_async_client,
-    get_active_model_name,
-    groq_quota_tracker,
-)
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
     CircuitSnapshot,
@@ -37,10 +31,14 @@ from resilient_triage.schemas.api import (
 )
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
-from resilient_triage.telemetry.chaos import ChaosClient, chaos_manager
-from resilient_triage.telemetry.statuspage import close_statuspage_client
 
 logger = logging.getLogger(__name__)
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+RuntimeFactory = Callable[[], AppRuntime]
+
+router = APIRouter()
 
 
 async def verify_admin_key(
@@ -55,85 +53,14 @@ async def verify_admin_key(
             )
 
 
-# Concurrency boundary: max 10 concurrent graph executions to prevent stampedes
-GRAPH_SEMAPHORE = asyncio.Semaphore(10)
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-
-# Prometheus metrics tracking counters
-_metrics: dict[str, int] = {
-    "requests_hit": 0,
-    "requests_miss": 0,
-    "requests_saturated": 0,
-}
+def get_runtime(request: Request) -> AppRuntime:
+    """Return the runtime owned by the app serving this request."""
+    return cast(AppRuntime, request.app.state.runtime)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage application startup, cache pre-warming, and graceful shutdown."""
-    logger.info("Initializing semantic cache and warming up embedding models...")
-    await semantic_cache.initialize()
-    try:
-        # Pre-warm embedding weights and 3 quick presets so the first demo requests are instant
-        presets = [
-            "warmup telemetry query",
-            "Internal API gateway service failing with 503 outage and elevated probe latency",
-            (
-                "[scope: internal] Internal API gateway service failing with 503 outage and "
-                "elevated probe latency"
-            ),
-            "Internal payment processing failing with 503 service unavailable",
-            "[scope: internal] Internal payment processing failing with 503 service unavailable",
-            "GitHub Actions workflows are failing with 503 and high webhook latency",
-            (
-                "[scope: actions] GitHub Actions workflows are failing with 503 and high webhook "
-                "latency"
-            ),
-            "GitHub Actions workflows failing with 503 service unavailable",
-            "GitHub Actions jobs are failing with 503 service unavailable errors",
-            "Stripe webhook ingestion failing with 504 gateway timeout",
-            "[scope: billing] Stripe webhook ingestion failing with 504 gateway timeout",
-            "PostgreSQL primary connection pool exhausted under spike",
-            "[scope: database] PostgreSQL primary connection pool exhausted under spike",
-        ]
-        for p in presets:
-            semantic_cache.embedding_provider.embed_query(p)
-        logger.info("Pre-warmed %d incident presets in embedding LRU cache.", len(presets))
-    except Exception as exc:
-        logger.warning("Embedding pre-warmup warning: %s", exc)
-
-    # Ensure default circuit breakers are registered
-    circuit_breaker_registry.get_or_create("statuspage")
-    circuit_breaker_registry.get_or_create("chaos")
-
-    logger.info("Resilient Triage Gateway online and ready for traffic.")
-    yield
-
-    logger.info("Shutting down Resilient Triage Gateway...")
-    await semantic_cache.close()
-    await close_statuspage_client()
-    await close_groq_async_client()
+RuntimeDep = Annotated[AppRuntime, Depends(get_runtime)]
 
 
-app = FastAPI(
-    title="Resilient Incident Triage Gateway",
-    description=(
-        "High-availability LangGraph incident triage state machine with Redis semantic caching "
-        "and circuit breaker telemetry."
-    ),
-    version=__version__,
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.middleware("http")
 async def process_time_and_correlation_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
@@ -165,7 +92,6 @@ async def process_time_and_correlation_middleware(
     return response
 
 
-@app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Sanitize unexpected exceptions into structured JSON without leaking tracebacks."""
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
@@ -182,8 +108,12 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-@app.post("/triage", response_model=TriageResponse)
-async def triage_incident(payload: TriageRequest, request: Request) -> JSONResponse:
+@router.post("/triage", response_model=TriageResponse)
+async def triage_incident(
+    payload: TriageRequest,
+    request: Request,
+    runtime: RuntimeDep,
+) -> JSONResponse:
     """Triage an incident through semantic cache (<20ms) or LangGraph state machine.
 
     Headers returned:
@@ -196,12 +126,12 @@ async def triage_incident(payload: TriageRequest, request: Request) -> JSONRespo
 
     # 1. Check Semantic Cache (<20ms fast path)
     if not payload.force_refresh:
-        match = await semantic_cache.lookup(
+        match = await runtime.cache.lookup(
             query=payload.query,
             service_filter=payload.service_filter,
         )
         if match:
-            _metrics["requests_hit"] += 1
+            runtime.requests.answered_from_cache += 1
             elapsed_ms = (time.monotonic() - start_req) * 1000.0
             response_data = TriageResponse(
                 report=match.report,
@@ -220,10 +150,10 @@ async def triage_incident(payload: TriageRequest, request: Request) -> JSONRespo
 
     # 2. Cache MISS: Acquire concurrency semaphore with 5.0s load-shedding boundary
     try:
-        await asyncio.wait_for(GRAPH_SEMAPHORE.acquire(), timeout=5.0)
+        await asyncio.wait_for(runtime.graph_semaphore.acquire(), timeout=5.0)
     except TimeoutError:
-        _metrics["requests_saturated"] += 1
-        logger.warning("Graph concurrency semaphore saturated (limit 10). Shedding load.")
+        runtime.requests.shed += 1
+        logger.warning("No run slot freed up in time; shed request.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
@@ -233,19 +163,20 @@ async def triage_incident(payload: TriageRequest, request: Request) -> JSONRespo
         ) from None
 
     try:
-        initial_state = {
+        initial_state: TriageState = {
             "query": payload.query,
-            "incident_query": payload.query,
             "service_filter": payload.service_filter,
         }
         # Isolate per-execution thread to prevent previous query errors from contaminating state
         execution_thread_id = f"{thread_id}_{uuid.uuid4().hex[:8]}"
         config: RunnableConfig = {"configurable": {"thread_id": execution_thread_id}}
-        state_result = await triage_graph.ainvoke(initial_state, config=config)
+        state_result = await triage_graph.ainvoke(
+            initial_state, config=config, context=runtime.deps
+        )
     finally:
-        GRAPH_SEMAPHORE.release()
+        runtime.graph_semaphore.release()
 
-    _metrics["requests_miss"] += 1
+    runtime.requests.answered_by_run += 1
 
     final_report = state_result.get("final_report")
     if not final_report:
@@ -265,7 +196,7 @@ async def triage_incident(payload: TriageRequest, request: Request) -> JSONRespo
             DegradationEvidence.from_state(cast(TriageState, fallback_input)),
         )
         # Persist emergency fallback report to semantic cache
-        await semantic_cache.store(
+        await runtime.cache.store(
             query=payload.query,
             report=final_report,
             service_filter=payload.service_filter,
@@ -287,39 +218,45 @@ async def triage_incident(payload: TriageRequest, request: Request) -> JSONRespo
     )
 
 
-@app.post("/chaos/inject", response_model=ChaosConfig, dependencies=[Depends(verify_admin_key)])
-async def inject_chaos(payload: ChaosTriggerRequest) -> ChaosConfig:
+@router.post("/chaos/inject", response_model=ChaosConfig, dependencies=[Depends(verify_admin_key)])
+async def inject_chaos(payload: ChaosTriggerRequest, runtime: RuntimeDep) -> ChaosConfig:
     """Dynamically update runtime chaos injection parameters.
 
     Args:
         payload: New ChaosTriggerRequest parameters (latency, 503 injection, failure rate).
+        runtime: The app's runtime, whose chaos manager is updated.
 
     Returns:
         ChaosConfig: Updated active configuration snapshot.
     """
-    return chaos_manager.update_config(payload)
+    return runtime.chaos.update_config(payload)
 
 
-@app.get("/chaos/config", response_model=ChaosConfig)
-async def get_chaos_config() -> ChaosConfig:
+@router.get("/chaos/config", response_model=ChaosConfig)
+async def get_chaos_config(runtime: RuntimeDep) -> ChaosConfig:
     """Retrieve active runtime chaos configuration.
+
+    Args:
+        runtime: The app's runtime, whose chaos manager is read.
 
     Returns:
         ChaosConfig: Current chaos settings including latency, error toggles, and status.
     """
-    return chaos_manager.get_config()
+    return runtime.chaos.get_config()
 
 
-@app.get("/chaos/probe", response_model=ChaosTelemetryResponse)
-async def probe_chaos() -> ChaosTelemetryResponse:
+@router.get("/chaos/probe", response_model=ChaosTelemetryResponse)
+async def probe_chaos(runtime: RuntimeDep) -> ChaosTelemetryResponse:
     """Execute live diagnostic probe through Tenacity retries and circuit breaker.
+
+    Args:
+        runtime: The app's runtime, which probes Cluster Sentinel.
 
     Returns:
         ChaosTelemetryResponse: Diagnostic outcome from the internal chaos service.
     """
-    client = ChaosClient()
     try:
-        return await client.probe()
+        return await runtime.probe_cluster_sentinel()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=exc.response.status_code,
@@ -332,7 +269,7 @@ async def probe_chaos() -> ChaosTelemetryResponse:
         ) from exc
 
 
-@app.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 async def get_sre_console() -> HTMLResponse:
     """Serve the interactive SRE Incident Command Center demo UI.
 
@@ -347,39 +284,44 @@ async def get_sre_console() -> HTMLResponse:
     return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
 
 
-@app.get("/health", response_model=HealthResponse)
-async def get_health() -> HealthResponse:
+@router.get("/health", response_model=HealthResponse)
+async def get_health(runtime: RuntimeDep) -> HealthResponse:
     """Health check endpoint indicating service availability and breaker status.
+
+    Args:
+        runtime: The app's runtime, snapshotted once (one Redis ping).
 
     Returns:
         HealthResponse: Status indicator, Redis connection state, active driver, and LLM quota.
     """
-    statuses = circuit_breaker_registry.get_all_statuses()
-    circuit_states = {name: info.state for name, info in statuses.items()}
-    any_open = any(info.is_open for info in statuses.values())
-    is_redis_online = await semantic_cache.check_connection()
+    snapshot = await runtime.snapshot()
+    any_open = any(info.is_open for info in snapshot.breakers.values())
 
     return HealthResponse(
         status="degraded" if any_open else "healthy",
         version=__version__,
-        redis_connected=is_redis_online,
-        cache_driver=semantic_cache.driver,
-        circuits=circuit_states,
-        active_model=get_active_model_name(),
-        llm_quota=groq_quota_tracker.get_snapshot(),
+        redis_connected=snapshot.cache_connected,
+        cache_driver=snapshot.cache_driver,
+        circuits={name: info.state for name, info in snapshot.breakers.items()},
+        active_model=snapshot.active_model,
+        llm_quota=snapshot.llm_quota,
     )
 
 
-@app.get("/resilience/status", response_model=ResilienceStatusResponse)
-async def get_resilience_status() -> ResilienceStatusResponse:
+@router.get("/resilience/status", response_model=ResilienceStatusResponse)
+async def get_resilience_status(
+    runtime: RuntimeDep,
+) -> ResilienceStatusResponse:
     """Detailed resilience diagnostic report for circuit breakers, chaos, and cache.
+
+    Args:
+        runtime: The app's runtime, snapshotted once (one Redis ping).
 
     Returns:
         ResilienceStatusResponse: Diagnostics on circuit breakers, cache, and LLM quotas.
     """
-    await semantic_cache.check_connection()
-    statuses = circuit_breaker_registry.get_all_statuses()
-    snapshots = {
+    snapshot = await runtime.snapshot()
+    circuits = {
         name: CircuitSnapshot(
             name=info.name,
             state=info.state,
@@ -390,65 +332,76 @@ async def get_resilience_status() -> ResilienceStatusResponse:
             last_state_change=info.last_state_change,
             last_failure_reason=info.last_failure_reason,
         )
-        for name, info in statuses.items()
+        for name, info in snapshot.breakers.items()
     }
     return ResilienceStatusResponse(
-        circuits=snapshots,
-        chaos_active=chaos_manager.get_config().active,
-        cache_driver=semantic_cache.driver,
-        cache_entries_count=semantic_cache.count,
-        active_model=get_active_model_name(),
-        llm_quota=groq_quota_tracker.get_snapshot(),
+        circuits=circuits,
+        chaos_active=snapshot.chaos_active,
+        cache_driver=snapshot.cache_driver,
+        cache_entries_count=snapshot.cache_entries,
+        active_model=snapshot.active_model,
+        llm_quota=snapshot.llm_quota,
     )
 
 
-@app.get("/llm/quota", response_model=LLMQuotaSnapshot)
-async def get_llm_quota() -> LLMQuotaSnapshot:
+@router.get("/llm/quota", response_model=LLMQuotaSnapshot)
+async def get_llm_quota(runtime: RuntimeDep) -> LLMQuotaSnapshot:
     """Retrieve real-time rate limit headers, token budgets, and failover metrics for LLM providers.
+
+    Args:
+        runtime: The app's runtime, whose quota tracker is read.
 
     Returns:
         LLMQuotaSnapshot: Token budgets, rate limits, and fallback statistics.
     """
-    return groq_quota_tracker.get_snapshot()
+    return runtime.quota.get_snapshot()
 
 
-@app.post("/resilience/reset", response_model=None, dependencies=[Depends(verify_admin_key)])
-async def reset_resilience() -> dict[str, Any]:
+@router.post("/resilience/reset", response_model=None, dependencies=[Depends(verify_admin_key)])
+async def reset_resilience(runtime: RuntimeDep) -> dict[str, Any]:
     """Reset all circuit breakers to closed, and reset chaos configuration and LLM quota counters.
+
+    Args:
+        runtime: The app's runtime, whose breakers, chaos manager and quota tracker are reset.
 
     Returns:
         dict[str, str]: Operation confirmation status dictionary.
     """
-    circuit_breaker_registry.reset_all()
-    chaos_manager.reset()
-    groq_quota_tracker.reset_counters()
+    runtime.breakers.reset_all()
+    runtime.chaos.reset()
+    runtime.quota.reset_counters()
     return {
         "status": "ok",
         "message": "Circuit breakers, chaos state, and LLM counters successfully reset",
     }
 
 
-@app.post("/cache/clear", response_model=None, dependencies=[Depends(verify_admin_key)])
-async def clear_cache() -> dict[str, str]:
+@router.post("/cache/clear", response_model=None, dependencies=[Depends(verify_admin_key)])
+async def clear_cache(runtime: RuntimeDep) -> dict[str, str]:
     """Flush all semantic cache entries.
+
+    Args:
+        runtime: The app's runtime, whose semantic cache is cleared.
 
     Returns:
         dict[str, str]: Operation confirmation status dictionary.
     """
-    await semantic_cache.clear()
+    await runtime.cache.clear()
     return {"status": "ok", "message": "Semantic cache successfully cleared"}
 
 
-@app.get("/metrics", response_class=PlainTextResponse)
-async def get_metrics() -> PlainTextResponse:
+@router.get("/metrics", response_class=PlainTextResponse)
+async def get_metrics(runtime: RuntimeDep) -> PlainTextResponse:
     """Prometheus text exposition format endpoint for scraping operational metrics."""
-    statuses = circuit_breaker_registry.get_all_statuses()
+    snapshot = await runtime.snapshot()
+    statuses = snapshot.breakers
+    counts = runtime.requests
     lines = [
         "# HELP resilient_triage_requests_total Total incident triage requests handled by gateway",
         "# TYPE resilient_triage_requests_total counter",
-        f'resilient_triage_requests_total{{cache="hit"}} {_metrics["requests_hit"]}',
-        f'resilient_triage_requests_total{{cache="miss"}} {_metrics["requests_miss"]}',
-        f'resilient_triage_requests_total{{cache="saturated"}} {_metrics["requests_saturated"]}',
+        f'resilient_triage_requests_total{{cache="hit"}} {counts.answered_from_cache}',
+        f'resilient_triage_requests_total{{cache="miss"}} {counts.answered_by_run}',
+        f'resilient_triage_requests_total{{cache="saturated"}} {counts.shed}',
         "",
         (
             "# HELP resilient_triage_circuit_breaker_state Active circuit breaker state (1 if "
@@ -488,8 +441,8 @@ async def get_metrics() -> PlainTextResponse:
             ),
             "# TYPE resilient_triage_cache_entries gauge",
             (
-                f'resilient_triage_cache_entries{{driver="{semantic_cache.driver}"}} '
-                f"{semantic_cache.count}"
+                f'resilient_triage_cache_entries{{driver="{snapshot.cache_driver}"}} '
+                f"{snapshot.cache_entries}"
             ),
             "",
             (
@@ -497,16 +450,62 @@ async def get_metrics() -> PlainTextResponse:
                 "events encountered"
             ),
             "# TYPE resilient_triage_llm_rate_limit_hits_total counter",
-            f"resilient_triage_llm_rate_limit_hits_total {groq_quota_tracker.rate_limit_hits}",
+            f"resilient_triage_llm_rate_limit_hits_total {snapshot.llm_quota.rate_limit_hits}",
             "",
             (
                 "# HELP resilient_triage_llm_failovers_total Total fallback model invocations "
                 "triggered"
             ),
             "# TYPE resilient_triage_llm_failovers_total counter",
-            f"resilient_triage_llm_failovers_total {groq_quota_tracker.failover_events}",
+            f"resilient_triage_llm_failovers_total {snapshot.llm_quota.failover_events}",
             "",
         ]
     )
 
     return PlainTextResponse(content="\n".join(lines) + "\n")
+
+
+def _default_runtime() -> AppRuntime:
+    """Build the production runtime from the process settings."""
+    return build_runtime(settings)
+
+
+def create_app(runtime_factory: RuntimeFactory = _default_runtime) -> FastAPI:
+    """Build the gateway app; its lifespan starts one runtime from the factory and closes it."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        logger.info("Initializing semantic cache and warming up embedding models...")
+        runtime = runtime_factory()
+        await runtime.start()
+        app.state.runtime = runtime
+        logger.info("Resilient Triage Gateway online and ready for traffic.")
+        try:
+            yield
+        finally:
+            logger.info("Shutting down Resilient Triage Gateway...")
+            await runtime.aclose()
+
+    app = FastAPI(
+        title="Resilient Incident Triage Gateway",
+        description=(
+            "High-availability LangGraph incident triage state machine with Redis semantic "
+            "caching and circuit breaker telemetry."
+        ),
+        version=__version__,
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.middleware("http")(process_time_and_correlation_middleware)
+    app.add_exception_handler(Exception, global_exception_handler)
+    app.include_router(router)
+    return app
+
+
+app = create_app()
