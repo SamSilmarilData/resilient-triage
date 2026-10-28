@@ -156,3 +156,29 @@ async def test_snapshot_reports_chaos_cache_entries_and_injected_model(make_runt
     assert (after.chaos_active, after.cache_entries) == (True, 1)
     assert after.active_model == "Test Override (mock-triage-llm)"
     assert after.llm_quota.provider == "groq"
+
+
+async def test_aclose_closes_owned_http_clients_and_cache_and_is_idempotent(
+    make_runtime, monkeypatch
+):
+    opened: list[httpx.AsyncClient] = []
+
+    def tracked_client() -> httpx.AsyncClient:
+        client = httpx.AsyncClient()
+        opened.append(client)
+        return client
+
+    monkeypatch.setattr("resilient_triage.runtime.new_groq_http_client", tracked_client)
+    monkeypatch.setattr("resilient_triage.runtime.new_statuspage_http_client", tracked_client)
+    # The configured Redis URL: when Redis is up, start() really connects and aclose() must drop it.
+    runtime = make_runtime(
+        _settings(redis_url=settings.redis_url, groq_api_key="test-key"), llm_adapter=None
+    )
+    await runtime.start()
+
+    await runtime.aclose()
+    await runtime.aclose()
+
+    assert len(opened) == 2
+    assert all(client.is_closed for client in opened)
+    assert runtime.cache.is_redis_connected is False
