@@ -100,6 +100,13 @@ class AsyncCircuitBreaker:
     pybreaker's state machine, listeners, thread-safety, and storage options.
     Callers see only `call`, `name`, `state`, `info()` and `reset()`, and catch
     `BreakerOpen` when the breaker refuses a call.
+
+    `call` raises `BreakerOpen` when the breaker is open and its reset timeout has not
+    elapsed, when it is half-open and another call is already the trial, or when this call's
+    failure trips it open (chained from the original error). Any other `Exception` from the
+    guarded function counts as a failure and propagates. A non-`Exception` `BaseException`
+    (e.g. `CancelledError`) propagates and records nothing. In half-open only the current
+    trial's outcome is recorded; see docs/resilience.md.
     """
 
     def __init__(
@@ -135,24 +142,7 @@ class AsyncCircuitBreaker:
         )
 
     async def call(self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
-        """Execute async function guarded by circuit breaker rules.
-
-        Args:
-            func: Asynchronous callable to guard.
-            *args: Positional arguments forwarded to func.
-            **kwargs: Keyword arguments forwarded to func.
-
-        Returns:
-            T: Value returned by func.
-
-        Raises:
-            BreakerOpen: If the breaker is open and its reset timeout has not elapsed, if
-                it is half-open and another call is already the trial, or if this call's
-                failure trips the breaker open.
-            Exception: Any other exception raised by func; it counts as a failure.
-            BaseException: A non-Exception error (e.g. CancelledError) raised by func;
-                it propagates and the breaker records neither success nor failure.
-        """
+        """Await `func(*args, **kwargs)` under the breaker rules (see class docstring)."""
         # 1. Check state before execution; in half-open, claim the single trial slot or refuse.
         trial: object | None = None
         with self._breaker._lock:
