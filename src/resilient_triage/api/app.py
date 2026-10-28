@@ -26,6 +26,7 @@ from resilient_triage.graph.llm import (
 )
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from resilient_triage.runtime import WARMUP_QUERIES
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
     CircuitSnapshot,
@@ -73,31 +74,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Initializing semantic cache and warming up embedding models...")
     await semantic_cache.initialize()
     try:
-        # Pre-warm embedding weights and 3 quick presets so the first demo requests are instant
-        presets = [
-            "warmup telemetry query",
-            "Internal API gateway service failing with 503 outage and elevated probe latency",
-            (
-                "[scope: internal] Internal API gateway service failing with 503 outage and "
-                "elevated probe latency"
-            ),
-            "Internal payment processing failing with 503 service unavailable",
-            "[scope: internal] Internal payment processing failing with 503 service unavailable",
-            "GitHub Actions workflows are failing with 503 and high webhook latency",
-            (
-                "[scope: actions] GitHub Actions workflows are failing with 503 and high webhook "
-                "latency"
-            ),
-            "GitHub Actions workflows failing with 503 service unavailable",
-            "GitHub Actions jobs are failing with 503 service unavailable errors",
-            "Stripe webhook ingestion failing with 504 gateway timeout",
-            "[scope: billing] Stripe webhook ingestion failing with 504 gateway timeout",
-            "PostgreSQL primary connection pool exhausted under spike",
-            "[scope: database] PostgreSQL primary connection pool exhausted under spike",
-        ]
-        for p in presets:
+        # Pre-warm embedding weights and quick presets so the first demo requests are instant
+        for p in WARMUP_QUERIES:
             semantic_cache.embedding_provider.embed_query(p)
-        logger.info("Pre-warmed %d incident presets in embedding LRU cache.", len(presets))
+        logger.info("Pre-warmed %d incident presets in embedding LRU cache.", len(WARMUP_QUERIES))
     except Exception as exc:
         logger.warning("Embedding pre-warmup warning: %s", exc)
 

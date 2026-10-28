@@ -23,6 +23,26 @@ from resilient_triage.telemetry.statuspage import (
 
 logger = logging.getLogger(__name__)
 
+# Embedded at start() so the first demo requests hit a warm model and embedding LRU.
+WARMUP_QUERIES: tuple[str, ...] = (
+    "warmup telemetry query",
+    "Internal API gateway service failing with 503 outage and elevated probe latency",
+    (
+        "[scope: internal] Internal API gateway service failing with 503 outage and "
+        "elevated probe latency"
+    ),
+    "Internal payment processing failing with 503 service unavailable",
+    "[scope: internal] Internal payment processing failing with 503 service unavailable",
+    "GitHub Actions workflows are failing with 503 and high webhook latency",
+    "[scope: actions] GitHub Actions workflows are failing with 503 and high webhook latency",
+    "GitHub Actions workflows failing with 503 service unavailable",
+    "GitHub Actions jobs are failing with 503 service unavailable errors",
+    "Stripe webhook ingestion failing with 504 gateway timeout",
+    "[scope: billing] Stripe webhook ingestion failing with 504 gateway timeout",
+    "PostgreSQL primary connection pool exhausted under spike",
+    "[scope: database] PostgreSQL primary connection pool exhausted under spike",
+)
+
 
 class CacheReader(Protocol):
     """Read-only view of the semantic cache: the only cache access a graph node gets."""
@@ -100,6 +120,14 @@ class AppRuntime:
             await self.cache.initialize()
         except Exception as exc:
             logger.warning("Semantic cache initialization failed: %s", exc)
+        try:
+            for query in WARMUP_QUERIES:
+                self.cache.embedding_provider.embed_query(query)
+            logger.info(
+                "Pre-warmed %d incident presets in embedding LRU cache.", len(WARMUP_QUERIES)
+            )
+        except Exception as exc:
+            logger.warning("Embedding pre-warmup warning: %s", exc)
         self.breakers.get_or_create("statuspage")
         self.breakers.get_or_create("chaos")
 
