@@ -14,7 +14,7 @@ jobs:
 
     services:
       redis:
-        image: redis/redis-stack-server:latest
+        image: redis/redis-stack-server:7.4.0-v8
         ports:
           - 6379:6379
         options: >-
@@ -81,6 +81,22 @@ jobs:
       - name: Verify Container Boot & Health
         run: |
           docker run -d --name test-app -p 8000:8000 resilient-triage:ci
-          sleep 4
-          curl --fail http://localhost:8000/health || (docker logs test-app && exit 1)
-          docker stop test-app
+          # Startup downloads the embedding model, so poll /health instead of a fixed sleep.
+          deadline=$((SECONDS + 120))
+          until curl --fail --silent --show-error --max-time 5 http://localhost:8000/health; do
+            if [ "$(docker inspect -f '{{.State.Running}}' test-app)" != "true" ]; then
+              echo "::error::Container exited before becoming healthy"
+              docker logs test-app
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::/health not ready within 120s"
+              docker logs test-app
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Clean Up Container
+        if: always()
+        run: docker rm -f test-app || true
