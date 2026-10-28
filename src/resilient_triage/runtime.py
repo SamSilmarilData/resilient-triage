@@ -17,6 +17,7 @@ from resilient_triage.graph.llm import GroqQuotaTracker, build_triage_llm, new_g
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
 from resilient_triage.schemas.api import LLMQuotaSnapshot
 from resilient_triage.schemas.incident import IncidentTriageReport
+from resilient_triage.schemas.telemetry import ChaosTelemetryResponse
 from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
 from resilient_triage.telemetry.statuspage import (
     SUMMARY_CACHE_TTL_SECONDS,
@@ -70,7 +71,7 @@ class CacheWriter(Protocol):
 
 @dataclass(frozen=True)
 class TelemetrySources:
-    """Today's telemetry clients, bound to one runtime's chaos manager and breakers."""
+    """Today's telemetry sources, bound to one runtime's chaos manager and breakers."""
 
     statuspage: StatuspageClient
     chaos: ChaosClient
@@ -102,11 +103,11 @@ class ResilienceSnapshot:
 
 @dataclass
 class RequestCounters:
-    """Triage request outcomes for one app, exported on /metrics."""
+    """Triage outcomes for one app, exported on /metrics as cache=hit/miss/saturated."""
 
-    hit: int = 0
-    miss: int = 0
-    saturated: int = 0
+    answered_from_cache: int = 0
+    answered_by_run: int = 0
+    shed: int = 0
 
 
 class AppRuntime:
@@ -153,6 +154,10 @@ class AppRuntime:
             _guarded(
                 f"Registering the {name} breaker", partial(self.breakers.get_or_create, name), None
             )
+
+    async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:
+        """Probe Cluster Sentinel through this runtime's retries and breaker; raises on failure."""
+        return await self.deps.telemetry.chaos.probe()
 
     async def aclose(self) -> None:
         """Close every client this runtime owns."""
