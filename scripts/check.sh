@@ -3,8 +3,8 @@
 # Extra arguments go to pytest, e.g. `./scripts/check.sh tests/test_api.py`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-bin=""
-[[ -x .venv/bin/python ]] && bin=".venv/bin/"
+# shellcheck source=scripts/venv-bin.sh
+source scripts/venv-bin.sh
 
 "${bin}ruff" check .
 "${bin}ruff" format --check .
