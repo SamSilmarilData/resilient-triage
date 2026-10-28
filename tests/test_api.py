@@ -291,6 +291,62 @@ async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient)
         assert len(report["recommended_actions"]) > 0
 
 
+def _graph_without_final_report():
+    """Return a patch making the triage graph run but yield no final_report."""
+    from resilient_triage.graph.builder import triage_graph
+
+    async def _ainvoke(*args, **kwargs):
+        state = await triage_graph.ainvoke(*args, **kwargs)
+        return {k: v for k, v in state.items() if k != "final_report"}
+
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(side_effect=_ainvoke)
+    return patch("resilient_triage.api.app.triage_graph", graph)
+
+
+@pytest.mark.asyncio
+async def test_emergency_fallback_report_is_severely_degraded(client: httpx.AsyncClient):
+    """The emergency fallback report (graph yields no report) is SEVERELY_DEGRADED."""
+    with _graph_without_final_report():
+        resp = await client.post(
+            "/triage",
+            json={"query": "Checkout latency spike across regions", "force_refresh": True},
+        )
+
+    assert resp.status_code == 200
+    report = resp.json()["report"]
+    assert report["degradation_status"] == "SEVERELY_DEGRADED"
+
+
+@pytest.mark.asyncio
+async def test_emergency_fallback_report_lists_tripped_breakers(client: httpx.AsyncClient):
+    """The emergency fallback report names a targeted breaker that was open."""
+    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+
+    async def _failing_task():
+        raise RuntimeError("Injected downstream failure to trip breaker")
+
+    for _ in range(chaos_cb.fail_max):
+        with pytest.raises(Exception):
+            await chaos_cb.call(_failing_task)
+    assert chaos_cb.is_open is True
+
+    with _graph_without_final_report():
+        resp = await client.post(
+            "/triage",
+            json={
+                "query": "Internal API gateway cluster failing with 503 outage",
+                "service_filter": "internal",
+                "force_refresh": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    report = resp.json()["report"]
+    assert report["degradation_status"] == "SEVERELY_DEGRADED"
+    assert report["circuit_breakers_tripped"] == ["chaos"]
+
+
 @pytest.mark.asyncio
 async def test_llm_quota_endpoint(client: httpx.AsyncClient):
     """Verify /llm/quota returns 200 with LLMQuotaSnapshot structure."""

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - A synthesis fallback report with one tripped breaker is now `SEVERELY_DEGRADED`; previously `finalize` downgraded it to `PARTIALLY_DEGRADED`.
+- The emergency fallback report (built by `POST /triage` when the graph returns no report) is now reconciled too, so it is `SEVERELY_DEGRADED` and lists tripped targeted breakers instead of being returned and cached as `HEALTHY`.
 
 ## [1.3.0] - 2026-10-12 — Editorial Vector Visualizations & Documentation Upgrade
 

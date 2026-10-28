@@ -118,7 +118,7 @@ Large Language Models frequently emit JSON with minor syntax or schema defects. 
 
 ### Degradation status: report reconciliation in `finalize`
 
-A report's `degradation_status` and `circuit_breakers_tripped` are system facts, never the model's opinion. They are set in exactly one place: `finalize` calls `reconcile(report, DegradationEvidence.from_state(state))` (`graph/reconciliation.py`) on every report, whether it came from the LLM, self-repair, refinement or the synthesis fallback.
+A report's `degradation_status` and `circuit_breakers_tripped` are system facts, never the model's opinion. They are set by `reconcile(report, DegradationEvidence.from_state(state))` (`graph/reconciliation.py`), which has two call sites: `finalize` calls it on every report the graph produces, whether it came from the LLM, self-repair, refinement or the synthesis fallback; and the emergency path in `POST /triage` (`api/app.py`) calls it when the graph returns no `final_report` and the API builds one with `fallback_report_node`, on the graph's state plus `synthesis_fell_back: True`, before caching it.
 
 The evidence is:
 - **Tripped breakers**: targeted tools whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
