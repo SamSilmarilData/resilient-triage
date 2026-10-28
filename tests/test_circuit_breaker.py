@@ -301,3 +301,68 @@ async def test_callers_racing_in_as_reset_timeout_elapses_get_exactly_one_trial(
     release.set()
     assert await asyncio.wait_for(pending.pop(), timeout=0.5) == "recovered"
     assert cb.state == "closed"
+
+
+async def _straggler_and_trial(
+    name: str, straggler_fails: bool
+) -> tuple[
+    AsyncCircuitBreaker, asyncio.Event, "asyncio.Task[str]", asyncio.Event, "asyncio.Task[str]"
+]:
+    """Start a call while closed, trip the breaker, then start the half-open trial; both block."""
+    cb = CircuitBreakerRegistry().get_or_create(name=name, fail_max=1, reset_timeout=0.05)
+    straggler_release = asyncio.Event()
+    trial_release = asyncio.Event()
+
+    async def straggler() -> str:
+        await straggler_release.wait()
+        if straggler_fails:
+            raise RuntimeError("Straggler failed")
+        return "straggler"
+
+    async def trial() -> str:
+        await trial_release.wait()
+        return "recovered"
+
+    async def failing_task() -> None:
+        raise RuntimeError("Outage ongoing")
+
+    straggler_task = asyncio.create_task(cb.call(straggler))
+    await asyncio.sleep(0.01)
+    with pytest.raises(BreakerOpen):
+        await cb.call(failing_task)
+    await asyncio.sleep(0.07)
+    trial_task = asyncio.create_task(cb.call(trial))
+    await asyncio.sleep(0.01)
+    assert cb.state == "half-open"
+    return cb, straggler_release, straggler_task, trial_release, trial_task
+
+
+async def test_straggler_success_during_half_open_does_not_close_breaker():
+    """A call started while closed that succeeds during the trial records nothing."""
+    cb, straggler_release, straggler_task, trial_release, trial_task = await _straggler_and_trial(
+        "straggler_success_service", straggler_fails=False
+    )
+
+    straggler_release.set()
+    assert await asyncio.wait_for(straggler_task, timeout=0.5) == "straggler"
+    assert cb.state == "half-open"
+
+    trial_release.set()
+    assert await asyncio.wait_for(trial_task, timeout=0.5) == "recovered"
+    assert cb.state == "closed"
+
+
+async def test_straggler_failure_during_half_open_does_not_reopen_breaker():
+    """A call started while closed that fails during the trial raises its own error, records nothing."""
+    cb, straggler_release, straggler_task, trial_release, trial_task = await _straggler_and_trial(
+        "straggler_failure_service", straggler_fails=True
+    )
+
+    straggler_release.set()
+    with pytest.raises(RuntimeError, match="Straggler failed"):
+        await asyncio.wait_for(straggler_task, timeout=0.5)
+    assert cb.state == "half-open"
+
+    trial_release.set()
+    assert await asyncio.wait_for(trial_task, timeout=0.5) == "recovered"
+    assert cb.state == "closed"

@@ -173,7 +173,7 @@ class AsyncCircuitBreaker:
                 listener.before_call(self._breaker, func, *args, **kwargs)
 
         try:
-            return await self._run(func, *args, **kwargs)
+            return await self._run(trial, func, *args, **kwargs)
         finally:
             if trial is not None:
                 # Free the slot whatever the outcome; a cancelled trial leaves the breaker
@@ -182,7 +182,13 @@ class AsyncCircuitBreaker:
                     if self._trial is trial:
                         self._trial = None
 
-    async def _run(self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
+    async def _run(
+        self,
+        trial: object | None,
+        func: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T:
         """Await func and record its outcome on the wrapped breaker."""
         try:
             # 2. Execute async coroutine
@@ -192,16 +198,25 @@ class AsyncCircuitBreaker:
             # Only `Exception` counts: a non-Exception BaseException such as CancelledError
             # (run deadline, client disconnect) propagates untouched and records nothing.
             with self._breaker._lock:
-                try:
-                    self._breaker.state._handle_error(exc, reraise=False)
-                except pybreaker.CircuitBreakerError as trip:
-                    raise BreakerOpen(str(trip)) from exc
+                if self._may_record(trial):
+                    try:
+                        self._breaker.state._handle_error(exc, reraise=False)
+                    except pybreaker.CircuitBreakerError as trip:
+                        raise BreakerOpen(str(trip)) from exc
             raise
         else:
             # 4. Handle success inside lock
             with self._breaker._lock:
-                self._breaker.state._handle_success()
+                if self._may_record(trial):
+                    self._breaker.state._handle_success()
             return result
+
+    def _may_record(self, trial: object | None) -> bool:
+        """Whether a call's outcome may be recorded; caller holds `_breaker._lock`."""
+        # In half-open only the current trial settles the breaker; stragglers record nothing.
+        if str(self._breaker.current_state) != pybreaker.STATE_HALF_OPEN:
+            return True
+        return trial is not None and self._trial is trial
 
     def reset(self) -> None:
         """Manually close the circuit breaker and reset failure counters."""

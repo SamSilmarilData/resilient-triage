@@ -59,6 +59,9 @@ stateDiagram-v2
      the trial's caller gets `BreakerOpen` chained (`from`) the original error.
    - If the trial is cancelled (see below), the breaker stays `HALF_OPEN` and the trial slot is
      freed, so the next caller becomes the new trial.
+   - Only the trial's outcome settles a half-open breaker. A call that started earlier (while the
+     breaker was `CLOSED`) and finishes while it is `HALF_OPEN` records nothing: its caller still
+     gets its result or its original error, but the breaker neither closes nor re-opens.
 
 ### Cancellation is neither success nor failure
 Only an `Exception` raised by the guarded call counts as a failure. If the call is interrupted by
