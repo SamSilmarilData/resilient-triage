@@ -296,3 +296,41 @@ async def test_a_telemetry_degraded_report_is_stored_with_the_degraded_ttl():
         assert await cache.lookup(QUERY) is None
     finally:
         await cache.close()
+
+
+class SleepingGraph:
+    """A GraphRunner whose runs sleep for `seconds`, then return a report."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+        await asyncio.sleep(self.seconds)
+        return {"final_report": _report(f"Answer for {input['query']}")}
+
+
+def _deadline(deadline_s: float, *, queue_timeout_s: float = 0.05) -> Settings:
+    return settings.model_copy(
+        update={
+            "triage_max_concurrent_runs": 1,
+            "triage_queue_timeout_s": queue_timeout_s,
+            "triage_run_deadline_s": deadline_s,
+        }
+    )
+
+
+async def test_a_run_past_its_deadline_answers_with_an_unstored_synthesis_fallback(cache):
+    gateway = _gateway(cache, SleepingGraph(10.0), _deadline(0.05))
+
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    outcome = await asyncio.wait_for(gateway.triage(QUERY, "billing"), timeout=1.0)
+
+    assert loop.time() - started_at < 0.5
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.summary == f"Automated incident triage degraded for: {QUERY}"
+    assert outcome.report.severity == SeverityLevel.UNKNOWN
+    assert outcome.report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+    assert "Run deadline exceeded" in outcome.report.root_cause_analysis
+    assert await cache.lookup(QUERY, service_filter="billing") is None
+    assert gateway.metrics == TriageMetrics(hit=0, miss=1, saturated=0)
