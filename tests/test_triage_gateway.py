@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 import pytest_asyncio
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
@@ -56,6 +57,16 @@ class BlockingGraph:
         self.started.set()
         await self.release.wait()
         return {"final_report": _report(f"Answer for {input['query']}")}
+
+
+class RaisingGraph:
+    """A GraphRunner whose runs raise the given exception."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+        raise self.exc
 
 
 @pytest_asyncio.fixture
@@ -161,6 +172,45 @@ async def test_the_run_slot_is_freed_once_the_run_finishes(cache):
     outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
 
     assert isinstance(outcome, Analyzed)
+
+
+async def test_a_graph_exception_answers_with_an_unstored_synthesis_fallback(cache):
+    gateway = _gateway(cache, RaisingGraph(RuntimeError("Secret internal db failure")), _one_slot())
+
+    outcome = await gateway.triage(QUERY, "billing")
+
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.summary == f"Automated incident triage degraded for: {QUERY}"
+    assert outcome.report.severity == SeverityLevel.UNKNOWN
+    assert outcome.report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+    assert outcome.report.circuit_breakers_tripped == []
+    assert "Secret internal db failure" not in outcome.report.model_dump_json()
+    assert await cache.lookup(QUERY, service_filter="billing") is None
+    assert gateway.metrics == TriageMetrics(hit=0, miss=1, saturated=0)
+
+
+async def test_a_graph_exception_frees_its_run_slot(cache):
+    graph = RaisingGraph(RuntimeError("boom"))
+    gateway = _gateway(cache, graph, _one_slot())
+    await gateway.triage(QUERY, None)
+
+    graph.exc = RuntimeError("boom again")
+    outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
+
+    assert isinstance(outcome, Analyzed)
+
+
+async def test_a_cancelled_graph_run_propagates_and_frees_its_run_slot(cache):
+    graph = RaisingGraph(asyncio.CancelledError())
+    gateway = _gateway(cache, graph, _one_slot())
+
+    with pytest.raises(asyncio.CancelledError):
+        await gateway.triage(QUERY, None)
+
+    assert await cache.lookup(QUERY) is None
+    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0)
+    graph.exc = RuntimeError("boom")
+    assert isinstance(await gateway.triage(QUERY, None), Analyzed)
 
 
 async def test_metrics_count_each_outcome(cache):

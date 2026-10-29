@@ -172,11 +172,17 @@ Large Language Models frequently emit JSON with minor syntax or schema defects. 
      - Root Cause: Explicitly notes model generation exhaustion and includes raw query signals.
      - Recommended Actions: Supplies baseline diagnostic commands (`kubectl logs`, `kubectl top`, `systemctl status`).
 
+### Graph exceptions: the gateway's last-resort fallback
+
+If the triage graph itself raises (a bug in a node, an unexpected library error), `POST /triage` still answers 200 instead of a 500. When `run_graph` raises anything except `asyncio.CancelledError`, the Triage gateway (`triage_gateway.py`) logs the exception and answers `Analyzed` with `build_fallback_report(query, reason=...)`, reconciled on `DegradationEvidence(tripped_breakers=frozenset(), unavailable_sources=frozenset(), synthesis_fell_back=True)`: a `SEVERELY_DEGRADED`, `UNKNOWN`-severity report with no breakers listed, since the run left no evidence. The exception's message never reaches the report. The route maps it like any run: 200 with `X-Cache: MISS` and the echoed `X-Thread-ID`, and `/metrics` counts it as a `miss`.
+
+The report is not stored, so the next identical query runs the graph again rather than replaying the fallback. The run slot is released either way. Cancellation is not a failure: `CancelledError` propagates unchanged, still releasing the slot. So `triage()` never raises except `CancelledError`, and every request ends in exactly one `TriageOutcome` (`CacheHit`, `Analyzed` or `Shed`).
+
 ### Degradation status: report reconciliation in `finalize`
 
 A report's `degradation_status` and `circuit_breakers_tripped` are system facts, never the model's opinion. They are set by `reconcile(report, DegradationEvidence.from_state(state))` (`graph/reconciliation.py`), which has two call sites: `finalize` calls it on every report the graph produces, whether it came from the LLM, self-repair, refinement or the synthesis fallback; and the Triage gateway (`triage_gateway.py`) calls it when the graph returns no `final_report` and the gateway builds one with `build_fallback_report`, on the graph's evidence plus `synthesis_fell_back: True`. `finalize` does not write to the cache: the gateway is the only request-path cache writer.
 
-**Synthesis fallbacks are never cached.** The gateway still answers with a synthesis fallback (`X-Cache: MISS`, counted as a `miss` on `/metrics`) but does not store it, so the next identical query runs the graph again instead of getting the degraded answer as a HIT. A synthesis fallback is a run whose state has `synthesis_fell_back` set, or the gateway's own fallback for a run with no `final_report`. Every other report is stored; one degraded only by telemetry (a tripped breaker or an unavailable source) gets the shorter `CACHE_DEGRADED_TTL_SECONDS`.
+**Synthesis fallbacks are never cached.** The gateway still answers with a synthesis fallback (`X-Cache: MISS`, counted as a `miss` on `/metrics`) but does not store it, so the next identical query runs the graph again instead of getting the degraded answer as a HIT. A synthesis fallback is a run whose state has `synthesis_fell_back` set, or one of the gateway's own fallbacks: for a run with no `final_report`, or for a graph that raised (above). Every other report is stored; one degraded only by telemetry (a tripped breaker or an unavailable source) gets the shorter `CACHE_DEGRADED_TTL_SECONDS`.
 
 The evidence is:
 - **Tripped breakers**: targeted tools whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
