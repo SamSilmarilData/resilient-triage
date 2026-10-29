@@ -1,5 +1,6 @@
 """Node: collect_telemetry - Reads the targeted Telemetry sources through the guarded probe."""
 
+from collections.abc import Iterable, Set
 from typing import Any
 
 from langgraph.runtime import Runtime
@@ -21,6 +22,11 @@ async def collect_telemetry_node(
     return {
         "telemetry_signals": [s.model_dump() for s in reading.signals],
         "circuit_breaker_status": reading.breaker_states,
-        "tripped_breakers": [i for i in probe.source_ids if i in reading.tripped_breakers],
-        "unavailable_sources": [i for i in probe.source_ids if i in reading.unavailable_sources],
+        "tripped_breakers": _in_order(probe.source_ids, reading.tripped_breakers),
+        "unavailable_sources": _in_order(probe.source_ids, reading.unavailable_sources),
     }
+
+
+def _in_order(order: Iterable[str], ids: Set[str]) -> list[str]:
+    """List ids in the given (source registration) order, so the state is stable."""
+    return [i for i in order if i in ids]
