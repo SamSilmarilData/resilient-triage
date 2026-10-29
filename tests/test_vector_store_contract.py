@@ -120,3 +120,83 @@ async def test_search_on_empty_store_misses(make_harness: HarnessFactory) -> Non
     store = (await make_harness()).store
 
     assert await store.search(E0, scope="", threshold=0.0) is None
+
+
+async def test_scoped_search_only_sees_entries_in_that_scope(make_harness: HarnessFactory) -> None:
+    """An identical vector under another scope is invisible to a scoped search."""
+    store = (await make_harness()).store
+    await store.put(_entry("actions-doc", E0, scope="actions"), ttl=60)
+    await store.put(_entry("billing-doc", E0, scope="billing"), ttl=60)
+
+    actions = await store.search(E0, scope="actions", threshold=0.9)
+    billing = await store.search(E0, scope="billing", threshold=0.9)
+
+    assert actions is not None and actions.doc_id == "actions-doc"
+    assert actions.service_scope == "actions"
+    assert billing is not None and billing.doc_id == "billing-doc"
+    assert await store.search(E0, scope="database", threshold=0.9) is None
+
+
+async def test_entry_expires_after_its_ttl(make_harness: HarnessFactory) -> None:
+    """An entry is served until its TTL passes, then it is a MISS."""
+    harness = await make_harness()
+    await harness.store.put(_entry("short", E0), ttl=1)
+    await harness.store.put(_entry("long", FAR), ttl=60)
+
+    assert await harness.store.search(E0, scope="", threshold=0.9) is not None
+
+    await harness.advance(2)
+
+    assert await harness.store.search(E0, scope="", threshold=0.9) is None
+    long_hit = await harness.store.search(FAR, scope="", threshold=0.9)
+    assert long_hit is not None and long_hit.doc_id == "long"
+
+
+async def test_capacity_evicts_the_oldest_entry(make_harness: HarnessFactory) -> None:
+    """Putting past capacity drops the oldest entry and keeps the newest."""
+    store = (await make_harness(max_capacity=2)).store
+    await store.put(_entry("first", E0), ttl=60)
+    await store.put(_entry("second", FAR), ttl=60)
+    await store.put(_entry("third", _unit(3)), ttl=60)
+
+    assert store.count == 2
+    assert await store.search(E0, scope="", threshold=0.9) is None
+    third = await store.search(_unit(3), scope="", threshold=0.9)
+    assert third is not None and third.doc_id == "third"
+
+
+async def test_put_with_existing_doc_id_replaces_without_evicting(
+    make_harness: HarnessFactory,
+) -> None:
+    """Re-putting a doc id (as hydration does) overwrites it rather than evicting another."""
+    store = (await make_harness(max_capacity=2)).store
+    await store.put(_entry("first", E0), ttl=60)
+    await store.put(_entry("second", FAR), ttl=60)
+    await store.put(_entry("second", FAR), ttl=60)
+
+    assert store.count == 2
+    assert await store.search(E0, scope="", threshold=0.9) is not None
+
+
+async def test_clear_removes_every_entry(make_harness: HarnessFactory) -> None:
+    """After clear, nothing is counted or found."""
+    store = (await make_harness()).store
+    await store.put(_entry("a", E0), ttl=60)
+    await store.put(_entry("b", FAR, scope="actions"), ttl=60)
+
+    await store.clear()
+
+    assert store.count == 0
+    assert await store.search(E0, scope="", threshold=0.0) is None
+    assert await store.search(FAR, scope="actions", threshold=0.0) is None
+
+
+async def test_count_tracks_puts(make_harness: HarnessFactory) -> None:
+    """Count is the number of entries put."""
+    store = (await make_harness()).store
+    assert store.count == 0
+
+    await store.put(_entry("a", E0), ttl=60)
+    await store.put(_entry("b", FAR, scope="actions"), ttl=60)
+
+    assert store.count == 2
