@@ -101,13 +101,7 @@ def route_after_validation(
 
 
 def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageState, TriageState]:
-    """Build and compile the LangGraph cyclic state graph, without a checkpointer.
-
-    Each run is self-contained: its state lives only while ``ainvoke`` runs (ADR-007).
-
-    Returns:
-        CompiledStateGraph: Runnable LangGraph workflow engine.
-    """
+    """Compile the triage graph with no checkpointer: run state lives only in ainvoke (ADR-007)."""
     graph = StateGraph(TriageState, context_schema=TriageDeps)
 
     # 1. Register nodes
