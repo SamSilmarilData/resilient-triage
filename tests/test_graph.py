@@ -8,11 +8,20 @@ import pytest
 from fakes import make_triage_deps
 from langgraph.runtime import Runtime
 
+from resilient_triage.config import settings
 from resilient_triage.graph.builder import build_triage_graph
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
+from resilient_triage.graph.nodes.fallback_report import fallback_report_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
-from resilient_triage.llm import ScriptedAdapter
+from resilient_triage.llm import (
+    MalformedResponse,
+    ProviderFailure,
+    RateLimited,
+    Rejected,
+    ScriptedAdapter,
+    Unavailable,
+)
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.schemas.incident import (
     DegradationStatus,
@@ -251,6 +260,89 @@ async def test_graph_self_repair_cap_routes_to_fallback():
     assert "Self-repair" in report.root_cause_analysis
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RateLimited(retry_after_s=30.0, scope="minute", detail="Rate limit"),
+        Unavailable(detail="HTTP 503: upstream overloaded"),
+        Rejected(detail="HTTP 400: bad model"),
+        MalformedResponse(detail="no choices"),
+    ],
+)
+async def test_provider_failure_on_first_generation_skips_self_repair(failure: ProviderFailure):
+    """A provider failure goes straight to fallback_report: re-prompting cannot fix an outage."""
+    deps = make_triage_deps(llm_adapter=ScriptedAdapter([failure] * 3))
+    app = build_triage_graph(enable_checkpointing=True)
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+    visited = [
+        node
+        async for update in app.astream(
+            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
+        )
+        for node in update
+    ]
+
+    assert visited[-3:] == ["generate_report", "fallback_report", "finalize_report"]
+    assert "self_repair" not in visited
+    assert "validate_report" not in visited
+    # The failure survives the BoundedMemorySaver checkpoint, typed.
+    checkpointed = (await app.aget_state(config)).values
+    assert checkpointed["provider_failure"] == failure
+    report = checkpointed["final_report"]
+    assert report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+    assert report.confidence_score == 0.20
+
+
+UNAVAILABLE_TEXT = "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
+
+
+@pytest.mark.parametrize(
+    ("failure", "root_cause"),
+    [
+        (
+            RateLimited(retry_after_s=None, scope="day", detail="quota"),
+            "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis "
+            "engaged.",
+        ),
+        (Unavailable(detail="HTTP 503: upstream overloaded"), UNAVAILABLE_TEXT),
+        (MalformedResponse(detail="no choices"), UNAVAILABLE_TEXT),
+        (
+            Rejected(detail="HTTP 400: bad model"),
+            "LLM provider rejected the request. Safe heuristic fallback engaged.",
+        ),
+    ],
+)
+def test_fallback_report_wording_follows_the_failure_kind(
+    failure: ProviderFailure, root_cause: str
+):
+    """The fallback root cause names the provider failure kind, whatever its detail text says."""
+    update = fallback_report_node(
+        {"query": "Actions queue failing", "provider_failure": failure, "validation_errors": []}
+    )
+
+    report = update["final_report"]
+    assert report.root_cause_analysis == root_cause
+    assert report.severity == SeverityLevel.UNKNOWN
+    assert report.confidence_score == 0.20
+    assert update["synthesis_fell_back"] is True
+
+
+def test_fallback_report_without_a_provider_failure_reports_exhausted_self_repair():
+    """With no provider failure, the fallback means self-repair ran out, whatever the errors say."""
+    update = fallback_report_node(
+        {
+            "query": "Actions queue failing",
+            "provider_failure": None,
+            "validation_errors": ["Field 'severity': HTTP 429 lookalike (input was: '503')"],
+        }
+    )
+
+    root_cause = update["final_report"].root_cause_analysis
+    assert root_cause.startswith("Self-repair limits reached. Diagnostic context: Field 'severity'")
+    assert update["synthesis_fell_back"] is True
+
+
 @pytest.mark.asyncio
 async def test_graph_confidence_refinement_cycle():
     """Verify that low confidence (<0.60) triggers single reflection cycle."""
@@ -268,6 +360,88 @@ async def test_graph_confidence_refinement_cycle():
     assert isinstance(report, IncidentTriageReport)
     assert report.confidence_score == 0.85
     assert len(mock_llm.calls) == 2
+
+
+async def test_refine_round_that_exhausts_self_repair_keeps_the_pre_refine_report():
+    """A refine round whose output never validates finalizes the valid report from before it."""
+    pre_refine_json = _make_valid_report_json(severity="MEDIUM", confidence=0.50)
+    mock_llm = ScriptedAdapter([pre_refine_json, "not json", "still not json"])
+    deps = make_triage_deps(llm_adapter=mock_llm)
+    app = build_triage_graph(enable_checkpointing=True)
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+    visited = [
+        node
+        async for update in app.astream(
+            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
+        )
+        for node in update
+    ]
+
+    assert "refine_reflection" in visited
+    assert "fallback_report" not in visited
+    assert visited[-2:] == ["validate_report", "finalize_report"]
+    assert len(mock_llm.calls) == 3  # the refine round shares the 2-repair budget
+    final_state = (await app.aget_state(config)).values
+    assert final_state["synthesis_fell_back"] is False
+    report = final_state["final_report"]
+    assert report.confidence_score == 0.50
+    assert report.severity == SeverityLevel.MEDIUM
+    # No breaker tripped and no source unavailable: telemetry evidence says HEALTHY.
+    assert report.degradation_status == DegradationStatus.HEALTHY
+
+
+async def test_provider_failure_during_a_refine_round_keeps_the_pre_refine_report():
+    """A provider outage mid-refine finalizes the valid report from before the refine round."""
+    pre_refine_json = _make_valid_report_json(severity="MEDIUM", confidence=0.50)
+    outage = Unavailable(detail="HTTP 503: upstream overloaded")
+    mock_llm = ScriptedAdapter([pre_refine_json, outage, outage, outage])
+    deps = make_triage_deps(llm_adapter=mock_llm)
+    app = build_triage_graph(enable_checkpointing=True)
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+    visited = [
+        node
+        async for update in app.astream(
+            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
+        )
+        for node in update
+    ]
+
+    assert "refine_reflection" in visited
+    assert "self_repair" not in visited
+    assert "fallback_report" not in visited
+    assert visited[-2:] == ["generate_report", "finalize_report"]
+    final_state = (await app.aget_state(config)).values
+    assert final_state["synthesis_fell_back"] is False
+    report = final_state["final_report"]
+    assert report.confidence_score == 0.50
+    assert report.severity == SeverityLevel.MEDIUM
+    assert report.degradation_status != DegradationStatus.SEVERELY_DEGRADED
+
+
+async def test_longest_path_stays_within_the_recursion_limit(monkeypatch):
+    """Max self-repair, a tripped breaker and a failing refine round still fit 24 supersteps."""
+    monkeypatch.setattr(settings, "max_self_repair_retries", 5)
+    pre_refine_json = _make_valid_report_json(confidence=0.50)
+    mock_llm = ScriptedAdapter([pre_refine_json] + ["not json"] * 5)
+    deps = make_triage_deps(llm_adapter=mock_llm)
+    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
+    app = build_triage_graph(enable_checkpointing=False)
+
+    visited = [
+        node
+        async for update in app.astream(
+            {"query": "Internal chaos probe failing on auth-service"},
+            context=deps,
+            stream_mode="updates",
+        )
+        for node in update
+    ]
+
+    assert visited[-1] == "finalize_report"
+    assert len(visited) <= 24
+    assert len(mock_llm.calls) == 6
 
 
 @pytest.mark.asyncio

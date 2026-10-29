@@ -5,7 +5,8 @@ from collections.abc import Sequence
 
 from langchain_core.messages import BaseMessage
 
-from resilient_triage.llm.gateway import Completion, ProviderFailure, QuotaHeaders
+from resilient_triage.llm.failures import ProviderFailure
+from resilient_triage.llm.gateway import Completion, QuotaHeaders
 
 SIMULATION_LABEL = "Zero-Config SRE Simulation"
 

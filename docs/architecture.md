@@ -73,7 +73,7 @@ Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(
   - `GroqAdapter` (`llm/groq.py`) owns the pooled `httpx.AsyncClient`, maps each response to a result, and parses the rate-limit headers.
   - `ScriptedAdapter` (`llm/scripted.py`) returns scripted results in order, then a valid default report. It is both the test fake and the zero-config simulation.
 - **Provider selection**: `build_llm_gateway(settings, adapter=None)` (`llm/__init__.py`) is the only place a provider is chosen. With `GROQ_API_KEY` set it uses `GroqAdapter` and the `/health` label `Groq LPU (<GROQ_MODEL>)`; without it, `ScriptedAdapter` and `Zero-Config SRE Simulation`. No other key selects a provider. Each adapter supplies its own label (`ModelAdapter.label(primary)`) and rate-limit headers (`quota_headers(model)`), so the gateway never checks an adapter's type. `build_runtime(settings, llm_adapter=...)` passes an adapter through, which is how tests script the model.
-- **Graph contract**: `generate_report` calls `runtime.context.llm.complete(messages)`. On a provider failure it sets `validation_errors=["LLM Provider Failure: <Kind>: <detail>"]` and `repair_attempts` to the maximum, so `route_after_validation` goes to `fallback_report`.
+- **Graph contract**: `generate_report` calls `runtime.context.llm.complete(messages)`. It records the typed failure in `provider_failure` (`None` after a completion), and `route_after_generation` sends a failure past `self_repair`, since re-prompting does nothing for an outage: to `finalize` with the pre-refine report during a refine round, else to `fallback_report`. `fallback_report` picks its root-cause wording by the failure kind. The kinds live in `llm/failures.py`, which has no project imports, so `TriageState` can import it without a cycle (importing it still runs `llm/__init__`).
 
 ---
 
@@ -111,9 +111,10 @@ Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(
 - **`degraded_fallback`**: Invoked if any tripped breaker was recorded (a targeted tool whose circuit breaker is `OPEN`). Annotates the incident with known blind spots and synthesizes available telemetry.
 - **`synthesize`**: Merges telemetry signals and historical context.
 - **`generate_report`**: Emits a structured candidate JSON triage report via the active LLM engine.
+- **`route_after_generation`**: A completion goes to `validate_report`. A provider failure (`provider_failure` set) skips `self_repair`: in a refine round, `generate_report` has put the pre-refine report (`refined_from`) back in `final_report`, so the run goes to `finalize` with that report; otherwise it goes straight to `fallback_report`.
 - **`validate_report`**: Markdown fence auto-cleaning (`clean_json_string`) and strict Pydantic validation. On failure, passes exact error paths to `self_repair`.
 - **`self_repair`**: Feeds `ValidationError` details back to the LLM context to correct malformed fields (max 2 retries).
-- **`fallback_report`**: Constructs a deterministic safe report if retries are exhausted.
+- **`fallback_report`**: Constructs a deterministic safe report after a provider failure or once self-repair retries are exhausted. Its root cause follows `provider_failure`: `RateLimited` names the rate limit, `Unavailable` and `MalformedResponse` the unavailable provider, `Rejected` the rejected request, and `None` the exhausted self-repair.
 - **`finalize`**: Runs **report reconciliation** (`reconcile` in `graph/reconciliation.py`) on the report, whichever path produced it, then commits it to the semantic cache. It is one of the two call sites that set a report's `degradation_status` and `circuit_breakers_tripped`; the other is the API's emergency path (below).
 
 ### Report reconciliation

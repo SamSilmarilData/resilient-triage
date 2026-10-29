@@ -1,7 +1,14 @@
-"""Node: fallback_report - Constructs deterministic safe report on retry exhaustion."""
+"""Node: fallback_report - Constructs a safe report on a provider failure or repair exhaustion."""
 
 from typing import Any
 
+from resilient_triage.llm.failures import (
+    MalformedResponse,
+    ProviderFailure,
+    RateLimited,
+    Rejected,
+    Unavailable,
+)
 from resilient_triage.schemas.incident import (
     ActionRecommendation,
     IncidentTriageReport,
@@ -12,8 +19,27 @@ from resilient_triage.schemas.incident import (
 from resilient_triage.schemas.state import TriageState
 
 
+def _root_cause(failure: ProviderFailure | None, validation_errors: list[str]) -> str:
+    """Explain the fallback by the provider failure kind, or by exhausted self-repair."""
+    match failure:
+        case RateLimited():
+            return (
+                "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis "
+                "engaged."
+            )
+        case Unavailable() | MalformedResponse():
+            return "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
+        case Rejected():
+            return "LLM provider rejected the request. Safe heuristic fallback engaged."
+        case None:
+            err_snippet = (
+                "; ".join(validation_errors[:2]) if validation_errors else "LLM synthesis error"
+            )
+            return f"Self-repair limits reached. Diagnostic context: {err_snippet}"
+
+
 def fallback_report_node(state: TriageState) -> dict[str, Any]:
-    """Emit guaranteed valid IncidentTriageReport when LLM self-repair retries are exhausted."""
+    """Emit a guaranteed valid report after a provider failure or exhausted self-repair."""
     query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
     validation_errors = state.get("validation_errors", [])
 
@@ -25,18 +51,7 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
         except Exception:
             pass
 
-    err_snippet = "; ".join(validation_errors[:2]) if validation_errors else "LLM synthesis error"
-    if "429" in err_snippet:
-        root_cause = (
-            "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis "
-            "engaged."
-        )
-    elif "503" in err_snippet or "unavailable" in err_snippet.lower():
-        root_cause = (
-            "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
-        )
-    else:
-        root_cause = f"Self-repair limits reached. Diagnostic context: {err_snippet}"
+    root_cause = _root_cause(state.get("provider_failure"), validation_errors)
 
     report = IncidentTriageReport(
         summary=f"Automated incident triage degraded for: {query[:80]}",

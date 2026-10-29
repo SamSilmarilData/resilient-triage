@@ -22,6 +22,7 @@ from resilient_triage.graph.nodes import (
     synthesize_telemetry_node,
     validate_report_node,
 )
+from resilient_triage.graph.nodes.validate_report import self_repair_exhausted
 from resilient_triage.schemas.state import TriageState
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,21 @@ def route_after_telemetry(state: TriageState) -> Literal["compensate", "synthesi
     return "synthesize"
 
 
+def route_after_generation(state: TriageState) -> Literal["validate", "finalize", "fallback"]:
+    """Route a provider failure past self-repair: keep a pre-refine report, else fall back."""
+    failure = state.get("provider_failure")
+    if failure is not None:
+        if state.get("final_report") is not None:
+            logger.warning(
+                "LLM provider failure (%s) in a refine round. Finalizing the pre-refine report.",
+                failure,
+            )
+            return "finalize"
+        logger.warning("LLM provider failure (%s). Routing to fallback_report.", failure)
+        return "fallback"
+    return "validate"
+
+
 def route_after_validation(
     state: TriageState,
 ) -> Literal["finalize", "repair", "refine", "fallback"]:
@@ -95,7 +111,7 @@ def route_after_validation(
 
     # Validation failed
     repair_attempts = state.get("repair_attempts", 0)
-    if repair_attempts < settings.max_self_repair_retries:
+    if not self_repair_exhausted(repair_attempts):
         logger.info(
             "Validation failed (attempt %d/%d). Routing to self_repair cycle.",
             repair_attempts,
@@ -158,7 +174,15 @@ def build_triage_graph(
 
     # 5. Synthesis & generation
     graph.add_edge("synthesize_telemetry", "generate_report")
-    graph.add_edge("generate_report", "validate_report")
+    graph.add_conditional_edges(
+        "generate_report",
+        route_after_generation,
+        {
+            "validate": "validate_report",
+            "finalize": "finalize_report",
+            "fallback": "fallback_report",
+        },
+    )
 
     # 6. Validation conditional routing (Self-repair, Refine, Fallback, Finalize)
     graph.add_conditional_edges(

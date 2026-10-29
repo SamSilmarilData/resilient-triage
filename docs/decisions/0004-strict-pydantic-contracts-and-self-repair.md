@@ -43,6 +43,9 @@ We implemented a **Strict Pydantic v2 Contract with an Automated Self-Repair Fee
    - If self-repair retries are exhausted ($\ge 2$), execution routes to `FallbackReportNode`.
    - `FallbackReportNode` deterministically constructs a guaranteed valid `IncidentTriageReport` annotated with `degradation_status = SEVERELY_DEGRADED` and actionable manual diagnostic commands.
 
+### Amendment (2026-10-29)
+Decision §4 no longer holds in a refine round. When self-repair runs out or the LLM provider fails during the confidence-driven refine round, the graph finalizes the valid report the round started from (`refined_from`) instead of routing to `FallbackReportNode`. Outside a refine round, §4 stands. See #15.
+
 ## Alternatives Considered
 
 ### Permissive Pydantic Schemas (`extra="ignore"`)

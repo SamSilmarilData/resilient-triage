@@ -7,10 +7,16 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from resilient_triage.config import settings
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.state import TriageState
 
 logger = logging.getLogger(__name__)
+
+
+def self_repair_exhausted(repair_attempts: int) -> bool:
+    """Return True once repair_attempts has used up the self-repair budget."""
+    return repair_attempts >= settings.max_self_repair_retries
 
 
 def clean_json_string(raw: str) -> str:
@@ -62,10 +68,7 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("Pydantic validation failed on attempt %d: %s", repair_attempts + 1, exc)
 
-        # Preserve upstream LLM provider failure errors while refreshing per-attempt schema errors
-        existing_errors = state.get("validation_errors", [])
-        provider_errors = [e for e in existing_errors if "LLM Provider Failure" in e]
-        errors: list[str] = list(provider_errors)
+        errors: list[str] = []
         if isinstance(exc, ValidationError):
             for err in exc.errors():
                 loc = " -> ".join(str(p) for p in err.get("loc", []))
@@ -75,8 +78,11 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
         else:
             errors.append(f"JSON Parsing Error: {exc}")
 
+        # A refine round that runs out of self-repair keeps the valid report it started from.
+        # It shares the first generation's repair budget, which bounds the longest path.
+        exhausted = self_repair_exhausted(repair_attempts + 1)
         return {
-            "final_report": None,
+            "final_report": state.get("refined_from") if exhausted else None,
             "repair_attempts": repair_attempts + 1,
             "validation_errors": errors,
         }
