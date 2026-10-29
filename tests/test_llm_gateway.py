@@ -159,12 +159,12 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
         ),
         (
             {"x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "7.66s"},
-            7.66,
+            None,
             "minute",
         ),
         (
             {"x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "2m59.56s"},
-            179.56,
+            None,
             "day",
         ),
         (
@@ -174,7 +174,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
                 "x-ratelimit-remaining-tokens": "0",
                 "x-ratelimit-reset-tokens": "1h2m3s",
             },
-            3723.0,
+            None,
             "minute",
         ),
         (
@@ -183,7 +183,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
                 "x-ratelimit-remaining-tokens": "0",
                 "x-ratelimit-reset-tokens": "120ms",
             },
-            0.12,
+            None,
             "minute",
         ),
         (
@@ -193,7 +193,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
                 "x-ratelimit-remaining-tokens": "0",
                 "x-ratelimit-reset-tokens": "7.66s",
             },
-            179.56,
+            None,
             "day",
         ),
         (
@@ -314,6 +314,32 @@ async def test_a_groq_daily_429_cools_the_primary_until_the_requests_reset() -> 
     clock.now = start + 179.0
     await gateway.complete(MESSAGES)
     clock.now = start + 179.56
+    await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_a_groq_tokens_429_cools_the_primary_until_the_tokens_reset() -> None:
+    """Without a retry-after, the tokens reset reaches the cooldown through the quota headers."""
+    sent: list[str] = []
+    tokens = {"x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "7.66s"}
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["model"])
+        if len(sent) == 1:
+            return httpx.Response(429, json={"error": {"message": "tokens"}}, headers=tokens)
+        return httpx.Response(200, json=_content("{}"))
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + 7.0
+    await gateway.complete(MESSAGES)
+    clock.now = start + 7.66
     await gateway.complete(MESSAGES)
 
     assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
