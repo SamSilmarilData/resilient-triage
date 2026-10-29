@@ -716,20 +716,45 @@ async def test_a_cooling_primary_is_skipped_until_its_window_ends() -> None:
     assert snapshot.active_model == PRIMARY
 
 
-async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
-    class HangsOnFallback(ScriptedAdapter):
-        async def call(
-            self, model: str, messages: list[BaseMessage]
-        ) -> Completion | ProviderFailure:
-            if model == FALLBACK:
-                await asyncio.Event().wait()
-            return await super().call(model, messages)
+class HangsOnFallback(ScriptedAdapter):
+    """Blocks every fallback call until released is set."""
 
+    def __init__(self, script: list[str | ProviderFailure]) -> None:
+        super().__init__(script)
+        self.released = asyncio.Event()
+
+    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
+        if model == FALLBACK:
+            await self.released.wait()
+        return await super().call(model, messages)
+
+
+async def _settle() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+async def test_a_429_cools_the_primary_before_the_fallback_answers() -> None:
+    adapter = HangsOnFallback([LIMITED])
+    gateway = _gateway(adapter)
+    first = asyncio.create_task(gateway.complete(MESSAGES))
+    await _settle()
+    assert adapter.calls == [PRIMARY]  # the 429 is in; the fallback has not answered
+
+    second = asyncio.create_task(gateway.complete(MESSAGES))
+    await _settle()
+    adapter.released.set()
+    await asyncio.gather(first, second)
+
+    assert adapter.calls == [PRIMARY, FALLBACK, FALLBACK]
+    assert gateway.snapshot().rate_limit_hits == 1
+
+
+async def test_a_call_cancelled_after_a_429_records_no_counters_but_keeps_the_cooldown() -> None:
     adapter = HangsOnFallback([LIMITED])
     gateway = _gateway(adapter)
     task = asyncio.create_task(gateway.complete(MESSAGES))
-    for _ in range(5):
-        await asyncio.sleep(0)
+    await _settle()
     assert adapter.calls == [PRIMARY]
     task.cancel()
 
@@ -738,8 +763,9 @@ async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
     snapshot = gateway.snapshot()
     assert (snapshot.total_calls, snapshot.rate_limit_hits, snapshot.failover_events) == (0, 0, 0)
     assert snapshot.last_error is None
+    adapter.released.set()
     assert isinstance(await gateway.complete(MESSAGES), Completion)
-    assert adapter.calls[-1] == PRIMARY  # no cooldown was started
+    assert adapter.calls == [PRIMARY, FALLBACK]  # the primary was cooling
 
 
 @pytest.mark.parametrize(
