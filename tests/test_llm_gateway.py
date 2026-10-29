@@ -539,7 +539,7 @@ async def test_reset_zeroes_counters_and_ends_the_cooldown() -> None:
     assert snapshot.last_error is None
 
 
-async def test_generate_report_turns_a_provider_failure_into_todays_state_shape() -> None:
+async def test_generate_report_records_a_provider_failure_without_touching_repairs() -> None:
     failure = Unavailable(detail="HTTP 503: upstream overloaded")
 
     result = await generate_report_node(
@@ -547,11 +547,17 @@ async def test_generate_report_turns_a_provider_failure_into_todays_state_shape(
         Runtime(context=make_triage_deps(llm_adapter=ScriptedAdapter([failure] * 3))),
     )
 
-    assert result["candidate_report_raw"] == ""
-    assert result["validation_errors"] == [
-        "LLM Provider Failure: Unavailable: HTTP 503: upstream overloaded"
-    ]
-    assert result["repair_attempts"] == settings.max_self_repair_retries
+    assert result == {"candidate_report_raw": "", "provider_failure": failure}
+
+
+async def test_generate_report_clears_the_provider_failure_on_a_completion() -> None:
+    result = await generate_report_node(
+        {"messages": MESSAGES, "provider_failure": Unavailable(detail="HTTP 503")},
+        Runtime(context=make_triage_deps(llm_adapter=ScriptedAdapter(["{}"]))),
+    )
+
+    assert result["provider_failure"] is None
+    assert result["candidate_report_raw"] == "{}"
 
 
 class FakeClock:

@@ -62,10 +62,7 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("Pydantic validation failed on attempt %d: %s", repair_attempts + 1, exc)
 
-        # Preserve upstream LLM provider failure errors while refreshing per-attempt schema errors
-        existing_errors = state.get("validation_errors", [])
-        provider_errors = [e for e in existing_errors if "LLM Provider Failure" in e]
-        errors: list[str] = list(provider_errors)
+        errors: list[str] = []
         if isinstance(exc, ValidationError):
             for err in exc.errors():
                 loc = " -> ".join(str(p) for p in err.get("loc", []))
