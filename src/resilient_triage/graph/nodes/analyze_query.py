@@ -1,5 +1,6 @@
 """Node: analyze_query - Extracts intent, normalizes scope, and targets relevant telemetry."""
 
+import re
 from typing import Any
 
 from resilient_triage.schemas.state import TriageState
@@ -27,6 +28,17 @@ INTERNAL_KEYWORDS = {
 }
 
 
+def _whole_word_pattern(keywords: set[str]) -> re.Pattern[str]:
+    # \b treats "_" as a word character and "-" as a boundary, so "auth" matches
+    # "auth-service" but not "author" or "my_auth_helper".
+    alternatives = "|".join(re.escape(kw) for kw in sorted(keywords))
+    return re.compile(rf"\b(?:{alternatives})\b")
+
+
+_EXTERNAL_PATTERN = _whole_word_pattern(EXTERNAL_KEYWORDS)
+_INTERNAL_PATTERN = _whole_word_pattern(INTERNAL_KEYWORDS)
+
+
 def analyze_query_node(state: TriageState) -> dict[str, Any]:
     """Inspect query context and dynamically target relevant telemetry sources."""
     raw_query = state.get("query") or state.get("incident_query") or ""
@@ -34,9 +46,9 @@ def analyze_query_node(state: TriageState) -> dict[str, Any]:
     service_filter = state.get("service_filter")
     combined_text = f"{query} {service_filter or ''}".lower()
 
-    # Dynamic tool targeting
-    has_external = any(kw in combined_text for kw in EXTERNAL_KEYWORDS)
-    has_internal = any(kw in combined_text for kw in INTERNAL_KEYWORDS)
+    # Dynamic tool targeting: keywords count only as whole words or phrases
+    has_external = _EXTERNAL_PATTERN.search(combined_text) is not None
+    has_internal = _INTERNAL_PATTERN.search(combined_text) is not None
 
     if has_external and not has_internal:
         target_tools = ["statuspage"]

@@ -96,6 +96,41 @@ def test_dynamic_tool_targeting():
     assert state3["target_tools"] == ["statuspage", "chaos"]
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # "repo" inside "reporting" and "auth" inside "author" must not match
+        ("Kubernetes ingress reporting 502 errors", ["statuspage", "chaos"]),
+        ("Kubernetes ingress 502 errors", ["statuspage", "chaos"]),
+        # "actions" inside "transactions" must not match
+        ("Payment transactions failing at checkout", ["chaos"]),
+        ("Pod author label missing after deploy", ["statuspage", "chaos"]),
+        # strict whole word: plurals do not match their singular keyword
+        ("Webhooks delayed for all repos", ["statuspage", "chaos"]),
+        # underscore is part of a word
+        ("chaos_probe reports failure", ["chaos"]),
+        ("my_auth_helper timing out", ["statuspage", "chaos"]),
+    ],
+)
+def test_tool_targeting_matches_whole_words(query, expected):
+    """Keywords count only as whole words or phrases, never as substrings."""
+    assert analyze_query_node({"query": query})["target_tools"] == expected
+
+
+@pytest.mark.parametrize(
+    ("service_filter", "expected"),
+    [
+        ("auth-service", ["chaos"]),
+        ("author-service", ["statuspage", "chaos"]),
+        ("github", ["statuspage"]),
+    ],
+)
+def test_tool_targeting_service_filter_matches_whole_words(service_filter, expected):
+    """A keyword in service_filter gets the same whole-word treatment as the query."""
+    state = analyze_query_node({"query": "Errors spiking", "service_filter": service_filter})
+    assert state["target_tools"] == expected
+
+
 @pytest.mark.asyncio
 async def test_graph_happy_path():
     """Verify end-to-end execution of LangGraph on happy path."""
