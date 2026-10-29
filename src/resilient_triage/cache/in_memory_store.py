@@ -34,9 +34,8 @@ class InMemoryVectorStore:
         if not self._fits(vector):
             return None
         self._purge_expired()
-        candidates = list(self._docs.values())
-        if scope:
-            candidates = [c for c in candidates if c.entry.service_scope.lower() == scope.lower()]
+        # "No scope" is a scope of its own: "" matches only entries stored without one.
+        candidates = [c for c in self._docs.values() if c.entry.service_scope == scope]
         if not candidates:
             return None
 

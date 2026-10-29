@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 INDEX_NAME = "triage_vector_idx"
 DOC_PREFIX = "triage:doc:"
 _DELETE_BATCH = 500
+# Nearest neighbours fetched per search before the exact-scope check picks among them. The
+# tag filter can't express "no scope", so an unscoped search ranks every scope; a false MISS
+# (all top-K in other scopes) is acceptable, a false HIT is not.
+SEARCH_KNN = 5
 
 # Connection-class failures: the store is unreachable, so the manager fails over.
 _UNAVAILABLE: tuple[type[BaseException], ...] = (
@@ -125,22 +129,27 @@ class RedisVectorStore:
             logger.debug("Error closing Redis connection: %s", err)
 
     async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
-        """Return the KNN-nearest entry in `scope` if its similarity is at or above `threshold`."""
+        """Return the nearest entry whose scope is exactly `scope`, at or above `threshold`.
+
+        Fetches the top SEARCH_KNN neighbours and takes the best exact-scope one, so an
+        unscoped search never returns a scoped entry (nor a scoped search an unscoped one).
+        """
         if not self._supports_search:
             raise StoreQueryError("Redis search is unsupported without the search module")
         from redis.commands.search.query import Query
 
         # Scopes are normalize_scope()'d, so only "-" needs escaping for the tag grammar.
+        knn = f"=>[KNN {SEARCH_KNN} @vector $vec AS score]"
         if scope:
             safe_scope = scope.replace("-", "\\-")
-            filter_query = f"(@service_scope:{{{safe_scope}}})=>[KNN 1 @vector $vec AS score]"
+            filter_query = f"(@service_scope:{{{safe_scope}}}){knn}"
         else:
-            filter_query = "*=>[KNN 1 @vector $vec AS score]"
+            filter_query = f"*{knn}"
         q = (
             Query(filter_query)
             .sort_by("score")
             .return_fields("query", "service_scope", "report", "score")
-            .paging(0, 1)
+            .paging(0, SEARCH_KNN)
             .dialect(2)
         )
         query_bytes = np.asarray(vector, dtype=np.float32).tobytes()
@@ -150,9 +159,13 @@ class RedisVectorStore:
                 .ft(INDEX_NAME)
                 .search(q, query_params={"vec": query_bytes})
             )
-            if not res.docs:
+            # Docs arrive nearest first, so the first exact-scope doc is the best one.
+            doc = next(
+                (d for d in res.docs if _to_str(getattr(d, "service_scope", "")) == scope),
+                None,
+            )
+            if doc is None:
                 return None
-            doc = res.docs[0]
             # The index metric is COSINE, whose score is a distance: 1 - similarity.
             similarity = 1.0 - float(getattr(doc, "score", 1.0))
             if similarity < threshold:
@@ -160,7 +173,7 @@ class RedisVectorStore:
             return VectorHit(
                 doc_id=_to_str(doc.id).removeprefix(DOC_PREFIX),
                 query=_to_str(getattr(doc, "query", "")),
-                service_scope=_to_str(getattr(doc, "service_scope", "")),
+                service_scope=scope,
                 report_json=_to_str(doc.report),
                 similarity=similarity,
             )
