@@ -81,6 +81,9 @@ class QuotaHeaders:
     reset_requests: str | None = None
     reset_tokens: str | None = None
     last_status: int | None = None
+    # The two reset headers in seconds, which size a rate-limit cooldown by scope.
+    reset_requests_s: float | None = None
+    reset_tokens_s: float | None = None
 
 
 @runtime_checkable

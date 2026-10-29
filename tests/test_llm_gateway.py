@@ -23,6 +23,7 @@ from resilient_triage.llm import (
     MalformedResponse,
     ModelAdapter,
     ProviderFailure,
+    QuotaHeaders,
     RateLimited,
     Rejected,
     ScriptedAdapter,
@@ -441,3 +442,43 @@ async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
     assert snapshot.last_error is None
     assert isinstance(await gateway.complete(MESSAGES), Completion)
     assert adapter.calls[-1] == PRIMARY  # no cooldown was started
+
+
+@pytest.mark.parametrize(
+    ("limited", "quota", "cooldown_s"),
+    [
+        (RateLimited(7.0, "minute", "429"), QuotaHeaders(reset_tokens_s=20.0), 7.0),
+        (RateLimited(None, "minute", "429"), QuotaHeaders(reset_tokens_s=12.5), 12.5),
+        (RateLimited(None, "minute", "429"), QuotaHeaders(reset_requests_s=600.0), 30.0),
+        (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=600.0), 600.0),
+        (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=86400.0), 900.0),
+        (RateLimited(None, "day", "429"), QuotaHeaders(reset_tokens_s=12.5), 30.0),
+        (RateLimited(7.0, "unknown", "429"), QuotaHeaders(reset_requests_s=600.0), 30.0),
+    ],
+    ids=[
+        "minute-retry-after",
+        "minute-tokens-reset",
+        "minute-no-header",
+        "day-requests-reset",
+        "day-capped",
+        "day-no-header",
+        "unknown",
+    ],
+)
+async def test_the_primary_cooldown_length_follows_the_rate_limit_scope(
+    monkeypatch: pytest.MonkeyPatch, limited: RateLimited, quota: QuotaHeaders, cooldown_s: float
+) -> None:
+    monkeypatch.setattr(settings, "llm_default_cooldown_s", 30.0)
+    monkeypatch.setattr(settings, "llm_max_cooldown_s", 900.0)
+    clock = FakeClock()
+    adapter = ScriptedAdapter([limited], quota=quota)
+    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + cooldown_s - 0.5
+    await gateway.complete(MESSAGES)
+    clock.now = start + cooldown_s
+    await gateway.complete(MESSAGES)
+
+    assert adapter.calls == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 from langchain_core.messages import BaseMessage
 
-from resilient_triage.llm.gateway import Completion, ProviderFailure
+from resilient_triage.llm.gateway import Completion, ProviderFailure, QuotaHeaders
 
 # The answer once the script runs out: a valid report, so the simulation triages end to end.
 DEFAULT_REPORT_JSON = json.dumps(
@@ -55,9 +55,19 @@ DEFAULT_REPORT_JSON = json.dumps(
 class ScriptedAdapter:
     """Returns script entries in order, then DEFAULT_REPORT_JSON; records each call's model."""
 
-    def __init__(self, script: Sequence[str | ProviderFailure] = ()) -> None:
+    def __init__(
+        self,
+        script: Sequence[str | ProviderFailure] = (),
+        *,
+        quota: QuotaHeaders | None = None,
+    ) -> None:
         self.script: list[str | ProviderFailure] = list(script)
         self.calls: list[str] = []
+        self.quota = quota if quota is not None else QuotaHeaders()
+
+    def quota_headers(self, model: str) -> QuotaHeaders:
+        """Return the scripted quota headers, the same for every model."""
+        return self.quota
 
     async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
         """Return the next script entry (a str becomes a Completion from model)."""
