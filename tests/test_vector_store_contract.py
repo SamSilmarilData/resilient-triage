@@ -7,9 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 import pytest_asyncio
-from resilient_triage.cache.redis_store import RedisVectorStore
 
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
+from resilient_triage.cache.redis_store import RedisVectorStore
 from resilient_triage.cache.vector_store import StoreUnavailable, VectorEntry, VectorStore
 from resilient_triage.config import settings
 

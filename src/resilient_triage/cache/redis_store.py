@@ -180,6 +180,12 @@ class RedisVectorStore:
             await client.expire(key, max(1, math.ceil(ttl)))
         self._known.add(entry.doc_id)
 
+    async def delete(self, doc_id: str) -> None:
+        """Remove the hash stored under `doc_id`; an unknown id is a no-op."""
+        with _store_errors("delete"):
+            await self._require_client().delete(f"{DOC_PREFIX}{doc_id}")
+        self._known.discard(doc_id)
+
     async def clear(self) -> None:
         """Delete every `triage:doc:*` key with SCAN + batched DEL, so Redis never blocks."""
         with _store_errors("clear"):
