@@ -1,5 +1,6 @@
 """VectorStore seam: the storage interface the semantic cache manager talks to."""
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -58,4 +59,32 @@ class VectorStore(Protocol):
     @property
     def count(self) -> int:
         """Number of entries currently held."""
+        ...
+
+
+class RemoteVectorStore(VectorStore, Protocol):
+    """A VectorStore behind a connection (Redis): connectable, and maybe search-incapable.
+
+    Every method may raise StoreUnavailable (unreachable) or StoreQueryError (rejected).
+    """
+
+    @property
+    def supports_search(self) -> bool:
+        """Whether `search` works; False means reads must come from a hydrated standby."""
+        ...
+
+    async def connect(self) -> None:
+        """Open the connection and detect capabilities."""
+        ...
+
+    async def ping(self) -> None:
+        """Round-trip a health check."""
+        ...
+
+    async def aclose(self) -> None:
+        """Release the connection pool; never raises."""
+        ...
+
+    def entries(self) -> AsyncIterator[tuple[VectorEntry, float]]:
+        """Yield every stored entry with its remaining TTL in seconds."""
         ...

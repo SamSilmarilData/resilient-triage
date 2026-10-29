@@ -1,5 +1,6 @@
 """Adapter contract suite: every VectorStore adapter must pass these, parametrised by adapter."""
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
@@ -8,7 +9,9 @@ import pytest
 import pytest_asyncio
 
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
-from resilient_triage.cache.vector_store import VectorEntry, VectorStore
+from resilient_triage.cache.redis_store import RedisVectorStore
+from resilient_triage.cache.vector_store import StoreUnavailable, VectorEntry, VectorStore
+from resilient_triage.config import settings
 
 DIM = 384  # The live index dimension, so a Redis adapter can run the same vectors.
 
@@ -41,6 +44,7 @@ class Harness:
 
     store: VectorStore
     advance: Callable[[float], Awaitable[None]]
+    bounded: bool = True  # Whether the adapter enforces max_capacity itself.
 
 
 class _FakeClock:
@@ -60,23 +64,50 @@ def _in_memory_harness(max_capacity: int) -> Harness:
     return Harness(InMemoryVectorStore(max_capacity=max_capacity, clock=clock), advance)
 
 
+async def _redis_harness(max_capacity: int) -> Harness:
+    """A RedisVectorStore on the configured Redis; skips the test when it is unreachable.
+
+    Redis expires keys in whole seconds, so `advance` really sleeps. Redis does not bound
+    capacity (keys expire by TTL instead), so the harness is unbounded.
+    """
+    store = RedisVectorStore(settings.redis_url, dimension=DIM)
+    try:
+        await store.connect()
+    except StoreUnavailable as err:
+        await store.aclose()
+        pytest.skip(f"Local Redis is not reachable at {settings.redis_url}: {err}")
+    if not store.supports_search:
+        await store.aclose()
+        pytest.skip("Local Redis has no search module; the Redis contract needs RediSearch")
+
+    async def advance(seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+    return Harness(store, advance, bounded=False)
+
+
 HarnessFactory = Callable[..., Awaitable[Harness]]
 
 
-@pytest_asyncio.fixture(params=["in_memory"])
+@pytest_asyncio.fixture(params=["in_memory", "redis"])
 async def make_harness(request: pytest.FixtureRequest) -> AsyncIterator[HarnessFactory]:
-    """Build harnesses for the adapter named by the param; #54 adds the Redis case."""
+    """Build harnesses for the adapter named by the param, each starting empty."""
     built: list[Harness] = []
 
     async def factory(max_capacity: int = 100) -> Harness:
-        harness = _in_memory_harness(max_capacity)
-        await harness.store.clear()
+        if request.param == "redis":
+            harness = await _redis_harness(max_capacity)
+        else:
+            harness = _in_memory_harness(max_capacity)
         built.append(harness)
+        await harness.store.clear()
         return harness
 
     yield factory
     for harness in built:
         await harness.store.clear()
+        if isinstance(harness.store, RedisVectorStore):
+            await harness.store.aclose()
 
 
 async def test_search_returns_entry_at_or_above_threshold(make_harness: HarnessFactory) -> None:
@@ -154,7 +185,10 @@ async def test_entry_expires_after_its_ttl(make_harness: HarnessFactory) -> None
 
 async def test_capacity_evicts_the_oldest_entry(make_harness: HarnessFactory) -> None:
     """Putting past capacity drops the oldest entry and keeps the newest."""
-    store = (await make_harness(max_capacity=2)).store
+    harness = await make_harness(max_capacity=2)
+    if not harness.bounded:
+        pytest.skip("this adapter does not bound capacity; Redis entries expire by TTL")
+    store = harness.store
     await store.put(_entry("first", E0), ttl=60)
     await store.put(_entry("second", FAR), ttl=60)
     await store.put(_entry("third", _unit(3)), ttl=60)
