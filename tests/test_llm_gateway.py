@@ -319,6 +319,35 @@ async def test_a_groq_daily_429_cools_the_primary_until_the_requests_reset() -> 
     assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
 
 
+async def test_a_groq_daily_429_with_an_unparseable_reset_uses_the_retry_after() -> None:
+    sent: list[str] = []
+    daily = {
+        "retry-after": "45",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-reset-requests": "soon",
+    }
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["model"])
+        if len(sent) == 1:
+            return httpx.Response(429, json={"error": {"message": "daily"}}, headers=daily)
+        return httpx.Response(200, json=_content("{}"))
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + 44.5
+    await gateway.complete(MESSAGES)
+    clock.now = start + 45
+    await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
 async def test_a_groq_tokens_429_cools_the_primary_until_the_tokens_reset() -> None:
     """Without a retry-after, the tokens reset reaches the cooldown through the quota headers."""
     sent: list[str] = []
@@ -713,6 +742,9 @@ async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
         (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=600.0), 600.0),
         (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=86400.0), 900.0),
         (RateLimited(None, "day", "429"), QuotaHeaders(reset_tokens_s=12.5), 30.0),
+        (RateLimited(45.0, "day", "429"), QuotaHeaders(reset_requests_s=600.0), 600.0),
+        (RateLimited(45.0, "day", "429"), QuotaHeaders(), 45.0),
+        (RateLimited(5000.0, "day", "429"), QuotaHeaders(), 900.0),
         (RateLimited(7.0, "unknown", "429"), QuotaHeaders(reset_requests_s=600.0), 30.0),
     ],
     ids=[
@@ -722,6 +754,9 @@ async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
         "day-requests-reset",
         "day-capped",
         "day-no-header",
+        "day-reset-wins-over-retry-after",
+        "day-no-reset-uses-retry-after",
+        "day-retry-after-capped",
         "unknown",
     ],
 )
