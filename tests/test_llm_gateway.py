@@ -770,6 +770,67 @@ async def test_a_call_cancelled_after_a_429_records_no_counters_but_keeps_the_co
     assert adapter.calls == [PRIMARY, FALLBACK]  # the primary was cooling
 
 
+class HoldsPrimary(ScriptedAdapter):
+    """Blocks each primary call until its own gate in gates is set, while holding is True."""
+
+    def __init__(self, script: list[str | ProviderFailure]) -> None:
+        super().__init__(script)
+        self.holding = True
+        self.gates: list[asyncio.Event] = []
+
+    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
+        if model == PRIMARY and self.holding:
+            gate = asyncio.Event()
+            self.gates.append(gate)
+            await gate.wait()
+        return await super().call(model, messages)
+
+
+async def test_a_later_shorter_429_does_not_shorten_a_running_cooldown() -> None:
+    """Regression (#73): a minute 429 arriving after a day 429 keeps the primary cooling 900s."""
+    clock = FakeClock()
+    day = RateLimited(retry_after_s=900.0, scope="day", detail="day quota used up")
+    minute = RateLimited(retry_after_s=7.0, scope="minute", detail="minute quota used up")
+    adapter = HoldsPrimary([day, "first failover", minute, "second failover"])
+    gateway = _gateway(adapter, clock)
+    first = asyncio.create_task(gateway.complete(MESSAGES))
+    second = asyncio.create_task(gateway.complete(MESSAGES))
+    await _let_tasks_run()
+    assert len(adapter.gates) == 2  # both calls are waiting on the primary
+
+    adapter.gates[0].set()
+    await first  # the day 429 arrives: 900s
+    adapter.gates[1].set()
+    await second  # then the minute 429: 7s
+    adapter.holding = False
+    start = clock.now
+    clock.now = start + 8
+    await gateway.complete(MESSAGES)
+    clock.now = start + 900
+    await gateway.complete(MESSAGES)
+
+    assert adapter.calls == [PRIMARY, FALLBACK, PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_a_429_after_a_cooldown_ends_starts_a_fresh_shorter_window() -> None:
+    clock = FakeClock()
+    day = RateLimited(retry_after_s=900.0, scope="day", detail="day quota used up")
+    minute = RateLimited(retry_after_s=7.0, scope="minute", detail="minute quota used up")
+    adapter = ScriptedAdapter([day, "first failover", minute, "second failover"])
+    gateway = _gateway(adapter, clock)
+    await gateway.complete(MESSAGES)
+    clock.now += 900
+    await gateway.complete(MESSAGES)  # the window has ended: primary 429s for 7s
+    start = clock.now
+
+    clock.now = start + 6
+    await gateway.complete(MESSAGES)
+    clock.now = start + 7
+    await gateway.complete(MESSAGES)
+
+    assert adapter.calls == [PRIMARY, FALLBACK, PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
 PRIMARY_LIMITED_5S = RateLimited(retry_after_s=5.0, scope="minute", detail="primary 429")
 FALLBACK_LIMITED_60S = RateLimited(retry_after_s=60.0, scope="minute", detail="fallback 429")
 
