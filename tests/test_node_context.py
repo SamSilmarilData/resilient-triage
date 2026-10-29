@@ -73,15 +73,17 @@ async def test_generate_report_calls_the_llm_from_context():
     assert len(llm.calls) == 1
 
 
-async def test_finalize_stores_the_report_through_the_context_cache_writer():
-    history = FakeHistory()
-
-    result = await finalize_node(
-        {"query": "Payments API failing", "service_filter": "billing", "final_report": _report()},
-        Runtime(context=make_triage_deps(history=history)),
+def test_finalize_reconciles_the_report_without_any_context():
+    # The Triage gateway stores reports now; finalize needs no collaborator at all.
+    result = finalize_node(
+        {
+            "query": "Payments API failing",
+            "service_filter": "billing",
+            "final_report": _report(),
+            "tripped_breakers": ["statuspage"],
+        }
     )
 
-    assert len(history.stored) == 1
-    query, stored_report, service_filter = history.stored[0]
-    assert (query, service_filter) == ("Payments API failing", "billing")
-    assert stored_report == result["final_report"]
+    report = result["final_report"]
+    assert report.circuit_breakers_tripped == ["statuspage"]
+    assert report.degradation_status == DegradationStatus.PARTIALLY_DEGRADED

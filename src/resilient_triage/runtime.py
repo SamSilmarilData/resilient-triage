@@ -1,21 +1,22 @@
 """AppRuntime: one object owning the app's stateful modules, built fresh per app or per test."""
 
-import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 
 from resilient_triage.cache.embeddings import BaseEmbeddingProvider
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
-from resilient_triage.graph.deps import CacheReader, CacheWriter, TelemetrySources, TriageDeps
+from resilient_triage.graph.builder import triage_graph
+from resilient_triage.graph.deps import CacheReader, TelemetrySources, TriageDeps
 from resilient_triage.llm import LLMGateway, ModelAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
 from resilient_triage.schemas.api import LLMQuotaSnapshot
+from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosTelemetryResponse
 from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
 from resilient_triage.telemetry.statuspage import (
@@ -23,12 +24,12 @@ from resilient_triage.telemetry.statuspage import (
     StatuspageClient,
     new_statuspage_http_client,
 )
+from resilient_triage.triage.gateway import TriageGateway
 
 # Re-exported: the run-context contract lives in graph.deps so nodes avoid an import cycle.
 __all__ = [
     "AppRuntime",
     "CacheReader",
-    "CacheWriter",
     "ResilienceSnapshot",
     "TelemetrySources",
     "TriageDeps",
@@ -38,9 +39,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-# Concurrency boundary: max concurrent graph executions per app, to prevent stampedes.
-GRAPH_CONCURRENCY_LIMIT = 10
 
 # Embedded at start() so the first demo requests hit a warm model and embedding LRU.
 WARMUP_QUERIES: tuple[str, ...] = (
@@ -76,15 +74,6 @@ class ResilienceSnapshot:
     llm_quota: LLMQuotaSnapshot
 
 
-@dataclass
-class RequestCounters:
-    """Triage outcomes for one app, exported on /metrics as cache=hit/miss/saturated."""
-
-    answered_from_cache: int = 0
-    answered_by_run: int = 0
-    shed: int = 0
-
-
 class AppRuntime:
     """The app's stateful modules, with a start/aclose lifecycle and a resilience snapshot."""
 
@@ -96,6 +85,7 @@ class AppRuntime:
         chaos: ChaosManager,
         llm: LLMGateway,
         deps: TriageDeps,
+        settings: Settings,
         http_clients: tuple[httpx.AsyncClient, ...] = (),
     ) -> None:
         self.cache = cache
@@ -104,8 +94,7 @@ class AppRuntime:
         self.llm = llm
         self.deps = deps
         self._http_clients = http_clients
-        self.graph_semaphore = asyncio.Semaphore(GRAPH_CONCURRENCY_LIMIT)
-        self.requests = RequestCounters()
+        self.triage_gateway = TriageGateway(cache, self.run_graph, settings)
 
     async def start(self) -> None:
         """Connect the cache (else use memory) and register default breakers; never raises."""
@@ -125,6 +114,10 @@ class AppRuntime:
             _guarded(
                 f"Registering the {name} breaker", partial(self.breakers.get_or_create, name), None
             )
+
+    async def run_graph(self, run_input: TriageState) -> dict[str, Any]:
+        """Run the triage graph with this runtime's deps as its context (the gateway's runner)."""
+        return await triage_graph.ainvoke(run_input, context=self.deps)
 
     async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:
         """Probe Cluster Sentinel through this runtime's retries and breaker; raises on failure."""
@@ -206,7 +199,6 @@ def build_runtime(
             breakers=breakers,
         ),
         history=cache,
-        cache_writer=cache,
     )
     return AppRuntime(
         cache=cache,
@@ -214,5 +206,6 @@ def build_runtime(
         chaos=chaos,
         llm=llm,
         deps=deps,
+        settings=settings,
         http_clients=tuple(http_clients),
     )

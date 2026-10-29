@@ -6,7 +6,7 @@ Statuspage, or the LLM is down — degrade instead.
 
 ## Tech Stack
 - Python 3.12, FastAPI + uvicorn, Pydantic v2 / pydantic-settings
-- LangGraph (cyclic graph, `BoundedMemorySaver` checkpointer), langchain-core
+- LangGraph (cyclic graph, no checkpointer: each run is self-contained, ADR-007), langchain-core
 - Resilience: pybreaker (circuit breakers), tenacity (retry + jitter), httpx (async)
 - Cache: Redis 8 RediSearch HNSW, with in-memory NumPy fallback; FastEmbed `BAAI/bge-small-en-v1.5` (384-d)
 - LLM: Groq (`qwen/qwen3.8-27b`, fallback `llama-3.1-8b-instant`) via direct async HTTP, JSON response mode
@@ -30,7 +30,10 @@ Statuspage, or the LLM is down — degrade instead.
 - `graph/nodes/` — one node per file, `<name>_node(state, runtime: Runtime[TriageDeps])` when it needs
   collaborators, else `<name>_node(state)`; returns a partial state update `dict[str, Any]` and reads
   collaborators only from `runtime.context`.
-- `runtime.py` — `AppRuntime` (cache, breakers, chaos, LLM gateway, `TriageDeps`), built by `build_runtime()`; one per app.
+- `runtime.py` — `AppRuntime` (cache, breakers, chaos, LLM gateway, `TriageDeps`, Triage gateway), built by `build_runtime()`; one per app.
+- `triage/gateway.py` — `TriageGateway`: the `POST /triage` request path (cache lookup → run slot or `Shed` →
+  graph → store). Returns a `CacheHit | Analyzed | Shed` outcome and counts them for `/metrics`. The only
+  request-path cache writer; the route is a thin adapter.
 - `graph/deps.py` — `TriageDeps` (the run context nodes see) and its protocols; no imports of
   `runtime` or the graph, so nodes can import it without a cycle. `runtime.py` re-exports it.
 - `llm/` — the LLM gateway: every model call goes through `LLMGateway.complete()`, which returns a

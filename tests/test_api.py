@@ -245,23 +245,44 @@ async def test_cache_clear_endpoint(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
+async def test_global_exception_handler_sanitization(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
     """Verify unhandled exceptions return structured JSON without leaking tracebacks."""
+    # /triage degrades instead of raising, so trigger the handler from another route.
+    monkeypatch.setattr(
+        runtime.llm, "snapshot", MagicMock(side_effect=RuntimeError("Secret internal db failure"))
+    )
+    resp = await client.get("/llm/quota")
+    assert resp.status_code == 500
+    data = resp.json()
+    assert data["error"] == "InternalServerError"
+    assert data["message"] == "An unexpected error occurred during incident triage."
+    assert "request_id" in data
+    assert "Secret internal db failure" not in str(data)
+    assert resp.headers.get("x-request-id") == data["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_triage_graph_exception_degrades_to_a_200_fallback(client: httpx.AsyncClient):
+    """A graph that raises gives a 200 MISS with a degraded report, not a 500."""
     with patch(
-        "resilient_triage.api.app.triage_graph.ainvoke",
+        "resilient_triage.runtime.triage_graph.ainvoke",
         side_effect=RuntimeError("Secret internal db failure"),
     ):
         resp = await client.post(
             "/triage",
-            json={"query": "Trigger unhandled exception failure", "force_refresh": True},
+            json={"query": "Checkout latency spike across regions", "force_refresh": True},
+            headers={"X-Thread-ID": "incident-thread-72"},
         )
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"] == "InternalServerError"
-        assert data["message"] == "An unexpected error occurred during incident triage."
-        assert "request_id" in data
-        assert "Secret internal db failure" not in str(data)
-        assert resp.headers.get("x-request-id") == data["request_id"]
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-cache") == "MISS"
+    assert resp.headers.get("x-thread-id") == "incident-thread-72"
+    data = resp.json()
+    assert data["cached"] is False
+    assert data["report"]["degradation_status"] == "SEVERELY_DEGRADED"
+    assert "Secret internal db failure" not in str(data)
 
 
 @pytest.mark.asyncio
@@ -299,7 +320,7 @@ def _graph_without_final_report():
 
     graph = MagicMock()
     graph.ainvoke = AsyncMock(side_effect=_ainvoke)
-    return patch("resilient_triage.api.app.triage_graph", graph)
+    return patch("resilient_triage.runtime.triage_graph", graph)
 
 
 @pytest.mark.asyncio
@@ -499,26 +520,62 @@ async def test_prometheus_metrics_endpoint(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_concurrency_semaphore_shedding(
-    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
-):
-    """Verify that semaphore exhaustion triggers 503 load shedding."""
-    # Temporarily set semaphore to 0 to simulate full saturation
-    saturated_sem = asyncio.Semaphore(0)
-    monkeypatch.setattr(runtime, "graph_semaphore", saturated_sem)
+async def test_metrics_count_triage_hits_and_misses(client: httpx.AsyncClient):
+    """Verify /metrics counts each triage outcome under its cache label."""
+    query = {"query": "Checkout API returning 503 errors in us-east-1"}
+    assert (await client.post("/triage", json=query)).headers["x-cache"] == "MISS"
+    assert (await client.post("/triage", json=query)).headers["x-cache"] == "HIT"
 
-    # Patch wait_for timeout to 0.02s for fast test execution
-    orig_wait_for = asyncio.wait_for
+    content = (await client.get("/metrics")).text
 
-    async def fast_wait_for(fut, timeout):
-        return await orig_wait_for(fut, timeout=0.02)
+    assert 'resilient_triage_requests_total{cache="hit"} 1' in content
+    assert 'resilient_triage_requests_total{cache="miss"} 1' in content
+    assert 'resilient_triage_requests_total{cache="saturated"} 0' in content
 
-    monkeypatch.setattr(asyncio, "wait_for", fast_wait_for)
 
-    resp = await client.post(
-        "/triage",
-        json={"query": "Sudden traffic spike causing saturating concurrency"},
+class _BlockingAdapter(ScriptedAdapter):
+    """A ScriptedAdapter whose calls wait until `release` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def call(self, model, messages):
+        self.started.set()
+        await self.release.wait()
+        return await super().call(model, messages)
+
+
+@pytest.mark.asyncio
+async def test_concurrency_semaphore_shedding():
+    """Verify that a request finding every run slot busy past the queue timeout gets a 503."""
+    llm = _BlockingAdapter()
+    rt = build_runtime(
+        settings.model_copy(
+            update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.02}
+        ),
+        llm_adapter=llm,
+        statuspage_http=fake_statuspage_http(),
     )
+    app = create_app(lambda: rt)
+    async with app.router.lifespan_context(app):
+        await rt.cache.clear()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            first = asyncio.create_task(
+                ac.post("/triage", json={"query": "Checkout API returning 503 errors"})
+            )
+            await asyncio.wait_for(llm.started.wait(), timeout=5.0)
+
+            resp = await ac.post(
+                "/triage",
+                json={"query": "Sudden traffic spike causing saturating concurrency"},
+            )
+            llm.release.set()
+            assert (await first).status_code == 200
+
     assert resp.status_code == 503
     assert "saturated" in resp.json()["detail"].lower()
 

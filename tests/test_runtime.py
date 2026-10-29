@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest_asyncio
+from fakes import fake_statuspage_http
 from langchain_core.messages import HumanMessage
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
@@ -14,6 +15,7 @@ from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 from resilient_triage.schemas.telemetry import SIGNAL_STATUS_UNAVAILABLE, ChaosConfig
+from resilient_triage.triage.gateway import Analyzed
 
 UNREACHABLE_REDIS = "redis://127.0.0.1:1/0"
 
@@ -82,16 +84,17 @@ async def test_deps_carry_the_injected_llm(make_runtime):
     assert runtime.deps.llm.adapter is adapter
 
 
-async def test_deps_history_reads_what_the_cache_writer_stored(make_runtime):
-    runtime = make_runtime()
+async def test_deps_history_reads_what_the_triage_gateway_stored(make_runtime):
+    runtime = make_runtime(statuspage_http=fake_statuspage_http())
     await runtime.start()
     query = "Payments API returning 503 for card checkouts"
 
-    await runtime.deps.cache_writer.store(query=query, report=_report(), service_filter="billing")
+    outcome = await runtime.triage_gateway.triage(query, "billing")
     match = await runtime.deps.history.lookup(query=query, service_filter="billing", threshold=0.7)
 
+    assert isinstance(outcome, Analyzed)
     assert match is not None
-    assert match.report.summary == "Payments API returning 503"
+    assert match.report == outcome.report
 
 
 async def test_deps_telemetry_chaos_probe_follows_this_runtimes_chaos_config(make_runtime):

@@ -18,7 +18,7 @@ Every HTTP response returned by the API includes the following observability hea
 | `x-process-time-ms` | Total server processing time in milliseconds | `12.45` |
 | `x-cache` | Cache status (`HIT` or `MISS`) — *present on `/triage`* | `HIT` |
 | `x-cache-similarity` | Cosine similarity score ($\ge 0.90$) — *present on cache `HIT`* | `0.9417` |
-| `x-thread-id` | LangGraph persistence checkpoint thread identifier — *present on `/triage`* | `e1f8b4a2-...` |
+| `x-thread-id` | Correlation id: the caller's `X-Thread-ID` echoed back, or a new UUID4 if none was sent. It names no checkpoint thread (ADR-007) — *present on `/triage`* | `e1f8b4a2-...` |
 
 ### Security & Authentication Headers
 - `X-Admin-Key`: Required for mutating endpoints (`/resilience/reset`, `/cache/clear`, `/chaos/inject`) if `ADMIN_API_KEY` is configured in the environment. Unauthenticated requests receive `401 Unauthorized`.
@@ -48,7 +48,7 @@ Every HTTP response returned by the API includes the following observability hea
 Executes autonomous incident triage. Checks Redis semantic cache for similarity $\ge 0.90$. If miss, dispatches LangGraph cyclic state machine.
 
 > [!NOTE]
-> **Concurrency Load Shedding**: Execution is bounded by an async semaphore (max 10 concurrent LangGraph workflows). If saturated with a wait exceeding 5.0 seconds, the gateway sheds load with `HTTP 503 Service Unavailable`.
+> **Concurrency Load Shedding**: The Triage gateway bounds graph runs to `TRIAGE_MAX_CONCURRENT_RUNS` (default 10) per app. A request that waits longer than `TRIAGE_QUEUE_TIMEOUT_S` (default 5.0s) for a run slot is shed with `HTTP 503 Service Unavailable`.
 
 #### Request Body (`application/json`)
 ```json
