@@ -81,8 +81,16 @@ class LLMGateway:
     At most 3 adapter calls per complete(). The primary's result decides what follows:
     RateLimited cools the primary down and calls the fallback; Unavailable retries the primary
     once after a jittered backoff, then calls the fallback; MalformedResponse calls the
-    fallback; Rejected returns at once. While the primary cools down, only the fallback is
-    called. Cooldowns are per model.
+    fallback; Rejected returns at once.
+
+    Cooldowns are per model, and a model in cooldown is never called. While the primary cools
+    down, only the fallback is called; while the fallback cools down, a primary failure is
+    returned as is; while both cool down, no call is made and a RateLimited carrying the
+    shorter remaining window is returned. A 429 starts its model's cooldown when it arrives,
+    so concurrent and later-cancelled calls see it; counters are applied only when complete()
+    finishes. Known limits: calls already waiting on the primary when its first 429 arrives
+    still get their own 429s (no single-flight), and the Unavailable retry is sent even if a
+    concurrent call put the primary into cooldown during the backoff.
     """
 
     def __init__(
@@ -121,14 +129,25 @@ class LLMGateway:
         except Exception as exc:
             logger.error("LLM gateway call failed unexpectedly: %s", exc)
             result = Unavailable(detail=f"LLM gateway error: {exc}")
-        # Reached only when not cancelled: a cancelled call records nothing.
+        # Reached only when not cancelled: a cancelled call records no counters (a 429 it got
+        # has already started its cooldown in _call).
         self._record(attempts, result)
         return result
 
     async def _complete(
         self, messages: list[BaseMessage], attempts: list[Attempt]
     ) -> Completion | ProviderFailure:
-        if self._cooling_down(self.primary):
+        primary_left_s = self._remaining_s(self.primary)
+        if primary_left_s > 0:
+            fallback_left_s = self._remaining_s(self.fallback)
+            if fallback_left_s > 0:
+                # No call made and no 429 received, so attempts stays empty: nothing is recorded.
+                # Reusing the values checked above keeps retry_after_s positive.
+                return RateLimited(
+                    retry_after_s=min(primary_left_s, fallback_left_s),
+                    scope="unknown",
+                    detail=f"Both {self.primary} and {self.fallback} are cooling down",
+                )
             return await self._call(self.fallback, messages, attempts)
         result = await self._call(self.primary, messages, attempts)
         if isinstance(result, Unavailable):
@@ -138,24 +157,34 @@ class LLMGateway:
             result = await self._call(self.primary, messages, attempts)
         if isinstance(result, Completion | Rejected):
             return result
+        if self._cooling_down(self.fallback):
+            logger.warning(
+                "LLM primary %s failed; fallback %s is cooling down", self.primary, self.fallback
+            )
+            return result
         logger.warning("LLM primary %s failed; failing over to %s", self.primary, self.fallback)
         return await self._call(self.fallback, messages, attempts)
 
     def _cooling_down(self, model: str) -> bool:
-        return self._clock() < self._cooldown_until.get(model, 0.0)
+        return self._remaining_s(model) > 0
+
+    def _remaining_s(self, model: str) -> float:
+        return self._cooldown_until.get(model, 0.0) - self._clock()
 
     async def _call(
         self, model: str, messages: list[BaseMessage], attempts: list[Attempt]
     ) -> Completion | ProviderFailure:
         result = await self.adapter.call(model, messages)
         attempts.append(Attempt(model=model, result=result))
+        if isinstance(result, RateLimited):
+            # Started here, not in _record, so concurrent and cancelled calls see it at once.
+            self._cooldown_until[model] = self._clock() + self._cooldown_s(model, result)
         if not isinstance(result, Completion):
             logger.warning("LLM call to %s failed: %s", model, result)
         return result
 
     def _record(self, attempts: list[Attempt], result: Completion | ProviderFailure) -> None:
-        """Apply one completed complete() call to the counters and cooldowns."""
-        now = self._clock()
+        """Apply one completed complete() call to the counters (cooldowns start in _call)."""
         for attempt in attempts:
             model, outcome = attempt.model, attempt.result
             self._total_calls += 1
@@ -166,7 +195,6 @@ class LLMGateway:
             self._last_error = outcome.detail
             if isinstance(outcome, RateLimited):
                 self._rate_limit_hits += 1
-                self._cooldown_until[model] = now + self._cooldown_s(model, outcome)
         if isinstance(result, Completion) and attempts and attempts[-1].model == self.fallback:
             self._failover_events += 1
 

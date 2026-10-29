@@ -207,16 +207,19 @@ The primary is `GROQ_MODEL` (`qwen/qwen3.8-27b`), the fallback `GROQ_FALLBACK_MO
 | :--- | :--- |
 | `Completion` | Return it. |
 | `RateLimited` | Start the primary's cooldown and call the fallback once. The primary is never retried. |
-| `Unavailable` | Retry the primary once after a jittered backoff (`random.uniform(RETRY_MIN_WAIT_SECONDS, RETRY_MAX_WAIT_SECONDS)`). If the retry fails with anything but `Rejected`, call the fallback once. |
+| `Unavailable` | Retry the primary once after a jittered backoff (`random.uniform(RETRY_MIN_WAIT_SECONDS, RETRY_MAX_WAIT_SECONDS)`). If the retry fails with anything but `Rejected`, call the fallback once. The retry is sent even if a concurrent call put the primary into cooldown during the backoff. |
 | `MalformedResponse` | Call the fallback once. |
 | `Rejected` | Return it at once: no retry, no failover. |
 | *(primary in cooldown)* | Skip the primary and call the fallback once. |
+| *(primary and fallback both in cooldown)* | Make no call. Return `RateLimited(scope="unknown")` whose `retry_after_s` is the shorter remaining cooldown of the two. |
 
-If the fallback fails too, `complete()` returns the fallback's failure. `generate_report` turns any failure into the `fallback_report` route, so a dead model still yields a `SEVERELY_DEGRADED` report instead of an error.
+**A cooling fallback is never called.** If the primary fails (`RateLimited`, `Unavailable` after its retry, or `MalformedResponse`) while the fallback cools down, `complete()` returns the primary's failure. Otherwise, if the fallback fails too, `complete()` returns the fallback's failure. `generate_report` turns any failure into the `fallback_report` route, so a dead model still yields a `SEVERELY_DEGRADED` report instead of an error.
 
-**Cooldowns are per model.** A 429 from the fallback records a cooldown for the fallback only; it never cools down the primary. The fallback's cooldown is recorded but not consulted: a call that reaches the fallback always tries it.
+**Cooldowns are per model.** A 429 from the fallback starts a cooldown for the fallback only; it never cools down the primary.
 
-**Cancellation records nothing.** The gateway applies a call's counters and cooldowns only after `complete()` finishes, so a call cancelled mid-way (run deadline, client disconnect, during the backoff) starts no cooldown and counts no call, rate-limit hit or failover.
+**A 429 starts its cooldown the moment it arrives.** The cooldown is written when the adapter returns `RateLimited`, not when `complete()` finishes. So a concurrent call that starts while another waits on the fallback already skips the primary, and a call cancelled after a 429 (run deadline, client disconnect, during the backoff) still leaves that model cooling. Calls already waiting on the primary when its first 429 arrives still get their own 429s; the gateway has no single-flight.
+
+**Counters record only finished calls.** `total_calls`, `rate_limit_hits`, `failover_events` and `last_error` are applied when `complete()` returns, so a cancelled call counts none of them. The no-call `RateLimited` from the both-cooling row records nothing either: no call was made and no 429 came back.
 
 ### Cooldown length
 
