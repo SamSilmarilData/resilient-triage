@@ -334,3 +334,68 @@ async def test_a_run_past_its_deadline_answers_with_an_unstored_synthesis_fallba
     assert "Run deadline exceeded" in outcome.report.root_cause_analysis
     assert await cache.lookup(QUERY, service_filter="billing") is None
     assert gateway.metrics == TriageMetrics(hit=0, miss=1, saturated=0)
+
+
+async def test_a_run_past_its_deadline_frees_its_run_slot(cache):
+    graph = SleepingGraph(10.0)
+    gateway = _gateway(cache, graph, _deadline(0.05))
+    await gateway.triage(QUERY, None)
+
+    graph.seconds = 0.0
+    outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
+
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.summary == "Answer for Checkout latency spike in eu-west-1"
+
+
+async def test_a_run_under_its_deadline_is_answered_and_stored(cache):
+    gateway = _gateway(cache, SleepingGraph(0.01), _deadline(1.0))
+
+    outcome = await gateway.triage(QUERY, "billing")
+
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.summary == f"Answer for {QUERY}"
+    stored = await cache.lookup(QUERY, service_filter="billing")
+    assert stored is not None
+    assert stored.report == outcome.report
+
+
+async def test_waiting_for_a_run_slot_does_not_count_against_the_deadline(cache):
+    gateway = _gateway(cache, SleepingGraph(0.15), _deadline(0.25, queue_timeout_s=1.0))
+
+    first = asyncio.create_task(gateway.triage(QUERY, None))
+    await asyncio.sleep(0)
+    second = await gateway.triage("Checkout latency spike in eu-west-1", None)
+
+    assert isinstance(second, Analyzed)
+    assert second.report.summary == "Answer for Checkout latency spike in eu-west-1"
+    assert isinstance(await first, Analyzed)
+
+
+async def test_a_caller_cancelling_a_run_propagates_and_frees_its_run_slot(cache):
+    graph = BlockingGraph()
+    gateway = _gateway(cache, graph, _deadline(5.0))
+    task = asyncio.create_task(gateway.triage(QUERY, None))
+    await graph.started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert await cache.lookup(QUERY) is None
+    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0)
+    graph.release.set()
+    outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.summary == "Answer for Checkout latency spike in eu-west-1"
+
+
+async def test_a_timeout_raised_inside_the_graph_is_a_graph_exception_not_the_deadline(cache):
+    gateway = _gateway(cache, RaisingGraph(TimeoutError("upstream read timed out")), _deadline(5.0))
+
+    outcome = await gateway.triage(QUERY, None)
+
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+    assert "failed unexpectedly" in outcome.report.root_cause_analysis
+    assert "Run deadline" not in outcome.report.root_cause_analysis
