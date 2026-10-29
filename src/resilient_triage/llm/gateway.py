@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol, runtime_checkable
@@ -99,7 +100,15 @@ class QuotaReporter(Protocol):
 class LLMGateway:
     """Calls the primary model through an adapter, failing over to the fallback model."""
 
-    def __init__(self, adapter: ModelAdapter, primary: str, fallback: str, label: str) -> None:
+    def __init__(
+        self,
+        adapter: ModelAdapter,
+        primary: str,
+        fallback: str,
+        label: str,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.adapter = adapter
         self.primary = primary
         self.fallback = fallback
@@ -111,6 +120,7 @@ class LLMGateway:
         self._last_error: str | None = None
         self._last_updated: datetime | None = None
         self._cooldown_until = 0.0
+        self._clock = clock
 
     @property
     def label(self) -> str:
@@ -126,7 +136,7 @@ class LLMGateway:
             return Unavailable(detail=f"LLM gateway error: {exc}")
 
     async def _complete(self, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        if time.monotonic() < self._cooldown_until:
+        if self._clock() < self._cooldown_until:
             return await self._call(self.fallback, messages, failover=True)
         failure: ProviderFailure | None = None
         for attempt in range(PRIMARY_ATTEMPTS):
@@ -166,7 +176,7 @@ class LLMGateway:
         if isinstance(result, RateLimited):
             self._rate_limit_hits += 1
             cooldown = result.retry_after_s or DEFAULT_COOLDOWN_S
-            self._cooldown_until = time.monotonic() + cooldown
+            self._cooldown_until = self._clock() + cooldown
         return result
 
     def snapshot(self) -> LLMQuotaSnapshot:
