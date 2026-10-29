@@ -3,6 +3,7 @@ from typing import Any
 
 import httpx
 import pytest
+from fakes import make_triage_deps
 
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
 from resilient_triage.schemas.telemetry import ChaosConfig
@@ -363,3 +364,21 @@ def test_the_probe_requires_the_breaker_registry_health_reports_on():
     """The probe refuses to build a hidden registry /health would never see."""
     with pytest.raises(TypeError):
         TelemetryProbe([ClusterSentinelSource(ChaosManager())])  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # External only -> Statuspage
+        ("GitHub Actions workflows are failing with 503", {"statuspage"}),
+        # Internal only -> Cluster Sentinel
+        ("Internal latency probe on auth-service", {"chaos"}),
+        # Neither (or both) -> every source
+        ("Service outage across entire infrastructure", {"statuspage", "chaos"}),
+        ("Internal auth failing for GitHub webhooks", {"statuspage", "chaos"}),
+    ],
+)
+def test_select_targets_routes_queries_by_each_adapters_keywords(query, expected):
+    """Statuspage carries the external keywords and Cluster Sentinel the internal ones."""
+    probe = make_triage_deps().telemetry
+    assert probe.select_targets(query, None) == frozenset(expected)

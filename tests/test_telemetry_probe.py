@@ -24,8 +24,10 @@ class FakeSource:
         *,
         fail: bool = False,
         delay_s: float = 0.0,
+        keywords: frozenset[str] = frozenset(),
     ) -> None:
         self.id = source_id
+        self.keywords = keywords
         self.fail = fail
         self.delay_s = delay_s
         self.reads: list[tuple[str, str | None]] = []
@@ -203,3 +205,38 @@ async def test_guarded_runs_a_read_through_the_source_breaker_and_raises_its_fai
     with pytest.raises(RuntimeError, match="boom"):
         await probe.guarded("alpha", failing)
     assert probe.breakers.get_all_statuses()["alpha"].fail_counter == 1
+
+
+def _targeting_probe() -> TelemetryProbe:
+    return _probe(
+        FakeSource("alpha", keywords=frozenset({"auth", "latency probe"})),
+        FakeSource("beta", keywords=frozenset({"github", "repo"})),
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "scope", "expected"),
+    [
+        ("auth errors spiking", None, {"alpha"}),
+        ("github is down", None, {"beta"}),
+        ("auth broken on the github repo", None, {"alpha", "beta"}),
+        ("everything is on fire", None, {"alpha", "beta"}),
+        # The scope counts like the query, case-insensitively.
+        ("errors spiking", "Auth-Service", {"alpha"}),
+        # A keyword may be a phrase.
+        ("slow Latency Probe", None, {"alpha"}),
+    ],
+)
+def test_select_targets_picks_sources_whose_keywords_appear(
+    query: str, scope: str | None, expected: set[str]
+) -> None:
+    assert _targeting_probe().select_targets(query, scope) == frozenset(expected)
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["author label missing", "my_auth_helper timing out", "reporting 502s", "repos lagging"],
+)
+def test_select_targets_matches_whole_words_only(query: str) -> None:
+    """A keyword inside a longer word never targets its source, so every source is targeted."""
+    assert _targeting_probe().select_targets(query, None) == frozenset({"alpha", "beta"})
