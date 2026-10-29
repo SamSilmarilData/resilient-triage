@@ -245,23 +245,44 @@ async def test_cache_clear_endpoint(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
+async def test_global_exception_handler_sanitization(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
     """Verify unhandled exceptions return structured JSON without leaking tracebacks."""
+    # /triage degrades instead of raising, so trigger the handler from another route.
+    monkeypatch.setattr(
+        runtime.llm, "snapshot", MagicMock(side_effect=RuntimeError("Secret internal db failure"))
+    )
+    resp = await client.get("/llm/quota")
+    assert resp.status_code == 500
+    data = resp.json()
+    assert data["error"] == "InternalServerError"
+    assert data["message"] == "An unexpected error occurred during incident triage."
+    assert "request_id" in data
+    assert "Secret internal db failure" not in str(data)
+    assert resp.headers.get("x-request-id") == data["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_triage_graph_exception_degrades_to_a_200_fallback(client: httpx.AsyncClient):
+    """A graph that raises gives a 200 MISS with a degraded report, not a 500."""
     with patch(
         "resilient_triage.runtime.triage_graph.ainvoke",
         side_effect=RuntimeError("Secret internal db failure"),
     ):
         resp = await client.post(
             "/triage",
-            json={"query": "Trigger unhandled exception failure", "force_refresh": True},
+            json={"query": "Checkout latency spike across regions", "force_refresh": True},
+            headers={"X-Thread-ID": "incident-thread-72"},
         )
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"] == "InternalServerError"
-        assert data["message"] == "An unexpected error occurred during incident triage."
-        assert "request_id" in data
-        assert "Secret internal db failure" not in str(data)
-        assert resp.headers.get("x-request-id") == data["request_id"]
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-cache") == "MISS"
+    assert resp.headers.get("x-thread-id") == "incident-thread-72"
+    data = resp.json()
+    assert data["cached"] is False
+    assert data["report"]["degradation_status"] == "SEVERELY_DEGRADED"
+    assert "Secret internal db failure" not in str(data)
 
 
 @pytest.mark.asyncio
