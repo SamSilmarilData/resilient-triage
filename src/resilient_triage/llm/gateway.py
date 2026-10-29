@@ -178,7 +178,9 @@ class LLMGateway:
         attempts.append(Attempt(model=model, result=result))
         if isinstance(result, RateLimited):
             # Started here, not in _record, so concurrent and cancelled calls see it at once.
-            self._cooldown_until[model] = self._clock() + self._cooldown_s(model, result)
+            # The later deadline wins: a 429 never shortens a running cooldown.
+            until = self._clock() + self._cooldown_s(model, result)
+            self._cooldown_until[model] = max(self._cooldown_until.get(model, 0.0), until)
         if not isinstance(result, Completion):
             logger.warning("LLM call to %s failed: %s", model, result)
         return result

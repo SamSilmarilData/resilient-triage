@@ -219,6 +219,8 @@ The primary is `GROQ_MODEL` (`qwen/qwen3.8-27b`), the fallback `GROQ_FALLBACK_MO
 
 **A 429 starts its cooldown the moment it arrives.** The cooldown is written when the adapter returns `RateLimited`, not when `complete()` finishes. So a concurrent call that starts while another waits on the fallback already skips the primary, and a call cancelled after a 429 (run deadline, client disconnect, during the backoff) still leaves that model cooling. Calls already waiting on the primary when its first 429 arrives still get their own 429s; the gateway has no single-flight.
 
+**A 429 never shortens a running cooldown.** Each 429 sets the model's deadline to the later of the one already set and its own (`now` + its cooldown length). So when concurrent calls get 429s out of order, a short `minute` window that arrives after a long `day` window leaves the `day` window in place. A deadline that has already passed is ignored, so a 429 after a cooldown has ended starts a fresh window of its own length. Only `POST /resilience/reset` ends a cooldown early.
+
 **Counters record only finished calls.** `total_calls`, `rate_limit_hits`, `failover_events` and `last_error` are applied when `complete()` returns, so a cancelled call counts none of them. The no-call `RateLimited` from the both-cooling row records nothing either: no call was made and no 429 came back.
 
 ### Cooldown length
