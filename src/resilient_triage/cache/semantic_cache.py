@@ -345,8 +345,12 @@ class SemanticCacheManager:
         )
         scoped_q = format_scoped_query(query, service_filter)
 
-        # 1. Generate query embedding
-        query_vec = self.embedding_provider.embed_query(scoped_q)
+        # 1. Generate query embedding; a failing embedder degrades to a MISS
+        try:
+            query_vec = self.embedding_provider.embed_query(scoped_q)
+        except Exception as embed_err:
+            logger.warning("Embedding failed during cache lookup: %s. Treating as MISS.", embed_err)
+            return None
 
         # 2. Search RediSearch index if available
         if self._redis and self._has_redisearch:
@@ -527,7 +531,11 @@ class SemanticCacheManager:
             else ""
         )
         scoped_q = format_scoped_query(query, service_filter)
-        query_vec = self.embedding_provider.embed_query(scoped_q)
+        try:
+            query_vec = self.embedding_provider.embed_query(scoped_q)
+        except Exception as embed_err:
+            logger.warning("Embedding failed during cache store: %s. Skipping store.", embed_err)
+            return
 
         # Degraded reports use shorter 60s TTL to allow quick recovery re-evaluation
         if ttl_seconds is not None:
