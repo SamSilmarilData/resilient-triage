@@ -260,3 +260,75 @@ async def test_generate_report_turns_a_provider_failure_into_todays_state_shape(
         "LLM Provider Failure: Unavailable: HTTP 503: upstream overloaded"
     ]
     assert result["repair_attempts"] == settings.max_self_repair_retries
+
+
+class FakeClock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def test_a_429_is_never_retried_against_the_primary() -> None:
+    """Regression (bug-hunt r4): every call 429s, so exactly primary then fallback is sent."""
+    limited = RateLimited(retry_after_s=None, scope="unknown", detail="Rate limit")
+    adapter = ScriptedAdapter([limited] * 5)
+    gateway = _gateway(adapter)
+
+    result = await gateway.complete(MESSAGES)
+
+    assert isinstance(result, RateLimited)
+    assert adapter.calls == [PRIMARY, FALLBACK]
+    assert gateway.snapshot().rate_limit_hits == 2
+
+
+async def test_a_fallback_429_does_not_cool_down_the_primary() -> None:
+    """Regression (bug-hunt r5): the fallback's 429 leaves the primary's window and budget."""
+    sent: list[str] = []
+    primary_budget = {"x-ratelimit-remaining-requests": "0", "x-ratelimit-limit-requests": "1000"}
+    replies = {
+        PRIMARY: [
+            httpx.Response(
+                429,
+                json={"error": {"message": "primary limited"}},
+                headers={**primary_budget, "x-ratelimit-reset-requests": "10s"},
+            ),
+            httpx.Response(200, json=_content("{}"), headers=primary_budget),
+        ],
+        FALLBACK: [
+            httpx.Response(200, json=_content("{}")),
+            httpx.Response(
+                429,
+                json={"error": {"message": "fallback limited"}},
+                headers={
+                    "x-ratelimit-remaining-requests": "0",
+                    "x-ratelimit-limit-requests": "14400",
+                    "x-ratelimit-reset-requests": "600s",
+                },
+            ),
+        ],
+    }
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        sent.append(model)
+        return replies[model].pop(0)
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)  # the primary's 429 starts its cooldown; the fallback answers
+    clock.now += 5
+    assert isinstance(await gateway.complete(MESSAGES), RateLimited)  # the fallback 429s
+    assert gateway.snapshot().limit_requests == 1000
+
+    clock.now += settings.llm_default_cooldown_s  # past the primary's own window
+    result = await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+    assert result == Completion(text="{}", model=PRIMARY)
+    assert (gateway.snapshot().remaining_requests, gateway.snapshot().limit_requests) == (0, 1000)
