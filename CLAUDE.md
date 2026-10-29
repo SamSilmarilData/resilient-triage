@@ -30,7 +30,10 @@ Statuspage, or the LLM is down — degrade instead.
 - `graph/nodes/` — one node per file, `<name>_node(state, runtime: Runtime[TriageDeps])` when it needs
   collaborators, else `<name>_node(state)`; returns a partial state update `dict[str, Any]` and reads
   collaborators only from `runtime.context`.
-- `runtime.py` — `AppRuntime` (cache, breakers, chaos, LLM gateway, `TriageDeps`), built by `build_runtime()`; one per app.
+- `runtime.py` — `AppRuntime` (cache, breakers, chaos, LLM gateway, `TriageDeps`, Triage gateway), built by `build_runtime()`; one per app.
+- `triage_gateway.py` — `TriageGateway`: the `POST /triage` request path (cache lookup → run slot or `Shed` →
+  graph → store). Returns a `CacheHit | Analyzed | Shed` outcome and counts them for `/metrics`. The only
+  request-path cache writer; the route is a thin adapter.
 - `graph/deps.py` — `TriageDeps` (the run context nodes see) and its protocols; no imports of
   `runtime` or the graph, so nodes can import it without a cycle. `runtime.py` re-exports it.
 - `llm/` — the LLM gateway: every model call goes through `LLMGateway.complete()`, which returns a

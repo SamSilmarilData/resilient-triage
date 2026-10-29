@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The `POST /triage` request path lives in the Triage gateway**: `TriageGateway` (`triage_gateway.py`, an `AppRuntime` member) does the cache lookup, waits for a run slot or sheds the request, runs the graph, and stores the report; the route only maps its outcome to HTTP. Responses, headers, caching and `/metrics` output are unchanged. The gateway is the only request-path cache writer: `finalize` no longer stores. The run-slot limit and wait are now settings, both in `.env.example`:
+  - `TRIAGE_MAX_CONCURRENT_RUNS` (default 10, 1–100): graph runs in flight per app, previously hard-coded.
+  - `TRIAGE_QUEUE_TIMEOUT_S` (default 5.0s, above 0 and at most 30): how long a request waits for a run slot before a 503, previously hard-coded.
 - **Report reconciliation owns the degradation fields**: `finalize` now runs `reconcile` (`graph/reconciliation.py`) on every report, so `degradation_status` and `circuit_breakers_tripped` follow one rule whichever path produced the report. The LLM no longer controls either field: its values, including breaker names it made up, are discarded.
 - **Any non-diagnostic action now requires approval**: report reconciliation sets `requires_approval=True` on every recommended action whose `action_type` is not `diagnostic` (case and whitespace ignored). Previously only the exact value `remediative` was caught, so labels like `"Remediation"` or `"mutating"` slipped through. The check moved out of `validate_report`.
 - **Only targeted breakers degrade a report**: an open circuit breaker for a telemetry source the query does not target no longer marks the report degraded or lists that breaker.

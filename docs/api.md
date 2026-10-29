@@ -48,7 +48,7 @@ Every HTTP response returned by the API includes the following observability hea
 Executes autonomous incident triage. Checks Redis semantic cache for similarity $\ge 0.90$. If miss, dispatches LangGraph cyclic state machine.
 
 > [!NOTE]
-> **Concurrency Load Shedding**: Execution is bounded by an async semaphore (max 10 concurrent LangGraph workflows). If saturated with a wait exceeding 5.0 seconds, the gateway sheds load with `HTTP 503 Service Unavailable`.
+> **Concurrency Load Shedding**: The Triage gateway bounds graph runs to `TRIAGE_MAX_CONCURRENT_RUNS` (default 10) per app. A request that waits longer than `TRIAGE_QUEUE_TIMEOUT_S` (default 5.0s) for a run slot is shed with `HTTP 503 Service Unavailable`.
 
 #### Request Body (`application/json`)
 ```json
