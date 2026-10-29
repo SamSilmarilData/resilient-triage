@@ -171,7 +171,11 @@ class SemanticCacheManager:
             self._clear_pending = False
             logger.info("Ran the pending Redis clear before serving from Redis.")
 
-        self._redis = store
+        # Adopt the new store; any client it replaces is released, never dropped unclosed.
+        previous, self._redis = self._redis, store
+        self._initialized = True
+        if previous is not None and previous is not store:
+            await previous.aclose()
         logger.info(
             "SemanticCacheManager connected to Redis at %s (RediSearch: %s)",
             self.redis_url,
