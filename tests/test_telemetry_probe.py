@@ -28,6 +28,7 @@ class FakeSource:
     ) -> None:
         self.id = source_id
         self.keywords = keywords
+        self.display_name = f"{source_id.capitalize()} source"
         self.fail = fail
         self.delay_s = delay_s
         self.reads: list[tuple[str, str | None]] = []
@@ -240,3 +241,11 @@ def test_select_targets_picks_sources_whose_keywords_appear(
 def test_select_targets_matches_whole_words_only(query: str) -> None:
     """A keyword inside a longer word never targets its source, so every source is targeted."""
     assert _targeting_probe().select_targets(query, None) == frozenset({"alpha", "beta"})
+
+
+def test_describe_names_a_source_by_display_name_and_id() -> None:
+    probe = _probe(FakeSource("alpha"))
+
+    assert probe.describe("alpha") == "Alpha source [alpha]"
+    # An id no source owns is named as itself.
+    assert probe.describe("redis") == "redis"
