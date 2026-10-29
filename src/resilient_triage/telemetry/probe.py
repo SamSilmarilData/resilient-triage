@@ -7,6 +7,7 @@ and a failed read becomes one degraded signal instead of an exception.
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,16 @@ class TelemetrySource(Protocol):
     @property
     def id(self) -> str:
         """Source id, also its breaker name."""
+        ...
+
+    @property
+    def keywords(self) -> frozenset[str]:
+        """Words or phrases that route a query to this source, matched as whole words."""
+        ...
+
+    @property
+    def display_name(self) -> str:
+        """Human name used when describing this source, e.g. in a degradation reason."""
         ...
 
     async def read(self, query: str, scope: str | None) -> list[TelemetrySignal]: ...
@@ -68,6 +79,16 @@ class _Unavailable:
 _Outcome = _Read | _Tripped | _Unavailable
 
 
+def _whole_word_pattern(keywords: frozenset[str]) -> re.Pattern[str] | None:
+    """Match any keyword as a whole word or phrase; None when there are no keywords."""
+    if not keywords:
+        return None
+    # \b treats "_" as a word character and "-" as a boundary, so "auth" matches
+    # "auth-service" but not "author" or "my_auth_helper".
+    alternatives = "|".join(re.escape(kw.lower()) for kw in sorted(keywords))
+    return re.compile(rf"\b(?:{alternatives})\b")
+
+
 class TelemetryProbe:
     """Reads Telemetry sources concurrently, each through breaker -> deadline -> retry."""
 
@@ -84,11 +105,31 @@ class TelemetryProbe:
             )
             for source in self._sources
         }
+        self._keyword_patterns = {
+            source.id: _whole_word_pattern(source.keywords) for source in self._sources
+        }
 
     @property
     def source_ids(self) -> list[str]:
         """Every source id, in registration order."""
         return [source.id for source in self._sources]
+
+    def describe(self, source_id: str) -> str:
+        """Name a source as "<display name> [<id>]"; an id no source owns is named as itself."""
+        for source in self._sources:
+            if source.id == source_id:
+                return f"{source.display_name} [{source.id}]"
+        return source_id
+
+    def select_targets(self, query: str, scope: str | None) -> frozenset[str]:
+        """Targeted sources: those whose keywords appear in query or scope, else every source."""
+        text = f"{query} {scope or ''}".lower()
+        matched = frozenset(
+            source_id
+            for source_id, pattern in self._keyword_patterns.items()
+            if pattern is not None and pattern.search(text) is not None
+        )
+        return matched or frozenset(self.source_ids)
 
     async def collect(
         self, targets: frozenset[str], query: str, scope: str | None

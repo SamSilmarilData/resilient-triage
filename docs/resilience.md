@@ -99,9 +99,10 @@ Only genuinely transient exceptions trigger retries:
 
 ### The guarded telemetry probe owns the call order
 
-`TelemetryProbe` (`telemetry/probe.py`) is the one place that guards Telemetry sources. `build_runtime` builds it with both adapters and the runtime's breaker registry, and nodes reach it as `TriageDeps.telemetry`. The adapters only read and parse: `StatuspageSource` (`telemetry/statuspage.py`, which keeps the 10 s summary cache) and `ClusterSentinelSource` (`telemetry/chaos.py`, which names the matching sub-probe). Each adapter has an `id` (also its breaker name: `statuspage`, `chaos`) and a `degraded_label`, and its `read` raises on failure.
+`TelemetryProbe` (`telemetry/probe.py`) is the one place that guards Telemetry sources. `build_runtime` builds it with both adapters and the runtime's breaker registry, and nodes reach it as `TriageDeps.telemetry`. The adapters only read and parse: `StatuspageSource` (`telemetry/statuspage.py`, which keeps the 10 s summary cache) and `ClusterSentinelSource` (`telemetry/chaos.py`, which names the matching sub-probe). Each adapter has an `id` (also its breaker name: `statuspage`, `chaos`), its `keywords`, a `display_name` and a `degraded_label`, and its `read` raises on failure.
 
 - **Breakers at build time**: building the probe creates one breaker per source with the shared `circuit_breaker_fail_max` / `circuit_breaker_reset_timeout`, so `/health` lists both from startup. `AppRuntime.start()` registers none.
+- **`select_targets(query, scope)`** returns the Targeted sources: those whose keywords appear as whole words in `f"{query} {scope or ''}".lower()`, or every source when none match. `analyze_query` stores the result, sorted, as `targeted_sources`.
 - **`collect(targets, query, scope)`** reads the targeted sources concurrently and returns a `TelemetryReading` (`signals`, `tripped_breakers`, `unavailable_sources`, `breaker_states`). It never raises except `CancelledError`. Sources not in `targets` are never read and never appear in either set.
 - **Tripped vs Unavailable**: a read is a **Tripped breaker** if the breaker refused it (`BreakerOpen`, including a refusal during someone else's half-open trial) or the breaker is open right after it (the read that trips it). It is an **Unavailable source** if the read failed and the breaker is not open afterwards.
 - **One degraded signal per failed source**: `source=degraded_label(...)` (`statuspage:global`, or the matched Cluster Sentinel sub-probe name), `status` `CIRCUIT_OPEN` or `UNAVAILABLE`, `error_rate=1.0`; the snippet carries the failure. The read that trips the breaker is `CIRCUIT_OPEN` and still names the real error.
@@ -215,8 +216,8 @@ A report's `degradation_status` and `circuit_breakers_tripped` are system facts,
 **Synthesis fallbacks are never cached.** The gateway still answers with a synthesis fallback (`X-Cache: MISS`, counted as a `miss` on `/metrics`) but does not store it, so the next identical query runs the graph again instead of getting the degraded answer as a HIT. A synthesis fallback is a run whose state has `synthesis_fell_back` set, or one of the gateway's own fallbacks: for a run with no `final_report`, or for a graph that raised (above). Every other report is stored; one degraded only by telemetry (a tripped breaker or an unavailable source) gets the shorter `CACHE_DEGRADED_TTL_SECONDS`.
 
 The evidence is:
-- **Tripped breakers**: targeted tools whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
-- **Unavailable sources**: targeted tools that could not be read while their breaker was *not* tripped: the fetch task raised, or a signal it returned has `status == "UNAVAILABLE"`. `collect_telemetry` records them as `unavailable_sources`. A tool whose breaker is tripped counts only as a tripped breaker, never also as an unavailable source.
+- **Tripped breakers**: targeted sources whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
+- **Unavailable sources**: targeted sources that could not be read while their breaker was *not* tripped (the probe's read failed). `collect_telemetry` records them as `unavailable_sources`. A source whose breaker is tripped counts only as a tripped breaker, never also as an unavailable source.
 - **Synthesis fallback**: the report was built by `fallback_report`.
 
 The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED):
