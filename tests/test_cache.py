@@ -1,5 +1,7 @@
 """Tests for semantic caching, embeddings, and sub-20ms vector lookups."""
 
+import re
+
 import numpy as np
 import pytest
 import pytest_asyncio
@@ -458,11 +460,8 @@ async def test_embedding_failure_degrades_lookup_to_miss_and_skips_store(caplog)
 
 def _in_memory_cache(**kwargs) -> SemanticCacheManager:
     """A manager whose Redis is unreachable, so every read is served by the in-memory standby."""
-    return SemanticCacheManager(
-        redis_url="redis://127.0.0.1:59999/0",
-        embedding_provider=DeterministicEmbeddingProvider(),
-        **kwargs,
-    )
+    kwargs.setdefault("embedding_provider", DeterministicEmbeddingProvider())
+    return SemanticCacheManager(redis_url="redis://127.0.0.1:59999/0", **kwargs)
 
 
 async def test_corrupt_cached_report_is_a_miss_and_is_evicted(caplog):
@@ -518,3 +517,24 @@ async def test_wrong_dimension_vector_is_rejected_and_lookups_keep_working(caplo
     assert match is not None
     assert match.report.summary == "Actions runner queue stalled"
     assert await cache.lookup(_WrongDimensionForOneQuery.BAD_QUERY) is None
+
+
+class _ScopeBlindEmbeddingProvider(DeterministicEmbeddingProvider):
+    """Embeds a query as if its `[scope: ...]` prefix were absent.
+
+    A real embedder barely moves a vector for that short prefix, so a scoped and an unscoped
+    query embed almost alike; this makes them identical, leaving the scope check to the store.
+    """
+
+    def embed_query(self, text: str) -> list[float]:
+        return super().embed_query(re.sub(r"^\[scope: [^\]]*\] ", "", text))
+
+
+async def test_unscoped_lookup_does_not_hit_an_entry_stored_under_a_scope():
+    """Bug-hunt r8: "no scope" is its own scope, so an unscoped lookup misses a scoped entry."""
+    cache = _in_memory_cache(embedding_provider=_ScopeBlindEmbeddingProvider())
+    query = "GitHub Actions runner jobs are not picking up"
+    await cache.store(query, _make_sample_report(), service_filter="billing")
+
+    assert await cache.lookup(query, service_filter=None) is None
+    assert await cache.lookup(query, service_filter="billing") is not None

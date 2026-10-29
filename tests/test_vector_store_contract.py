@@ -168,6 +168,41 @@ async def test_scoped_search_only_sees_entries_in_that_scope(make_harness: Harne
     assert await store.search(E0, scope="database", threshold=0.9) is None
 
 
+async def test_unscoped_search_never_returns_a_scoped_entry(make_harness: HarnessFactory) -> None:
+    """ "No scope" is a scope of its own: an unscoped search skips scoped entries."""
+    store = (await make_harness()).store
+    await store.put(_entry("billing-doc", E0, scope="billing"), ttl=60)
+
+    assert await store.search(E0, scope="", threshold=0.0) is None
+
+
+async def test_scoped_search_never_returns_an_unscoped_entry(make_harness: HarnessFactory) -> None:
+    """A scoped search skips entries stored with no scope."""
+    store = (await make_harness()).store
+    await store.put(_entry("unscoped-doc", E0), ttl=60)
+
+    assert await store.search(E0, scope="billing", threshold=0.0) is None
+
+
+async def test_exact_scope_match_hits_past_closer_entries_in_other_scopes(
+    make_harness: HarnessFactory,
+) -> None:
+    """The best entry in the exact scope wins even when closer entries sit in other scopes."""
+    store = (await make_harness()).store
+    await store.put(_entry("billing-exact", E0, scope="billing"), ttl=60)
+    await store.put(_entry("actions-exact", E0, scope="actions"), ttl=60)
+    await store.put(_entry("unscoped-near", NEAR), ttl=60)
+
+    unscoped = await store.search(E0, scope="", threshold=0.5)
+    billing = await store.search(E0, scope="billing", threshold=0.5)
+
+    assert unscoped is not None and unscoped.doc_id == "unscoped-near"
+    assert unscoped.service_scope == ""
+    assert unscoped.similarity == pytest.approx(0.8, abs=1e-4)
+    assert billing is not None and billing.doc_id == "billing-exact"
+    assert billing.similarity == pytest.approx(1.0, abs=1e-4)
+
+
 async def test_entry_expires_after_its_ttl(make_harness: HarnessFactory) -> None:
     """An entry is served until its TTL passes, then it is a MISS."""
     harness = await make_harness()
