@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage
 
 from resilient_triage.api.app import create_app
 from resilient_triage.config import settings
-from resilient_triage.llm import RateLimited, ScriptedAdapter, Unavailable, build_llm_gateway
+from resilient_triage.llm import RateLimited, ScriptedAdapter, build_llm_gateway
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import SeverityLevel
 
@@ -269,7 +269,7 @@ async def test_triage_llm_failure_degrades_gracefully(
     client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
 ):
     """Verify a failed LLM call (e.g. HTTP 429, network error) still returns 200 with a fallback."""
-    failure = Unavailable(detail="429 Too Many Requests: Rate limit reached")
+    failure = RateLimited(retry_after_s=None, scope="unknown", detail="Rate limit reached")
     # Enough failures for every model call one complete() may make.
     scripted = build_llm_gateway(settings, ScriptedAdapter([failure] * 3))
     monkeypatch.setattr(runtime, "deps", dataclasses.replace(runtime.deps, llm=scripted))

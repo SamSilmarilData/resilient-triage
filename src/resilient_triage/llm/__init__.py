@@ -1,17 +1,19 @@
 """LLM gateway package: every model call goes through LLMGateway.complete()."""
 
 from resilient_triage.config import Settings
-from resilient_triage.llm.gateway import (
-    Completion,
-    LLMGateway,
+from resilient_triage.llm.failures import (
     MalformedResponse,
-    ModelAdapter,
     ProviderFailure,
-    QuotaHeaders,
     RateLimited,
     RateLimitScope,
     Rejected,
     Unavailable,
+)
+from resilient_triage.llm.gateway import (
+    Completion,
+    LLMGateway,
+    ModelAdapter,
+    QuotaHeaders,
 )
 from resilient_triage.llm.groq import GroqAdapter
 from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, SIMULATION_LABEL, ScriptedAdapter

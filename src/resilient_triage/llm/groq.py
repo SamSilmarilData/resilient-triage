@@ -7,16 +7,15 @@ import httpx
 from langchain_core.messages import BaseMessage
 
 from resilient_triage.config import settings
-from resilient_triage.llm.gateway import (
-    Completion,
+from resilient_triage.llm.failures import (
     MalformedResponse,
     ProviderFailure,
-    QuotaHeaders,
     RateLimited,
     RateLimitScope,
     Rejected,
     Unavailable,
 )
+from resilient_triage.llm.gateway import Completion, QuotaHeaders
 
 logger = logging.getLogger(__name__)
 

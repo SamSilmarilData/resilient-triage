@@ -59,6 +59,7 @@ Typed dictionary carrying execution state across graph nodes:
 - `candidate_report_raw: str | None`: Unparsed raw output from LLM.
 - `repair_attempts: int`: Number of self-repair retries attempted (max 2).
 - `validation_errors: list[str]`: Tracebacks from Pydantic `ValidationError`.
+- `provider_failure: ProviderFailure | None`: The latest generation's typed LLM provider failure (`RateLimited`, `Unavailable`, `Rejected` or `MalformedResponse`), else `None`. Set, it routes `generate_report` straight to `fallback_report`.
 - `final_report: IncidentTriageReport | None`: Final validated report.
 
 ---
