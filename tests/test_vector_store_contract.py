@@ -200,3 +200,18 @@ async def test_count_tracks_puts(make_harness: HarnessFactory) -> None:
     await store.put(_entry("b", FAR, scope="actions"), ttl=60)
 
     assert store.count == 2
+
+
+async def test_delete_removes_only_that_entry(make_harness: HarnessFactory) -> None:
+    """Deleting a doc id drops that entry, keeps the rest, and is a no-op for an unknown id."""
+    store = (await make_harness()).store
+    await store.put(_entry("gone", E0), ttl=60)
+    await store.put(_entry("kept", FAR), ttl=60)
+
+    await store.delete("gone")
+    await store.delete("never-stored")
+
+    assert store.count == 1
+    assert await store.search(E0, scope="", threshold=0.9) is None
+    kept = await store.search(FAR, scope="", threshold=0.9)
+    assert kept is not None and kept.doc_id == "kept"
