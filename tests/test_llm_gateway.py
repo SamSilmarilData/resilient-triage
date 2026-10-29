@@ -6,6 +6,7 @@ import types
 import pytest
 
 from resilient_triage.config import settings
+from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.runtime import build_runtime
 
 
@@ -24,9 +25,6 @@ async def test_openai_key_without_groq_key_runs_the_labelled_simulation(
     try:
         snapshot = await runtime.snapshot()
         assert snapshot.active_model == "Zero-Config SRE Simulation"
-
-        from resilient_triage.llm import ScriptedAdapter
-
         assert isinstance(runtime.llm.adapter, ScriptedAdapter)
     finally:
         await runtime.aclose()
