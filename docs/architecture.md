@@ -153,7 +153,7 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
 
 1. **Statuspage 10-Second Short-TTL Cache**:
    - Upstream Atlassian/GitHub status pages update every 1–5 minutes.
-   - `StatuspageClient` caches parsed summaries for 10 seconds in-memory, eliminating transcontinental HTTPS latency (**~650ms – 700ms saved per query**).
+   - `StatuspageSource` caches parsed summaries for 10 seconds in-memory, eliminating transcontinental HTTPS latency (**~650ms – 700ms saved per query**).
 2. **Persistent Groq HTTP Connection Pooling & Token Budget**:
    - Replaced per-request HTTP client creation with a persistent, keep-alive client pool (`httpx.Limits(max_keepalive_connections=LLM_MAX_KEEPALIVE_CONNECTIONS, max_connections=LLM_MAX_CONNECTIONS)`, defaults 20 and 50).
    - Caps the Groq LPU payload at `max_tokens=LLM_MAX_TOKENS` (default 2500) to stop runaway token generation while leaving room for a complete, structured incident report.

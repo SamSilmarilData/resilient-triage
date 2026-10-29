@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # TelemetrySignal.status for a source that could not be read.
 SIGNAL_STATUS_UNAVAILABLE = "UNAVAILABLE"
+# TelemetrySignal.status for a source whose breaker is open (a Tripped breaker).
+SIGNAL_STATUS_CIRCUIT_OPEN = "CIRCUIT_OPEN"
 
 
 class StatuspageComponent(BaseModel):

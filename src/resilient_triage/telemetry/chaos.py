@@ -1,4 +1,8 @@
-"""Local configurable chaos probe and simulation manager."""
+"""Cluster Sentinel: the local diagnostic probe, and the Chaos injection manager it obeys.
+
+The guarded telemetry probe supplies the breaker, source deadline and retry; the
+ClusterSentinelSource adapter only runs the probe and names the matching sub-probe.
+"""
 
 import asyncio
 import logging
@@ -8,18 +12,8 @@ import time
 
 import httpx
 
-from resilient_triage.config import settings
-from resilient_triage.resilience.circuit_breaker import (
-    BreakerOpen,
-    CircuitBreakerRegistry,
-)
-from resilient_triage.resilience.retry import with_retry
 from resilient_triage.schemas.incident import TelemetrySignal
-from resilient_triage.schemas.telemetry import (
-    SIGNAL_STATUS_UNAVAILABLE,
-    ChaosConfig,
-    ChaosTelemetryResponse,
-)
+from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
 
 logger = logging.getLogger(__name__)
 
@@ -46,38 +40,54 @@ class ChaosManager:
             self._config = ChaosConfig()
 
 
-def resolve_probe_source(service_hint: str | None = None, query: str | None = None) -> str:
-    """Dynamically determine probe telemetry identifier matching the queried subsystem."""
-    combined = f"{service_hint or ''} {query or ''}".lower()
-    if any(k in combined for k in ["gateway", "ingress", "proxy", "router", "alb", "nginx"]):
-        return "api_gateway_probe"
-    if any(k in combined for k in ["db", "database", "postgres", "sql", "redis", "pool"]):
-        return "postgres_health_probe"
-    if any(k in combined for k in ["pay", "billing", "checkout", "stripe"]):
-        return "payment_service_probe"
-    if any(k in combined for k in ["auth", "token", "jwt", "login", "sso", "session"]):
-        return "auth_service_probe"
-    return "cluster_health_probe"
+# Sub-probe name -> substrings of "<scope> <query>" that select it, checked in order.
+_SUB_PROBES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("api_gateway_probe", ("gateway", "ingress", "proxy", "router", "alb", "nginx")),
+    ("postgres_health_probe", ("db", "database", "postgres", "sql", "redis", "pool")),
+    ("payment_service_probe", ("pay", "billing", "checkout", "stripe")),
+    ("auth_service_probe", ("auth", "token", "jwt", "login", "sso", "session")),
+)
+_DEFAULT_SUB_PROBE = "cluster_health_probe"
 
 
-class ChaosClient:
-    """Diagnostic probe client guarded by circuit breaker and Tenacity retries."""
+def _sub_probe_name(query: str, scope: str | None) -> str:
+    """Name the Cluster Sentinel sub-probe matching the queried subsystem."""
+    combined = f"{scope or ''} {query or ''}".lower()
+    for name, keywords in _SUB_PROBES:
+        if any(k in combined for k in keywords):
+            return name
+    return _DEFAULT_SUB_PROBE
 
-    def __init__(
-        self,
-        manager: ChaosManager,
-        *,
-        breaker_registry: CircuitBreakerRegistry,
-    ) -> None:
+
+class ClusterSentinelSource:
+    """Cluster Sentinel Telemetry source: one sub-probe signal, subject to Chaos injection."""
+
+    id = "chaos"
+
+    def __init__(self, manager: ChaosManager) -> None:
         self.manager = manager
-        self.circuit_breaker = breaker_registry.get_or_create(
-            name="chaos",
-            fail_max=settings.circuit_breaker_fail_max,
-            reset_timeout=settings.circuit_breaker_reset_timeout,
-        )
 
-    async def _execute_probe(self) -> ChaosTelemetryResponse:
-        """Internal probe execution simulating dependencies and evaluating chaos rules."""
+    def degraded_label(self, query: str, scope: str | None) -> str:
+        """Signal source used when this source cannot be read: the matched sub-probe."""
+        return _sub_probe_name(query, scope)
+
+    async def read(self, query: str, scope: str | None) -> list[TelemetrySignal]:
+        """Run the probe and report it under the matched sub-probe name; raises on failure."""
+        start_time = time.monotonic()
+        resp = await self.probe()
+        elapsed_ms = (time.monotonic() - start_time) * 1000.0
+        return [
+            TelemetrySignal(
+                source=_sub_probe_name(query, scope),
+                status=resp.status,
+                latency_ms=round(elapsed_ms, 2),
+                error_rate=0.0,
+                raw_snippet=resp.details,
+            )
+        ]
+
+    async def probe(self) -> ChaosTelemetryResponse:
+        """Run one unguarded probe, applying the active Chaos injection; raises on failure."""
         cfg = self.manager.get_config()
 
         if cfg.active:
@@ -116,84 +126,3 @@ class ChaosClient:
             error_injected=False,
             details=details,
         )
-
-    async def probe(self) -> ChaosTelemetryResponse:
-        """Execute probe wrapped with Tenacity retries inside the circuit breaker.
-
-        Returns:
-            ChaosTelemetryResponse: Evaluated probe result with status and latency.
-
-        Raises:
-            BreakerOpen: If the chaos circuit breaker is OPEN.
-            httpx.HTTPStatusError: If injected 503 or transient failure persists after retries.
-            TimeoutError: If the probe, retries included, outruns the source deadline.
-        """
-        # breaker -> source deadline -> retry -> read: running out of time is a breaker failure.
-        retry_fn = with_retry()(self._execute_probe)
-
-        async def within_deadline() -> ChaosTelemetryResponse:
-            async with asyncio.timeout(settings.telemetry_source_deadline_s):
-                return await retry_fn()
-
-        return await self.circuit_breaker.call(within_deadline)
-
-    async def fetch_signals(
-        self,
-        service_hint: str | None = None,
-        query: str | None = None,
-    ) -> list[TelemetrySignal]:
-        """Fetch telemetry signals with safe fallback for tripped circuit breakers.
-
-        Never raises uncaught network errors; catches BreakerOpen or unexpected
-        exceptions and returns degraded TelemetrySignal instances to protect the agent.
-
-        Args:
-            service_hint: Optional targeted subsystem or service filter.
-            query: Optional incident description query for context-aware probe naming.
-
-        Returns:
-            list[TelemetrySignal]: Normalized signal observations.
-        """
-        source_name = resolve_probe_source(service_hint, query)
-        start_time = time.monotonic()
-        try:
-            resp = await self.probe()
-            elapsed_ms = (time.monotonic() - start_time) * 1000.0
-            return [
-                TelemetrySignal(
-                    source=source_name,
-                    status=resp.status,
-                    latency_ms=round(elapsed_ms, 2),
-                    error_rate=0.0,
-                    raw_snippet=resp.details,
-                )
-            ]
-        except BreakerOpen as cb_err:
-            elapsed_ms = (time.monotonic() - start_time) * 1000.0
-            logger.warning("Chaos probe circuit breaker OPEN: %s", cb_err)
-            return [
-                TelemetrySignal(
-                    source=source_name,
-                    status="CIRCUIT_OPEN",
-                    latency_ms=round(elapsed_ms, 2),
-                    error_rate=1.0,
-                    raw_snippet=(
-                        f"Circuit breaker '{self.circuit_breaker.name}' (Cluster Sentinel) "
-                        "tripped OPEN: consecutive failures exceeded threshold "
-                        f"({self.circuit_breaker.info().fail_max}). "
-                        "Failing fast without hanging."
-                    ),
-                )
-            ]
-        except Exception as exc:
-            elapsed_ms = (time.monotonic() - start_time) * 1000.0
-            logger.error("Chaos probe failed after retries: %s", exc)
-            return [
-                TelemetrySignal(
-                    source=source_name,
-                    status=SIGNAL_STATUS_UNAVAILABLE,
-                    latency_ms=round(elapsed_ms, 2),
-                    error_rate=1.0,
-                    raw_snippet=f"Cluster health probe check failed: {exc}",
-                )
-            ]
