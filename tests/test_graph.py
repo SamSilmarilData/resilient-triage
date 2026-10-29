@@ -11,6 +11,7 @@ from langgraph.runtime import Runtime
 from resilient_triage.graph.builder import build_triage_graph
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
+from resilient_triage.graph.nodes.fallback_report import fallback_report_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
 from resilient_triage.llm import (
     MalformedResponse,
@@ -290,6 +291,55 @@ async def test_provider_failure_on_first_generation_skips_self_repair(failure: P
     report = checkpointed["final_report"]
     assert report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
     assert report.confidence_score == 0.20
+
+
+UNAVAILABLE_TEXT = "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
+
+
+@pytest.mark.parametrize(
+    ("failure", "root_cause"),
+    [
+        (
+            RateLimited(retry_after_s=None, scope="day", detail="quota"),
+            "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis "
+            "engaged.",
+        ),
+        (Unavailable(detail="HTTP 503: upstream overloaded"), UNAVAILABLE_TEXT),
+        (MalformedResponse(detail="no choices"), UNAVAILABLE_TEXT),
+        (
+            Rejected(detail="HTTP 400: bad model"),
+            "LLM provider rejected the request. Safe heuristic fallback engaged.",
+        ),
+    ],
+)
+def test_fallback_report_wording_follows_the_failure_kind(
+    failure: ProviderFailure, root_cause: str
+):
+    """The fallback root cause names the provider failure kind, whatever its detail text says."""
+    update = fallback_report_node(
+        {"query": "Actions queue failing", "provider_failure": failure, "validation_errors": []}
+    )
+
+    report = update["final_report"]
+    assert report.root_cause_analysis == root_cause
+    assert report.severity == SeverityLevel.UNKNOWN
+    assert report.confidence_score == 0.20
+    assert update["synthesis_fell_back"] is True
+
+
+def test_fallback_report_without_a_provider_failure_reports_exhausted_self_repair():
+    """With no provider failure, the fallback means self-repair ran out, whatever the errors say."""
+    update = fallback_report_node(
+        {
+            "query": "Actions queue failing",
+            "provider_failure": None,
+            "validation_errors": ["Field 'severity': HTTP 429 lookalike (input was: '503')"],
+        }
+    )
+
+    root_cause = update["final_report"].root_cause_analysis
+    assert root_cause.startswith("Self-repair limits reached. Diagnostic context: Field 'severity'")
+    assert update["synthesis_fell_back"] is True
 
 
 @pytest.mark.asyncio
