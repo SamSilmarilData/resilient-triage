@@ -264,7 +264,7 @@ class SemanticCacheManager:
 
         # 2. Search Redis if it is up and searchable; a Redis MISS still checks the standby
         redis = self._redis
-        if redis is not None and redis.supports_search:
+        if redis is not None and redis.supports_search and not self._clear_pending:
             try:
                 redis_hit = await redis.search(query_vec, target_scope, effective_threshold)
             except StoreUnavailable as conn_err:
@@ -296,6 +296,10 @@ class SemanticCacheManager:
             await self.initialize()
         elif self._redis is None:
             await self._ensure_connected()
+        # A clear Redis rejected while connected is retried before Redis serves again.
+        redis = self._redis
+        if redis is not None and self._clear_pending:
+            await self._clear_redis(redis)
 
     async def _evict(self, doc_id: str) -> None:
         """Delete an invalid entry from the standby and, while up, from Redis; never raises."""
@@ -413,12 +417,19 @@ class SemanticCacheManager:
                 if self._redis is None:
                     await self._connect()
             return
+        await self._clear_redis(redis)
+
+    async def _clear_redis(self, redis: RemoteVectorStore) -> None:
+        """Clear Redis; on any failure the clear stays pending until a retry succeeds."""
+        self._clear_pending = True
         try:
             await redis.clear()
         except StoreUnavailable as conn_err:
             await self._mark_down(f"clear failed: {conn_err}")
         except Exception as err:
             logger.warning("Redis clear error: %s", err)
+        else:
+            self._clear_pending = False
 
     @property
     def driver(self) -> str:
