@@ -194,7 +194,17 @@ class LLMGateway:
             self._failover_events += 1
 
     def _cooldown_s(self, model: str, limited: RateLimited) -> float:
-        return settings.llm_default_cooldown_s
+        """Seconds model cools down: minute and day use their bucket's reset, capped."""
+        seconds: float | None = None
+        if limited.scope == "minute":
+            seconds = limited.retry_after_s
+            if seconds is None:
+                seconds = self._quota(model).reset_tokens_s
+        elif limited.scope == "day":
+            seconds = self._quota(model).reset_requests_s
+        if seconds is None:
+            seconds = settings.llm_default_cooldown_s
+        return min(seconds, settings.llm_max_cooldown_s)
 
     def _quota(self, model: str) -> QuotaHeaders:
         if isinstance(self.adapter, QuotaReporter):
