@@ -116,7 +116,10 @@ class SemanticCacheManager:
         self.reconnect_cooldown_seconds: float = 5.0
 
         # In-memory standby: every write lands here; it serves reads whenever Redis search can't.
-        self._standby = InMemoryVectorStore(max_capacity=max_capacity)
+        # Its dimension guard keeps a wrong-size vector (from store or hydration) out of the matrix.
+        self._standby = InMemoryVectorStore(
+            max_capacity=max_capacity, dimension=self.embedding_provider.dimension
+        )
 
     async def initialize(self) -> None:
         """Initialize Redis connection and test for RediSearch module availability."""
@@ -368,7 +371,12 @@ class SemanticCacheManager:
 
         # 3. Fall back to the in-memory standby
         hit = await self._standby.search(query_vec, target_scope, effective_threshold)
-        return self._to_match(hit, start_time) if hit else None
+        if hit is None:
+            return None
+        match = self._to_match(hit, start_time)
+        if match is None:
+            await self._standby.delete(hit.doc_id)
+        return match
 
     async def _search_redisearch(
         self,
@@ -425,9 +433,17 @@ class SemanticCacheManager:
         return None
 
     @staticmethod
-    def _to_match(hit: VectorHit, start_time: float) -> CacheMatch:
-        """Validate a store hit's report and wrap it as a CacheMatch."""
-        report = IncidentTriageReport.model_validate(json.loads(hit.report_json))
+    def _to_match(hit: VectorHit, start_time: float) -> CacheMatch | None:
+        """Validate a store hit's report and wrap it as a CacheMatch; None if it is invalid."""
+        try:
+            report = IncidentTriageReport.model_validate(json.loads(hit.report_json))
+        except ValueError as invalid:  # JSONDecodeError and ValidationError both subclass it
+            logger.warning(
+                "Cached report %s failed validation: %s. Treating as MISS and evicting.",
+                hit.doc_id,
+                invalid,
+            )
+            return None
         elapsed_ms = (time.monotonic() - start_time) * 1000.0
         return CacheMatch(
             report=report,
@@ -484,16 +500,20 @@ class SemanticCacheManager:
         report_json = report.model_dump_json()
         # 1. Write through to the in-memory standby (it evicts oldest-first at capacity)
         vec_arr = np.array(query_vec, dtype=np.float32)
-        await self._standby.put(
-            VectorEntry(
-                doc_id=doc_id,
-                query=scoped_q,
-                service_scope=target_scope,
-                report_json=report_json,
-                vector=vec_arr,
-            ),
-            ttl=effective_ttl,
-        )
+        try:
+            await self._standby.put(
+                VectorEntry(
+                    doc_id=doc_id,
+                    query=scoped_q,
+                    service_scope=target_scope,
+                    report_json=report_json,
+                    vector=vec_arr,
+                ),
+                ttl=effective_ttl,
+            )
+        except ValueError as rejected:
+            logger.warning("Cache store rejected the embedding: %s. Skipping store.", rejected)
+            return
 
         # 2. Update Redis if connected
         if self._redis:
