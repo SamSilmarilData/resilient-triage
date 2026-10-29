@@ -121,8 +121,16 @@ class TriageGateway:
 
     async def _analyze(self, query: str, scope: str | None) -> _Analysis:
         """Run the graph; return its report, or a synthesis fallback, and whether it fell back."""
+        deadline = asyncio.timeout(self._settings.triage_run_deadline_s)
         try:
-            state = await self._run_graph({"query": query, "service_filter": scope})
+            async with deadline:
+                state = await self._run_graph({"query": query, "service_filter": scope})
+        except TimeoutError:
+            if not deadline.expired():
+                logger.exception("Triage graph raised; answering with a synthesis fallback.")
+                return _Analysis(_graph_exception_fallback(query), fell_back=True)
+            logger.warning("Run deadline exceeded; answering with a synthesis fallback.")
+            return _Analysis(_deadline_fallback(query), fell_back=True)
         except Exception:
             logger.exception("Triage graph raised; answering with a synthesis fallback.")
             return _Analysis(_graph_exception_fallback(query), fell_back=True)
@@ -144,10 +152,21 @@ def _synthesis_fallback(query: str, state: dict[str, Any]) -> IncidentTriageRepo
 
 def _graph_exception_fallback(query: str) -> IncidentTriageReport:
     """Build and reconcile a synthesis fallback for a run whose graph raised."""
-    report = build_fallback_report(
-        query,
-        reason="Triage state machine failed unexpectedly. Safe heuristic fallback engaged.",
+    return _reconciled_fallback(
+        query, "Triage state machine failed unexpectedly. Safe heuristic fallback engaged."
     )
+
+
+def _deadline_fallback(query: str) -> IncidentTriageReport:
+    """Build and reconcile a synthesis fallback for a run cancelled by its run deadline."""
+    return _reconciled_fallback(
+        query, "Run deadline exceeded before analysis finished. Safe heuristic fallback engaged."
+    )
+
+
+def _reconciled_fallback(query: str, reason: str) -> IncidentTriageReport:
+    """Build a synthesis fallback with no run evidence and reconcile it."""
+    report = build_fallback_report(query, reason=reason)
     evidence = DegradationEvidence(
         tripped_breakers=frozenset(), unavailable_sources=frozenset(), synthesis_fell_back=True
     )

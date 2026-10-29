@@ -57,6 +57,7 @@ Render allows 1-click deployment connected to your GitHub repository.
 Under the **Environment Variables** tab, add:
 - `GROQ_API_KEY`: `gsk_...`
 - `CACHE_SIMILARITY_THRESHOLD`: `0.90`
+- `TRIAGE_RUN_DEADLINE_S` (optional, default `45.0`, above 0 and at most 120): the run deadline. A graph run that takes longer is cancelled and the request answered with an uncached `SEVERELY_DEGRADED` fallback report. Keep it below your platform's request timeout so the client gets that report rather than a proxy timeout. Slot wait (`TRIAGE_QUEUE_TIMEOUT_S`) is not included.
 
 ### Step 3: Deploy
 Click **Create Web Service**. Render will build the container and provide a live public HTTPS URL (`https://resilient-triage.onrender.com`).

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **A stalled triage run no longer holds its slot or client indefinitely**: every graph run the Triage gateway starts now has a run deadline. When it passes, the run is cancelled, its slot released, and `POST /triage` answers 200 (`X-Cache: MISS`) with a `SEVERELY_DEGRADED` synthesis fallback report ("Run deadline exceeded"). That report is not cached and `/metrics` counts it as a `miss`. Slot wait does not count against the deadline, and a client disconnect still cancels the run as before. See `docs/resilience.md` section 5. New setting, in `.env.example`:
+  - `TRIAGE_RUN_DEADLINE_S` (default 45.0s, above 0 and at most 120): the run deadline.
 - **A graph exception no longer gives `POST /triage` a 500**: if the triage graph raises anything except `CancelledError`, the Triage gateway logs it and answers 200 (`X-Cache: MISS`) with a `SEVERELY_DEGRADED` synthesis fallback report. That report is not cached, and the run slot is released. See `docs/resilience.md` section 5.
 - **The `POST /triage` request path lives in the Triage gateway**: `TriageGateway` (`triage/gateway.py`, an `AppRuntime` member) does the cache lookup, waits for a run slot or sheds the request, runs the graph, and stores the report; the route only maps its outcome to HTTP. Responses, headers, caching and `/metrics` output are unchanged. The gateway is the only request-path cache writer: `finalize` no longer stores. The run-slot limit and wait are now settings, both in `.env.example`:
   - `TRIAGE_MAX_CONCURRENT_RUNS` (default 10, 1–100): graph runs in flight per app, previously hard-coded.
