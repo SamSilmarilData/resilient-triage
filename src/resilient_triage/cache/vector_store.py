@@ -2,9 +2,12 @@
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import NewType, Protocol
 
 import numpy as np
+
+# A normalize_scope()'d service scope; "" is the "no scope" scope, matching only itself.
+ServiceScope = NewType("ServiceScope", str)
 
 
 @dataclass(frozen=True)
@@ -13,7 +16,7 @@ class VectorEntry:
 
     doc_id: str
     query: str
-    service_scope: str
+    service_scope: ServiceScope
     report_json: str
     vector: np.ndarray
 
@@ -37,7 +40,9 @@ class StoreQueryError(Exception):
 class VectorStore(Protocol):
     """Similarity search over cached entries, partitioned by service scope."""
 
-    async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
+    async def search(
+        self, vector: np.ndarray, scope: ServiceScope, threshold: float
+    ) -> VectorHit | None:
         """Return the most similar entry in `scope` with similarity >= threshold, else None."""
         ...
 

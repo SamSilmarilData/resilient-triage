@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from resilient_triage.cache.vector_store import VectorEntry, VectorHit
+from resilient_triage.cache.vector_store import ServiceScope, VectorEntry, VectorHit
 
 
 @dataclass
@@ -29,7 +29,9 @@ class InMemoryVectorStore:
         self._clock = clock
         self._docs: dict[str, _Stored] = {}
 
-    async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
+    async def search(
+        self, vector: np.ndarray, scope: ServiceScope, threshold: float
+    ) -> VectorHit | None:
         """Return the most similar live entry in `scope` at or above `threshold`."""
         if not self._fits(vector):
             return None

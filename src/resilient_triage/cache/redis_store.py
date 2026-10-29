@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 import redis.exceptions
 
 from resilient_triage.cache.vector_store import (
+    ServiceScope,
     StoreQueryError,
     StoreUnavailable,
     VectorEntry,
@@ -133,7 +134,9 @@ class RedisVectorStore:
         except Exception as err:
             logger.debug("Error closing Redis connection: %s", err)
 
-    async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
+    async def search(
+        self, vector: np.ndarray, scope: ServiceScope, threshold: float
+    ) -> VectorHit | None:
         """Return the nearest entry whose scope is exactly `scope`, at or above `threshold`."""
         # Fetch the top SEARCH_KNN neighbours and take the best exact-scope one, so an unscoped
         # search never returns a scoped entry (nor a scoped search an unscoped one).
@@ -244,7 +247,7 @@ class RedisVectorStore:
         return VectorEntry(
             doc_id=key.removeprefix(DOC_PREFIX),
             query=_to_str(_field(data, "query")),
-            service_scope=_to_str(_field(data, "service_scope")),
+            service_scope=ServiceScope(_to_str(_field(data, "service_scope"))),
             report_json=_to_str(report_raw),
             vector=np.frombuffer(vec_bytes, dtype=np.float32),
         )

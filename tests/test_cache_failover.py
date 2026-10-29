@@ -14,6 +14,7 @@ from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.cache.vector_store import (
+    ServiceScope,
     StoreQueryError,
     StoreUnavailable,
     VectorEntry,
@@ -64,7 +65,9 @@ class ScriptedStore:
     async def aclose(self) -> None:
         self.acloses += 1
 
-    async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
+    async def search(
+        self, vector: np.ndarray, scope: ServiceScope, threshold: float
+    ) -> VectorHit | None:
         self.searches += 1
         self._check("search")
         return await self.data.search(vector, scope, threshold)

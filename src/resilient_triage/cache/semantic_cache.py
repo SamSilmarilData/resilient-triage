@@ -20,6 +20,7 @@ from resilient_triage.cache.in_memory_store import InMemoryVectorStore
 from resilient_triage.cache.redis_store import DOC_PREFIX, INDEX_NAME, RedisVectorStore
 from resilient_triage.cache.vector_store import (
     RemoteVectorStore,
+    ServiceScope,
     StoreUnavailable,
     VectorEntry,
     VectorHit,
@@ -30,11 +31,11 @@ from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageR
 logger = logging.getLogger(__name__)
 
 
-def normalize_scope(service_filter: str | None) -> str:
+def normalize_scope(service_filter: str | None) -> ServiceScope:
     """Return the canonical service scope: stripped, lower-cased, [a-z0-9_-] only; "" for none."""
     if not service_filter:
-        return ""
-    return re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
+        return ServiceScope("")
+    return ServiceScope(re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower()))
 
 
 def format_scoped_query(query: str, service_filter: str | None = None) -> str:
