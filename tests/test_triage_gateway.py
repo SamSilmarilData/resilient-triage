@@ -110,7 +110,7 @@ async def test_a_miss_stores_the_report_under_its_scope(cache):
     assert await cache.lookup(QUERY, service_filter="actions") is None
 
 
-async def test_a_run_without_a_final_report_answers_with_a_stored_synthesis_fallback(cache):
+async def test_a_run_without_a_final_report_answers_with_an_unstored_synthesis_fallback(cache):
     graph = ReturningGraph({"tripped_breakers": ["statuspage"]})
 
     outcome = await _gateway(cache, graph).triage(QUERY, None)
@@ -123,9 +123,7 @@ async def test_a_run_without_a_final_report_answers_with_a_stored_synthesis_fall
     assert outcome.report.root_cause_analysis == (
         "Self-repair limits reached. Diagnostic context: LLM synthesis error"
     )
-    stored = await cache.lookup(QUERY)
-    assert stored is not None
-    assert stored.report == outcome.report
+    assert await cache.lookup(QUERY) is None
 
 
 def _one_slot(timeout_s: float = 0.05) -> Settings:
