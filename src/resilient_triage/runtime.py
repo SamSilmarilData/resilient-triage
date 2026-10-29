@@ -24,7 +24,7 @@ from resilient_triage.telemetry.statuspage import (
     StatuspageClient,
     new_statuspage_http_client,
 )
-from resilient_triage.triage_gateway import TriageGateway
+from resilient_triage.triage.gateway import TriageGateway
 
 # Re-exported: the run-context contract lives in graph.deps so nodes avoid an import cycle.
 __all__ = [

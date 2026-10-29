@@ -11,7 +11,7 @@ from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings, settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
-from resilient_triage.triage_gateway import (
+from resilient_triage.triage.gateway import (
     Analyzed,
     CacheHit,
     Shed,
