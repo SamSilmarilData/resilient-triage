@@ -389,6 +389,7 @@ Health probe target simulated under chaos injection rules. Calling this endpoint
 
 ### 10. `POST /cache/clear`
 Purges all entries from both the Redis vector index and the in-memory fallback store.
+If Redis is down, the in-memory store is emptied at once and the Redis purge stays pending until the next successful reconnect, before Redis serves any lookup. The response is the same either way.
 
 #### Headers
 | Header | Type | Description |
