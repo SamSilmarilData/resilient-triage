@@ -118,6 +118,240 @@ async def test_groq_adapter_maps_a_timeout_to_unavailable() -> None:
     assert "timed out" in result.detail
 
 
+async def test_groq_adapter_maps_a_connection_error_to_unavailable() -> None:
+    def refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    result = await _groq(refused).call(PRIMARY, MESSAGES)
+
+    assert isinstance(result, Unavailable)
+    assert "connection refused" in result.detail
+
+
+def _limited(headers: dict[str, str]) -> GroqAdapter:
+    return _groq(
+        lambda r: httpx.Response(429, json={"error": {"message": "limited"}}, headers=headers)
+    )
+
+
+@pytest.mark.parametrize(
+    ("headers", "retry_after_s", "scope"),
+    [
+        ({"retry-after": "2"}, 2.0, "minute"),
+        ({"retry-after": "2.5"}, 2.5, "minute"),
+        (
+            {
+                "retry-after": "4",
+                "x-ratelimit-remaining-tokens": "0",
+                "x-ratelimit-reset-tokens": "7.66s",
+            },
+            4.0,
+            "minute",
+        ),
+        (
+            {
+                "retry-after": "4",
+                "x-ratelimit-remaining-requests": "0",
+                "x-ratelimit-reset-requests": "2m59.56s",
+            },
+            4.0,
+            "day",
+        ),
+        (
+            {"x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "7.66s"},
+            7.66,
+            "minute",
+        ),
+        (
+            {"x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "2m59.56s"},
+            179.56,
+            "day",
+        ),
+        (
+            {
+                "x-ratelimit-remaining-requests": "3",
+                "x-ratelimit-reset-requests": "2m59.56s",
+                "x-ratelimit-remaining-tokens": "0",
+                "x-ratelimit-reset-tokens": "1h2m3s",
+            },
+            3723.0,
+            "minute",
+        ),
+        (
+            {
+                "retry-after": "soon",
+                "x-ratelimit-remaining-tokens": "0",
+                "x-ratelimit-reset-tokens": "120ms",
+            },
+            0.12,
+            "minute",
+        ),
+        (
+            {
+                "x-ratelimit-remaining-requests": "0",
+                "x-ratelimit-reset-requests": "2m59.56s",
+                "x-ratelimit-remaining-tokens": "0",
+                "x-ratelimit-reset-tokens": "7.66s",
+            },
+            179.56,
+            "day",
+        ),
+        (
+            {"x-ratelimit-remaining-requests": "5", "x-ratelimit-reset-requests": "2m59.56s"},
+            None,
+            "unknown",
+        ),
+        ({}, None, "unknown"),
+    ],
+    ids=[
+        "retry-after-bare",
+        "retry-after-float",
+        "retry-after-wins-over-tokens-reset",
+        "retry-after-keeps-day-scope",
+        "tokens-at-zero",
+        "requests-at-zero",
+        "only-the-bucket-at-zero",
+        "unparseable-retry-after-falls-through",
+        "both-at-zero-is-daily",
+        "no-bucket-at-zero",
+        "no-headers",
+    ],
+)
+async def test_groq_adapter_reads_the_rate_limit_from_the_429_headers(
+    headers: dict[str, str], retry_after_s: float | None, scope: str
+) -> None:
+    result = await _limited(headers).call(PRIMARY, MESSAGES)
+
+    assert isinstance(result, RateLimited)
+    assert result.retry_after_s == (None if retry_after_s is None else pytest.approx(retry_after_s))
+    assert result.scope == scope
+
+
+@pytest.mark.parametrize(
+    ("reset", "seconds"),
+    [
+        ("2m59.56s", 179.56),
+        ("7.66s", 7.66),
+        ("1h2m3s", 3723.0),
+        ("1h", 3600.0),
+        ("59m", 3540.0),
+        ("120ms", 0.12),
+        ("1500us", 0.0015),
+        ("2000000ns", 0.002),
+        ("2", 2.0),
+        ("0.5", 0.5),
+    ],
+)
+async def test_groq_adapter_reports_reset_headers_in_seconds(reset: str, seconds: float) -> None:
+    headers = {"x-ratelimit-reset-requests": reset, "x-ratelimit-reset-tokens": reset}
+    adapter = _groq(lambda r: httpx.Response(200, json=_content("{}"), headers=headers))
+
+    await adapter.call(PRIMARY, MESSAGES)
+    quota = adapter.quota_headers(PRIMARY)
+
+    assert quota.reset_requests_s == pytest.approx(seconds)
+    assert quota.reset_tokens_s == pytest.approx(seconds)
+    assert (quota.reset_requests, quota.reset_tokens) == (reset, reset)
+
+
+async def test_groq_adapter_ignores_an_unparseable_reset_header() -> None:
+    headers = {"x-ratelimit-reset-requests": "soon", "x-ratelimit-reset-tokens": "7.66s"}
+    adapter = _groq(lambda r: httpx.Response(200, json=_content("{}"), headers=headers))
+
+    await adapter.call(PRIMARY, MESSAGES)
+    quota = adapter.quota_headers(PRIMARY)
+
+    assert quota.reset_requests_s is None
+    assert quota.reset_tokens_s == pytest.approx(7.66)
+
+
+async def test_a_groq_retry_after_sizes_the_primary_cooldown() -> None:
+    """A 429 with retry-after and no bucket at 0 cools the primary for retry-after seconds."""
+    sent: list[str] = []
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        sent.append(model)
+        if len(sent) == 1:
+            return httpx.Response(
+                429, json={"error": {"message": "slow"}}, headers={"retry-after": "5"}
+            )
+        return httpx.Response(200, json=_content("{}"))
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + 4.5
+    await gateway.complete(MESSAGES)
+    clock.now = start + 5
+    await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_a_groq_daily_429_cools_the_primary_until_the_requests_reset() -> None:
+    sent: list[str] = []
+    daily = {"x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "2m59.56s"}
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        sent.append(model)
+        if len(sent) == 1:
+            return httpx.Response(429, json={"error": {"message": "daily"}}, headers=daily)
+        return httpx.Response(200, json=_content("{}"))
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + 179.0
+    await gateway.complete(MESSAGES)
+    clock.now = start + 179.56
+    await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_the_snapshot_budget_comes_from_the_primary_headers_only() -> None:
+    primary_headers = {
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-limit-requests": "1000",
+        "x-ratelimit-remaining-tokens": "250",
+        "x-ratelimit-limit-tokens": "6000",
+        "x-ratelimit-reset-requests": "2m59.56s",
+        "x-ratelimit-reset-tokens": "7.66s",
+    }
+    fallback_headers = {
+        "x-ratelimit-remaining-requests": "14000",
+        "x-ratelimit-limit-requests": "14400",
+        "x-ratelimit-remaining-tokens": "29000",
+        "x-ratelimit-limit-tokens": "30000",
+        "x-ratelimit-reset-requests": "6s",
+        "x-ratelimit-reset-tokens": "2ms",
+    }
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["model"] == PRIMARY:
+            return httpx.Response(429, json={"error": {"message": "x"}}, headers=primary_headers)
+        return httpx.Response(200, json=_content("{}"), headers=fallback_headers)
+
+    gateway = _gateway(_groq(groq_api))
+
+    assert await gateway.complete(MESSAGES) == Completion(text="{}", model=FALLBACK)
+    snapshot = gateway.snapshot()
+
+    assert (snapshot.remaining_requests, snapshot.limit_requests) == (0, 1000)
+    assert (snapshot.remaining_tokens, snapshot.limit_tokens) == (250, 6000)
+    assert (snapshot.reset_requests, snapshot.reset_tokens) == ("2m59.56s", "7.66s")
+
+
 async def test_groq_adapter_posts_one_json_mode_request_and_returns_its_content() -> None:
     sent: list[dict[str, Any]] = []
 
