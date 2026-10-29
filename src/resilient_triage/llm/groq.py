@@ -6,6 +6,7 @@ import re
 import httpx
 from langchain_core.messages import BaseMessage
 
+from resilient_triage.config import settings
 from resilient_triage.llm.gateway import (
     Completion,
     MalformedResponse,
@@ -26,7 +27,10 @@ def new_groq_http_client(timeout: float) -> httpx.AsyncClient:
     """Build a keep-alive pooled httpx.AsyncClient for Groq LPU calls (no I/O until used)."""
     return httpx.AsyncClient(
         timeout=timeout,
-        limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+        limits=httpx.Limits(
+            max_keepalive_connections=settings.llm_max_keepalive_connections,
+            max_connections=settings.llm_max_connections,
+        ),
     )
 
 
@@ -122,8 +126,8 @@ class GroqAdapter:
             "model": model,
             "messages": format_messages(messages),
             "response_format": {"type": "json_object"},
-            "temperature": 0.0,
-            "max_tokens": 2500,
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_tokens,
         }
         try:
             resp = await self._client.post(
