@@ -1,22 +1,56 @@
 import time
-from unittest.mock import AsyncMock
+from typing import Any
 
 import httpx
 import pytest
 
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
 from resilient_triage.schemas.telemetry import ChaosConfig
-from resilient_triage.telemetry.chaos import (
-    ChaosClient,
-    ChaosManager,
-    resolve_probe_source,
-)
-from resilient_triage.telemetry.statuspage import StatuspageClient
+from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
+from resilient_triage.telemetry.probe import TelemetryProbe
+from resilient_triage.telemetry.statuspage import StatuspageSource
+
+STATUSPAGE_URL = "https://statuspage.test/summary.json"
+STATUSPAGE = frozenset({"statuspage"})
+CHAOS = frozenset({"chaos"})
 
 
-@pytest.mark.asyncio
-async def test_statuspage_client_parsing_and_signals():
-    """Verify StatuspageClient parses API payloads and produces TelemetrySignal records."""
+class CountingStatuspage:
+    """httpx.MockTransport handler answering with a fixed status and body, counting requests."""
+
+    def __init__(self, payload: dict[str, Any] | None = None, status_code: int = 200) -> None:
+        self.payload = payload
+        self.status_code = status_code
+        self.calls = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        if self.payload is None:
+            return httpx.Response(self.status_code, content=b"Internal Server Error")
+        return httpx.Response(self.status_code, json=self.payload)
+
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self))
+
+
+def _statuspage(handler: CountingStatuspage, cache_ttl_seconds: float = 10.0) -> StatuspageSource:
+    return StatuspageSource(
+        url=STATUSPAGE_URL, client=handler.client(), cache_ttl_seconds=cache_ttl_seconds
+    )
+
+
+def _summary(indicator: str, page_name: str = "GitHub") -> dict[str, Any]:
+    """A minimal Statuspage summary payload with the given indicator."""
+    return {
+        "page": {"name": page_name},
+        "status": {"indicator": indicator, "description": f"{indicator} status"},
+        "components": [],
+        "incidents": [],
+    }
+
+
+async def test_statuspage_source_parsing_and_signals():
+    """Verify StatuspageSource parses API payloads and produces TelemetrySignal records."""
     mock_payload = {
         "page": {"name": "GitHub", "url": "https://www.githubstatus.com"},
         "status": {"indicator": "major", "description": "Major Service Outage"},
@@ -39,26 +73,9 @@ async def test_statuspage_client_parsing_and_signals():
             }
         ],
     }
+    source = _statuspage(CountingStatuspage(mock_payload))
 
-    mock_resp = httpx.Response(
-        200,
-        request=httpx.Request("GET", "https://statuspage.test/summary.json"),
-        json=mock_payload,
-    )
-
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    mock_client.get.return_value = mock_resp
-
-    registry = CircuitBreakerRegistry()
-    registry.get_or_create("statuspage", fail_max=3)
-
-    sp_client = StatuspageClient(
-        url="https://statuspage.test/summary.json",
-        breaker_registry=registry,
-        client=mock_client,
-    )
-
-    signals = await sp_client.fetch_signals()
+    signals = await source.read("github actions down", None)
     assert len(signals) == 3
 
     global_signal = next(s for s in signals if s.source == "statuspage:global")
@@ -74,55 +91,51 @@ async def test_statuspage_client_parsing_and_signals():
     assert incident_signal.error_rate == 1.0
 
 
-@pytest.mark.asyncio
-async def test_statuspage_client_circuit_breaker_fallback():
-    """Verify StatuspageClient returns degraded signal when circuit breaker is tripped."""
-    mock_resp = httpx.Response(
-        500,
-        request=httpx.Request("GET", "https://statuspage.test/summary.json"),
-        content=b"Internal Server Error",
-    )
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    mock_client.get.return_value = mock_resp
+async def test_statuspage_read_raises_on_an_upstream_error():
+    """The adapter only reads and parses: an upstream 500 raises, the probe degrades it."""
+    source = _statuspage(CountingStatuspage(status_code=500))
 
+    with pytest.raises(httpx.HTTPStatusError):
+        await source.read("github", None)
+    assert source.degraded_label("github", None) == "statuspage:global"
+
+
+async def test_statuspage_circuit_breaker_fallback():
+    """Statuspage reads through the probe degrade to one signal and fail fast once tripped."""
     registry = CircuitBreakerRegistry()
     cb = registry.get_or_create("statuspage", fail_max=3)
+    probe = TelemetryProbe([_statuspage(CountingStatuspage(status_code=500))], breakers=registry)
 
-    sp_client = StatuspageClient(
-        url="https://statuspage.test/summary.json",
-        breaker_registry=registry,
-        client=mock_client,
-    )
-
-    # Trigger 3 failed operations to trip breaker open; the tripping call reports the real error
-    for _ in range(3):
-        signals = await sp_client.fetch_signals()
-        assert len(signals) == 1
-        assert signals[0].status == "UNAVAILABLE"
-        assert "500" in (signals[0].raw_snippet or "")
+    # 3 failed reads trip the breaker; each, the tripping one included, reports the real error.
+    for i in range(3):
+        reading = await probe.collect(STATUSPAGE, "github", None)
+        assert len(reading.signals) == 1
+        assert reading.signals[0].source == "statuspage:global"
+        # The tripping read leaves the breaker open, so it is already a Tripped breaker.
+        assert reading.signals[0].status == ("UNAVAILABLE" if i < 2 else "CIRCUIT_OPEN")
+        assert "500" in (reading.signals[0].raw_snippet or "")
 
     assert cb.info().is_open is True
 
     # 4th call should immediately return degraded signal with CIRCUIT_OPEN
-    fallback_signals = await sp_client.fetch_signals()
-    assert len(fallback_signals) == 1
-    assert fallback_signals[0].status == "CIRCUIT_OPEN"
-    assert "tripped OPEN" in (fallback_signals[0].raw_snippet or "")
+    fallback = await probe.collect(STATUSPAGE, "github", None)
+    assert len(fallback.signals) == 1
+    assert fallback.signals[0].status == "CIRCUIT_OPEN"
+    assert "tripped OPEN" in (fallback.signals[0].raw_snippet or "")
 
 
-@pytest.mark.asyncio
-async def test_chaos_manager_and_client_trip():
-    """Verify ChaosManager runtime updates and ChaosClient circuit breaker tripping."""
+async def test_chaos_manager_and_cluster_sentinel_trip():
+    """Verify ChaosManager runtime updates and the Cluster Sentinel breaker tripping."""
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
     cb = registry.get_or_create("chaos", fail_max=3)
-    client = ChaosClient(manager=mgr, breaker_registry=registry)
+    probe = TelemetryProbe([ClusterSentinelSource(mgr)], breakers=registry)
 
     # 1. Healthy state
     mgr.update_config(ChaosConfig(active=False))
-    signals = await client.fetch_signals()
-    assert len(signals) == 1
-    assert signals[0].status == "OK"
+    reading = await probe.collect(CHAOS, "internal", None)
+    assert len(reading.signals) == 1
+    assert reading.signals[0].status == "OK"
     assert cb.state == "closed"
 
     # 2. Inject 503 chaos
@@ -130,85 +143,67 @@ async def test_chaos_manager_and_client_trip():
 
     # 3 consecutive failed operations trip the breaker
     for i in range(3):
-        signals = await client.fetch_signals()
-        assert len(signals) == 1
+        reading = await probe.collect(CHAOS, "internal", None)
+        assert len(reading.signals) == 1
         if i < 2:
-            assert signals[0].status in {"UNAVAILABLE", "DEGRADED"}
+            assert reading.signals[0].status in {"UNAVAILABLE", "DEGRADED"}
         else:
-            # The 3rd operation reaches the source and trips the breaker: it reports the real
-            # failure; only later calls, refused without reaching the source, are CIRCUIT_OPEN.
-            assert signals[0].status == "UNAVAILABLE"
+            # The 3rd operation reaches the source and trips the breaker: it is Tripped, and
+            # its signal still carries the real failure it saw.
+            assert reading.signals[0].status == "CIRCUIT_OPEN"
+            assert "503" in (reading.signals[0].raw_snippet or "")
 
     assert cb.info().is_open is True
 
     # 4th call fails fast with CIRCUIT_OPEN
-    tripped_signals = await client.fetch_signals()
-    assert len(tripped_signals) == 1
-    assert tripped_signals[0].status == "CIRCUIT_OPEN"
-    assert tripped_signals[0].latency_ms < 10.0  # Fast fail without hanging
+    tripped = await probe.collect(CHAOS, "internal", None)
+    assert len(tripped.signals) == 1
+    assert tripped.signals[0].status == "CIRCUIT_OPEN"
+    assert tripped.signals[0].latency_ms < 10.0  # Fast fail without hanging
 
 
-@pytest.mark.asyncio
-async def test_statuspage_client_short_ttl_cache():
-    """Verify StatuspageClient short-TTL cache prevents redundant network fetches."""
-    payload = {
-        "page": {"id": "test_page", "name": "CacheTest Status", "url": "https://status.test"},
-        "status": {"indicator": "none", "description": "All Systems Operational"},
-        "components": [],
-        "incidents": [],
-    }
-    mock_resp = httpx.Response(
-        200,
-        request=httpx.Request("GET", "https://cache.test/summary.json"),
-        json=payload,
-    )
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    mock_client.get.return_value = mock_resp
+async def test_statuspage_source_short_ttl_cache():
+    """Verify StatuspageSource short-TTL cache prevents redundant network fetches."""
+    handler = CountingStatuspage(_summary("none", page_name="CacheTest Status"))
+    source = _statuspage(handler, cache_ttl_seconds=10.0)
 
-    registry = CircuitBreakerRegistry()
-    registry.get_or_create("statuspage")
+    # First read: calls the upstream
+    signals1 = await source.read("github", None)
+    assert "CacheTest Status" in (signals1[0].raw_snippet or "")
+    assert handler.calls == 1
 
-    sp_client = StatuspageClient(
-        url="https://cache.test/summary.json",
-        breaker_registry=registry,
-        client=mock_client,
-        cache_ttl_seconds=10.0,
-    )
-
-    # First fetch: calls client.get
-    summary1 = await sp_client.fetch_summary()
-    assert summary1.page_name == "CacheTest Status"
-    assert mock_client.get.call_count == 1
-
-    # Second fetch within 10s: serves from cache, no network call
-    summary2 = await sp_client.fetch_summary()
-    assert summary2.page_name == "CacheTest Status"
-    assert mock_client.get.call_count == 1
+    # Second read within 10s: serves from cache, no network call
+    signals2 = await source.read("github", None)
+    assert "CacheTest Status" in (signals2[0].raw_snippet or "")
+    assert handler.calls == 1
 
     # A fresh source starts with an empty cache of its own and fetches again
-    fresh_client = StatuspageClient(
-        url="https://cache.test/summary.json",
-        breaker_registry=registry,
-        client=mock_client,
-        cache_ttl_seconds=10.0,
-    )
-    summary3 = await fresh_client.fetch_summary()
-    assert summary3.page_name == "CacheTest Status"
-    assert mock_client.get.call_count == 2
+    fresh = StatuspageSource(url=STATUSPAGE_URL, client=handler.client(), cache_ttl_seconds=10.0)
+    signals3 = await fresh.read("github", None)
+    assert "CacheTest Status" in (signals3[0].raw_snippet or "")
+    assert handler.calls == 2
 
 
-@pytest.mark.asyncio
+async def test_statuspage_source_with_cache_disabled_fetches_every_read():
+    """A zero TTL turns the summary cache off."""
+    handler = CountingStatuspage(_summary("none"))
+    source = _statuspage(handler, cache_ttl_seconds=0.0)
+
+    await source.read("github", None)
+    await source.read("github", None)
+
+    assert handler.calls == 2
+
+
 async def test_chaos_latency_injection():
     """Verify that configuring latency_ms introduces actual artificial execution delay."""
     mgr = ChaosManager()
-    registry = CircuitBreakerRegistry()
-    registry.get_or_create("chaos", fail_max=5)
-    client = ChaosClient(manager=mgr, breaker_registry=registry)
+    sentinel = ClusterSentinelSource(mgr)
 
     mgr.update_config(ChaosConfig(active=True, latency_ms=80, inject_503=False, failure_rate=0.0))
 
     start = time.monotonic()
-    resp = await client.probe()
+    resp = await sentinel.probe()
     elapsed_ms = (time.monotonic() - start) * 1000.0
 
     assert resp.status == "OK"
@@ -216,36 +211,30 @@ async def test_chaos_latency_injection():
     assert elapsed_ms >= 70.0  # At least 70ms with scheduling margin
 
 
-@pytest.mark.asyncio
 async def test_chaos_failure_rate_probabilistic():
     """Verify that failure_rate = 1.0 triggers 503 fault via the probabilistic path."""
     mgr = ChaosManager()
-    registry = CircuitBreakerRegistry()
-    registry.get_or_create("chaos", fail_max=5)
-    client = ChaosClient(manager=mgr, breaker_registry=registry)
+    sentinel = ClusterSentinelSource(mgr)
 
     # Injected 503 is false, but failure rate is 100%
     mgr.update_config(ChaosConfig(active=True, inject_503=False, failure_rate=1.0))
 
     with pytest.raises(httpx.HTTPStatusError) as exc_info:
-        await client.probe()
+        await sentinel.probe()
 
     assert exc_info.value.response.status_code == 503
 
 
-@pytest.mark.asyncio
 async def test_chaos_inactive_ignores_faults():
     """Verify that when active is False, faults (latency, 503, failure_rate) are not injected."""
     mgr = ChaosManager()
-    registry = CircuitBreakerRegistry()
-    registry.get_or_create("chaos", fail_max=5)
-    client = ChaosClient(manager=mgr, breaker_registry=registry)
+    sentinel = ClusterSentinelSource(mgr)
 
     # Active is False even with latency and 503 set
     mgr.update_config(ChaosConfig(active=False, latency_ms=500, inject_503=True, failure_rate=1.0))
 
     start = time.monotonic()
-    resp = await client.probe()
+    resp = await sentinel.probe()
     elapsed_ms = (time.monotonic() - start) * 1000.0
 
     assert resp.status == "OK"
@@ -253,152 +242,124 @@ async def test_chaos_inactive_ignores_faults():
     assert elapsed_ms < 50.0  # Runs immediately without delay
 
 
-def test_resolve_probe_source():
-    """Verify resolve_probe_source dynamically maps subsystem hints to domain probes."""
-    assert resolve_probe_source(service_hint="api_gateway") == "api_gateway_probe"
-    assert resolve_probe_source(query="Ingress router 502 errors") == "api_gateway_probe"
-    assert resolve_probe_source(service_hint="postgres") == "postgres_health_probe"
-    assert (
-        resolve_probe_source(query="Database connection pool exhaustion") == "postgres_health_probe"
-    )
-    assert resolve_probe_source(service_hint="payment_service") == "payment_service_probe"
-    assert resolve_probe_source(query="Checkout billing webhook timeout") == "payment_service_probe"
-    assert resolve_probe_source(service_hint="auth-service") == "auth_service_probe"
-    assert (
-        resolve_probe_source(query="JWT session token validation latency") == "auth_service_probe"
-    )
-    assert (
-        resolve_probe_source(service_hint="unknown_worker", query="general alert")
-        == "cluster_health_probe"
-    )
-    assert resolve_probe_source() == "cluster_health_probe"
+@pytest.mark.parametrize(
+    ("scope", "query", "expected"),
+    [
+        ("api_gateway", "", "api_gateway_probe"),
+        (None, "Ingress router 502 errors", "api_gateway_probe"),
+        ("postgres", "", "postgres_health_probe"),
+        (None, "Database connection pool exhaustion", "postgres_health_probe"),
+        ("payment_service", "", "payment_service_probe"),
+        (None, "Checkout billing webhook timeout", "payment_service_probe"),
+        ("auth-service", "", "auth_service_probe"),
+        (None, "JWT session token validation latency", "auth_service_probe"),
+        ("unknown_worker", "general alert", "cluster_health_probe"),
+        (None, "", "cluster_health_probe"),
+    ],
+)
+async def test_cluster_sentinel_names_the_sub_probe_matching_the_queried_subsystem(
+    scope: str | None, query: str, expected: str
+):
+    """Cluster Sentinel names its sub-probe from the scope and query, on success and failure."""
+    sentinel = ClusterSentinelSource(ChaosManager())
+
+    assert sentinel.degraded_label(query, scope) == expected
+    assert [s.source for s in await sentinel.read(query, scope)] == [expected]
 
 
-@pytest.mark.asyncio
-async def test_chaos_fetch_signals_dynamic_attribution():
-    """Verify fetch_signals uses context-aware probe naming and returns authentic error symptoms."""
+async def test_cluster_sentinel_dynamic_attribution():
+    """Verify reads use context-aware probe naming and return authentic error symptoms."""
     mgr = ChaosManager()
     registry = CircuitBreakerRegistry()
     registry.get_or_create("chaos", fail_max=5)
-    client = ChaosClient(manager=mgr, breaker_registry=registry)
+    probe = TelemetryProbe([ClusterSentinelSource(mgr)], breakers=registry)
 
-    # 1. Healthy fetch with DB hint
-    signals = await client.fetch_signals(service_hint="postgres", query="Pool timeout")
-    assert len(signals) == 1
-    assert signals[0].source == "postgres_health_probe"
-    assert signals[0].status == "OK"
+    # 1. Healthy read with DB hint
+    reading = await probe.collect(CHAOS, "Pool timeout", "postgres")
+    assert len(reading.signals) == 1
+    assert reading.signals[0].source == "postgres_health_probe"
+    assert reading.signals[0].status == "OK"
 
     # 2. Inject 503 error - verify symptom contains NO simulator jargon
     mgr.update_config(ChaosConfig(active=True, inject_503=True))
-    signals_err = await client.fetch_signals(
-        service_hint="gateway", query="Ingress dropping traffic"
-    )
-    assert len(signals_err) == 1
-    assert signals_err[0].source == "api_gateway_probe"
-    assert signals_err[0].status == "UNAVAILABLE"
+    reading_err = await probe.collect(CHAOS, "Ingress dropping traffic", "gateway")
+    assert len(reading_err.signals) == 1
+    assert reading_err.signals[0].source == "api_gateway_probe"
+    assert reading_err.signals[0].status == "UNAVAILABLE"
     # Ensure simulator jargon is eliminated
-    assert "Injected Chaos Fault" not in (signals_err[0].raw_snippet or "")
-    assert "worker pool saturated" in (signals_err[0].raw_snippet or "")
+    assert "Injected Chaos Fault" not in (reading_err.signals[0].raw_snippet or "")
+    assert "worker pool saturated" in (reading_err.signals[0].raw_snippet or "")
 
 
-def _summary_response(indicator: str) -> httpx.Response:
-    """Build a minimal Statuspage summary response with the given indicator."""
-    return httpx.Response(
-        200,
-        request=httpx.Request("GET", "https://statuspage.test/summary.json"),
-        json={
-            "page": {"name": "GitHub"},
-            "status": {"indicator": indicator, "description": f"{indicator} status"},
-            "components": [],
-            "incidents": [],
-        },
+async def test_statuspage_sources_in_separate_probes_do_not_share_summaries():
+    """Two Statuspage sources in probes with separate registries each fetch their own summary."""
+    handler_a = CountingStatuspage(_summary("major"))
+    handler_b = CountingStatuspage(_summary("none"))
+    probe_a = TelemetryProbe(
+        [_statuspage(handler_a, cache_ttl_seconds=60.0)], breakers=CircuitBreakerRegistry()
+    )
+    probe_b = TelemetryProbe(
+        [_statuspage(handler_b, cache_ttl_seconds=60.0)], breakers=CircuitBreakerRegistry()
     )
 
-
-async def test_statuspage_sources_with_separate_registries_do_not_share_summaries():
-    """Two Statuspage sources in separate registries each fetch their own summary."""
-    url = "https://statuspage.test/summary.json"
-    client_a = AsyncMock(spec=httpx.AsyncClient)
-    client_a.get.return_value = _summary_response("major")
-    client_b = AsyncMock(spec=httpx.AsyncClient)
-    client_b.get.return_value = _summary_response("none")
-
-    source_a = StatuspageClient(
-        url=url,
-        client=client_a,
-        cache_ttl_seconds=60.0,
-        breaker_registry=CircuitBreakerRegistry(),
-    )
-    source_b = StatuspageClient(
-        url=url,
-        client=client_b,
-        cache_ttl_seconds=60.0,
-        breaker_registry=CircuitBreakerRegistry(),
-    )
-
-    assert (await source_a.fetch_summary()).indicator == "major"
-    assert (await source_b.fetch_summary()).indicator == "none"
-    assert (await source_a.fetch_summary()).indicator == "major"
-    assert client_a.get.call_count == 1
-    assert client_b.get.call_count == 1
+    assert (await probe_a.collect(STATUSPAGE, "github", None)).signals[0].status == "major"
+    assert (await probe_b.collect(STATUSPAGE, "github", None)).signals[0].status == "none"
+    assert (await probe_a.collect(STATUSPAGE, "github", None)).signals[0].status == "major"
+    assert handler_a.calls == 1
+    assert handler_b.calls == 1
 
 
-def test_telemetry_clients_register_breakers_in_the_registry_they_are_given():
-    """Chaos and Statuspage clients built with a registry take their breakers from it."""
+def test_the_probe_registers_breakers_in_the_registry_it_is_given():
+    """A probe built with a registry creates both source breakers in it."""
     registry = CircuitBreakerRegistry()
 
-    chaos = ChaosClient(manager=ChaosManager(), breaker_registry=registry)
-    statuspage = StatuspageClient(
-        client=AsyncMock(spec=httpx.AsyncClient), breaker_registry=registry
+    probe = TelemetryProbe(
+        [
+            ClusterSentinelSource(ChaosManager()),
+            _statuspage(CountingStatuspage(_summary("none"))),
+        ],
+        breakers=registry,
     )
 
-    assert registry.get("chaos") is chaos.circuit_breaker
-    assert registry.get("statuspage") is statuspage.circuit_breaker
+    assert probe.breakers is registry
+    assert registry.get("chaos") is not None
+    assert registry.get("statuspage") is not None
     assert set(registry.get_all_statuses()) == {"chaos", "statuspage"}
 
 
 async def test_statuspage_sources_sharing_a_registry_still_get_their_own_cache():
     """Two Statuspage sources sharing a breaker registry never serve each other's summary."""
-    url = "https://statuspage.test/summary.json"
-    client_a = AsyncMock(spec=httpx.AsyncClient)
-    client_a.get.return_value = _summary_response("major")
-    client_b = AsyncMock(spec=httpx.AsyncClient)
-    client_b.get.return_value = _summary_response("none")
+    handler_a = CountingStatuspage(_summary("major"))
+    handler_b = CountingStatuspage(_summary("none"))
     registry = CircuitBreakerRegistry()
-    source_a = StatuspageClient(
-        url=url, client=client_a, cache_ttl_seconds=60.0, breaker_registry=registry
-    )
-    source_b = StatuspageClient(
-        url=url, client=client_b, cache_ttl_seconds=60.0, breaker_registry=registry
-    )
+    probe_a = TelemetryProbe([_statuspage(handler_a, cache_ttl_seconds=60.0)], breakers=registry)
+    probe_b = TelemetryProbe([_statuspage(handler_b, cache_ttl_seconds=60.0)], breakers=registry)
 
-    assert (await source_a.fetch_summary()).indicator == "major"
-    assert (await source_b.fetch_summary()).indicator == "none"
-    assert client_b.get.call_count == 1
+    assert (await probe_a.collect(STATUSPAGE, "github", None)).signals[0].status == "major"
+    assert (await probe_b.collect(STATUSPAGE, "github", None)).signals[0].status == "none"
+    assert handler_b.calls == 1
 
 
-async def test_telemetry_clients_in_separate_registries_do_not_share_breakers():
-    """Clients built on separate breaker registries each get a fresh breaker, closed by default."""
+def test_probes_in_separate_registries_do_not_share_breakers():
+    """Probes built on separate breaker registries each get fresh breakers, closed by default."""
     registry_a, registry_b = CircuitBreakerRegistry(), CircuitBreakerRegistry()
-    tripped = ChaosClient(manager=ChaosManager(), breaker_registry=registry_a)
-    fresh = ChaosClient(manager=ChaosManager(), breaker_registry=registry_b)
-    source_a = StatuspageClient(
-        client=AsyncMock(spec=httpx.AsyncClient), breaker_registry=registry_a
-    )
-    source_b = StatuspageClient(
-        client=AsyncMock(spec=httpx.AsyncClient), breaker_registry=registry_b
-    )
+    for registry in (registry_a, registry_b):
+        TelemetryProbe(
+            [
+                ClusterSentinelSource(ChaosManager()),
+                _statuspage(CountingStatuspage(_summary("none"))),
+            ],
+            breakers=registry,
+        )
 
-    force_open_for_tests(tripped.circuit_breaker)
-    force_open_for_tests(source_a.circuit_breaker)
+    force_open_for_tests(registry_a.get_or_create("chaos"))
+    force_open_for_tests(registry_a.get_or_create("statuspage"))
 
-    assert fresh.circuit_breaker.info().is_open is False
-    assert source_b.circuit_breaker.info().is_open is False
+    assert registry_b.get_or_create("chaos").info().is_open is False
+    assert registry_b.get_or_create("statuspage").info().is_open is False
 
 
-def test_telemetry_clients_require_the_breaker_registry_health_reports_on():
-    """Chaos and Statuspage clients refuse to build a hidden registry /health would never see."""
+def test_the_probe_requires_the_breaker_registry_health_reports_on():
+    """The probe refuses to build a hidden registry /health would never see."""
     with pytest.raises(TypeError):
-        ChaosClient(manager=ChaosManager())  # type: ignore[call-arg]
-    with pytest.raises(TypeError):
-        StatuspageClient(client=AsyncMock(spec=httpx.AsyncClient))  # type: ignore[call-arg]
+        TelemetryProbe([ClusterSentinelSource(ChaosManager())])  # type: ignore[call-arg]
