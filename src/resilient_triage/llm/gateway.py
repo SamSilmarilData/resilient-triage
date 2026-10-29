@@ -138,6 +138,11 @@ class LLMGateway:
             result = await self._call(self.primary, messages, attempts)
         if isinstance(result, Completion | Rejected):
             return result
+        if self._cooling_down(self.fallback):
+            logger.warning(
+                "LLM primary %s failed; fallback %s is cooling down", self.primary, self.fallback
+            )
+            return result
         logger.warning("LLM primary %s failed; failing over to %s", self.primary, self.fallback)
         return await self._call(self.fallback, messages, attempts)
 
