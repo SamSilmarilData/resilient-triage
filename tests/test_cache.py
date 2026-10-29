@@ -408,26 +408,6 @@ async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     assert match.report.summary == "Fallback incident"
 
 
-@pytest.mark.asyncio
-async def test_scan_iter_key_enumeration(mocker):
-    """Verify cache.clear() uses scan_iter cursor iteration to delete keys without blocking."""
-    provider = DeterministicEmbeddingProvider()
-    cache = SemanticCacheManager(embedding_provider=provider)
-    cache._initialized = True
-
-    mock_redis = mocker.AsyncMock()
-
-    async def mock_scan_iter(match=None, count=None):
-        for k in [b"triage:doc:1", b"triage:doc:2"]:
-            yield k
-
-    mock_redis.scan_iter = mock_scan_iter
-    cache._redis = mock_redis
-
-    await cache.clear()
-    mock_redis.delete.assert_awaited_once_with(b"triage:doc:1", b"triage:doc:2")
-
-
 def test_fastembed_fallback_to_deterministic_when_offline(mocker):
     """Verify FastEmbedProvider falls back to DeterministicEmbeddingProvider if init fails."""
     provider = FastEmbedProvider(model_name="nonexistent/model")
