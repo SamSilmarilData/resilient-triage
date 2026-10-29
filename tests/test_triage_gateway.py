@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 import pytest_asyncio
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
@@ -199,6 +200,19 @@ async def test_a_graph_exception_frees_its_run_slot(cache):
     outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
 
     assert isinstance(outcome, Analyzed)
+
+
+async def test_a_cancelled_graph_run_propagates_and_frees_its_run_slot(cache):
+    graph = RaisingGraph(asyncio.CancelledError())
+    gateway = _gateway(cache, graph, _one_slot())
+
+    with pytest.raises(asyncio.CancelledError):
+        await gateway.triage(QUERY, None)
+
+    assert await cache.lookup(QUERY) is None
+    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0)
+    graph.exc = RuntimeError("boom")
+    assert isinstance(await gateway.triage(QUERY, None), Analyzed)
 
 
 async def test_metrics_count_each_outcome(cache):
