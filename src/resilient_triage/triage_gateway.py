@@ -1,14 +1,17 @@
 """Triage gateway: the POST /triage request path, and the only request-path cache writer."""
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
 from resilient_triage.schemas.incident import IncidentTriageReport
 
-GraphRunner = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+class GraphRunner(Protocol):
+    """Runs the triage graph on an input state and returns its final state."""
+
+    async def __call__(self, input: dict[str, Any], /) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -48,4 +51,9 @@ class TriageGateway:
         self, query: str, scope: str | None, *, force_refresh: bool = False
     ) -> TriageOutcome:
         """Return how this triage request ended."""
-        raise NotImplementedError
+        if not force_refresh:
+            match = await self._cache.lookup(query=query, service_filter=scope)
+            if match:
+                return CacheHit(report=match.report, similarity=match.similarity)
+        state = await self._run_graph({"query": query, "service_filter": scope})
+        return Analyzed(report=state["final_report"])
