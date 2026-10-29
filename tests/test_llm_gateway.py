@@ -31,6 +31,7 @@ from resilient_triage.llm import (
     Unavailable,
     build_llm_gateway,
 )
+from resilient_triage.llm.groq import new_groq_http_client
 from resilient_triage.runtime import build_runtime
 from resilient_triage.schemas.incident import IncidentTriageReport, SeverityLevel
 
@@ -813,6 +814,50 @@ async def test_the_gateway_label_and_budget_come_from_the_adapter() -> None:
 
     assert gateway.label == "Own adapter (m)"
     assert gateway.snapshot().remaining_requests == 7
+
+
+async def test_groq_adapter_sends_the_configured_temperature_and_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "llm_temperature", 0.3)
+    monkeypatch.setattr(settings, "llm_max_tokens", 1234)
+    sent: list[dict[str, Any]] = []
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=_content("{}"))
+
+    await _groq(groq_api).call(PRIMARY, MESSAGES)
+
+    assert (sent[0]["temperature"], sent[0]["max_tokens"]) == (0.3, 1234)
+
+
+async def test_the_groq_http_client_uses_the_configured_pool_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "llm_max_keepalive_connections", 3)
+    monkeypatch.setattr(settings, "llm_max_connections", 9)
+    built: list[dict[str, Any]] = []
+    real_client = httpx.AsyncClient
+
+    def recording_client(**kwargs: Any) -> httpx.AsyncClient:
+        built.append(kwargs)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", recording_client)
+
+    client = new_groq_http_client(5.0)
+    await client.aclose()
+
+    assert built[0]["limits"] == httpx.Limits(max_keepalive_connections=3, max_connections=9)
+    assert built[0]["timeout"] == 5.0
+
+
+def test_the_groq_request_settings_keep_the_previous_hard_coded_defaults() -> None:
+    defaults = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert (defaults.llm_temperature, defaults.llm_max_tokens) == (0.0, 2500)
+    assert (defaults.llm_max_keepalive_connections, defaults.llm_max_connections) == (20, 50)
 
 
 def test_settings_read_the_groq_api_key_from_the_environment(
