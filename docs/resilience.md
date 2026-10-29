@@ -199,8 +199,8 @@ If the chosen value is missing, the cooldown falls back to `LLM_DEFAULT_COOLDOWN
 
 `GroqAdapter` turns a 429 into a `RateLimited` in this order:
 
-1. **`retry-after`**, read as seconds (a float is fine), becomes `retry_after_s`.
-2. **The bucket at 0 sets the scope.** On Groq, `x-ratelimit-*-requests` is the per-day request bucket and `x-ratelimit-*-tokens` the per-minute token bucket. `remaining-requests: 0` gives `day`; otherwise `remaining-tokens: 0` gives `minute`. **If both are at 0, `day` wins**, since its reset is the longer wait. Without a `retry-after`, `retry_after_s` is that bucket's reset.
+1. **`retry-after`**, read as seconds (a float is fine), becomes `retry_after_s`. Nothing else does: without a valid `retry-after`, `retry_after_s` is `None`.
+2. **The bucket at 0 sets the scope.** On Groq, `x-ratelimit-*-requests` is the per-day request bucket and `x-ratelimit-*-tokens` the per-minute token bucket. `remaining-requests: 0` gives `day`; otherwise `remaining-tokens: 0` gives `minute`. **If both are at 0, `day` wins**, since its reset is the longer wait. The bucket resets reach the gateway only through the adapter's `QuotaHeaders` (`reset_requests_s`, `reset_tokens_s`), which the cooldown table above reads.
 3. **No bucket at 0 but a `retry-after`: the scope is `minute`**, so the gateway honours the `retry-after` (it ignores `retry_after_s` for `unknown`). Groq's per-minute request limit has no header, so it is the likely cause.
 4. Otherwise the scope is `unknown`, which gets the default cooldown.
 
