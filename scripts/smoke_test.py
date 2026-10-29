@@ -17,8 +17,8 @@ CYAN = "\033[96m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
-# Step 7 must reach Cluster Sentinel, whose breaker step 6 opened: a whole-word internal
-# keyword and no external keyword, even as a substring ("reporting" contains "repo").
+# Step 7 must reach Cluster Sentinel, whose breaker step 6 opened.
+# tests/test_smoke_script.py checks that query analysis routes it there.
 OUTAGE_QUERY = "Kubernetes ingress for internal auth service returning 502 bad gateway across pods"
 
 
@@ -146,8 +146,7 @@ def run_battery(base_url: str):
 
     # 7. Triage Under Outage (Degraded Recovery)
     print_step("Step 7: Incident Triage Under Active Upstream Outage (Compensatory Routing)")
-    q_chaos = OUTAGE_QUERY
-    res_under_chaos = client.post("/triage", json={"query": q_chaos})
+    res_under_chaos = client.post("/triage", json={"query": OUTAGE_QUERY})
     if res_under_chaos.status_code != 200:
         print_fail(f"Triage failed during outage: HTTP {res_under_chaos.status_code}")
 
