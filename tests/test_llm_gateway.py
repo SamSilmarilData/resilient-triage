@@ -13,7 +13,7 @@ from fakes import make_triage_deps
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.runtime import Runtime
 
-from resilient_triage.config import settings
+from resilient_triage.config import Settings, settings
 from resilient_triage.graph.nodes.generate_report import generate_report_node
 from resilient_triage.llm import (
     DEFAULT_REPORT_JSON,
@@ -716,3 +716,22 @@ async def test_the_primary_cooldown_length_follows_the_rate_limit_scope(
     await gateway.complete(MESSAGES)
 
     assert adapter.calls == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_only_the_groq_api_key_setting_selects_groq(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The environment reaches provider selection only through settings.groq_api_key."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-from-env")
+
+    gateway = build_llm_gateway(settings.model_copy(update={"groq_api_key": None}))
+
+    assert isinstance(gateway.adapter, ScriptedAdapter)
+    assert gateway.label == "Zero-Config SRE Simulation"
+    await gateway.aclose()
+
+
+def test_settings_read_the_groq_api_key_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-from-env")
+
+    assert Settings(_env_file=None).groq_api_key == "gsk-from-env"  # type: ignore[call-arg]
