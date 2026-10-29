@@ -768,6 +768,30 @@ async def test_a_call_cancelled_after_a_429_records_no_counters_but_keeps_the_co
     assert adapter.calls == [PRIMARY, FALLBACK]  # the primary was cooling
 
 
+PRIMARY_LIMITED_5S = RateLimited(retry_after_s=5.0, scope="minute", detail="primary 429")
+FALLBACK_LIMITED_60S = RateLimited(retry_after_s=60.0, scope="minute", detail="fallback 429")
+
+
+@pytest.mark.parametrize(
+    ("failure_script", "primary_calls"),
+    [([LIMITED], 1), ([GARBLED], 1), ([DOWN, DOWN], 2)],
+    ids=["rate-limited", "malformed", "unavailable-after-retry"],
+)
+async def test_a_primary_failure_is_returned_while_the_fallback_cools_down(
+    failure_script: list[ProviderFailure], primary_calls: int
+) -> None:
+    clock = FakeClock()
+    adapter = ScriptedAdapter([PRIMARY_LIMITED_5S, FALLBACK_LIMITED_60S, *failure_script])
+    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    await gateway.complete(MESSAGES)  # both models 429: primary cools 5s, fallback 60s
+    clock.now += 10
+
+    result = await gateway.complete(MESSAGES)
+
+    assert result == failure_script[-1]
+    assert adapter.calls == [PRIMARY, FALLBACK] + [PRIMARY] * primary_calls
+
+
 @pytest.mark.parametrize(
     ("limited", "quota", "cooldown_s"),
     [
