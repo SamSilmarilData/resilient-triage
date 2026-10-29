@@ -324,3 +324,28 @@ async def test_invalid_report_from_redis_search_is_a_miss_and_evicted(clock):
     assert await cache.lookup(QUERY) is None
     assert remote.count == 0
     assert cache.driver == "redisearch"
+
+
+@pytest.mark.parametrize(
+    ("searchable", "driver"), [(True, "redisearch"), (False, "redis_hash_fallback")]
+)
+async def test_clear_while_down_clears_redis_on_reconnect_before_serving(clock, searchable, driver):
+    """A clear while Redis is down is replayed on reconnect, before any search or hydration."""
+    remote = ScriptedStore(searchable=searchable)
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    await cache.store(QUERY, _report())
+    remote.down = True
+    await cache.check_connection()  # drops Redis
+    assert cache.driver == "in_memory"
+
+    await cache.clear()  # what POST /cache/clear calls while Redis is down
+    remote.down = False
+    clock.now += cache.reconnect_cooldown_seconds + 1
+
+    match = await cache.lookup(QUERY)  # reconnects
+
+    assert match is None
+    assert cache.driver == driver
+    assert remote.count == 0
+    assert cache.count == 0
