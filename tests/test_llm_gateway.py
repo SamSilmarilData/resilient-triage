@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import time
 import types
 from collections.abc import Callable
 from typing import Any
@@ -40,8 +41,8 @@ FALLBACK = "fallback-model"
 MESSAGES: list[BaseMessage] = [HumanMessage(content="Is checkout down?")]
 
 
-def _gateway(adapter: ModelAdapter) -> LLMGateway:
-    return LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test")
+def _gateway(adapter: ModelAdapter, clock: Callable[[], float] = time.monotonic) -> LLMGateway:
+    return LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
 
 
 def _groq(handler: Callable[[httpx.Request], httpx.Response]) -> GroqAdapter:
@@ -698,7 +699,7 @@ async def test_a_rejected_retry_of_the_primary_is_returned_without_failover() ->
 async def test_a_cooling_primary_is_skipped_until_its_window_ends() -> None:
     clock = FakeClock()
     adapter = ScriptedAdapter([LIMITED, "failover", "skip", DOWN])
-    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    gateway = _gateway(adapter, clock)
     await gateway.complete(MESSAGES)
 
     skipped = await gateway.complete(MESSAGES)
@@ -729,7 +730,8 @@ class HangsOnFallback(ScriptedAdapter):
         return await super().call(model, messages)
 
 
-async def _settle() -> None:
+async def _let_tasks_run() -> None:
+    """Yield to the event loop a few times so started tasks reach their next await."""
     for _ in range(5):
         await asyncio.sleep(0)
 
@@ -738,11 +740,11 @@ async def test_a_429_cools_the_primary_before_the_fallback_answers() -> None:
     adapter = HangsOnFallback([LIMITED])
     gateway = _gateway(adapter)
     first = asyncio.create_task(gateway.complete(MESSAGES))
-    await _settle()
+    await _let_tasks_run()
     assert adapter.calls == [PRIMARY]  # the 429 is in; the fallback has not answered
 
     second = asyncio.create_task(gateway.complete(MESSAGES))
-    await _settle()
+    await _let_tasks_run()
     adapter.released.set()
     await asyncio.gather(first, second)
 
@@ -754,7 +756,7 @@ async def test_a_call_cancelled_after_a_429_records_no_counters_but_keeps_the_co
     adapter = HangsOnFallback([LIMITED])
     gateway = _gateway(adapter)
     task = asyncio.create_task(gateway.complete(MESSAGES))
-    await _settle()
+    await _let_tasks_run()
     assert adapter.calls == [PRIMARY]
     task.cancel()
 
@@ -782,7 +784,7 @@ async def test_a_primary_failure_is_returned_while_the_fallback_cools_down(
 ) -> None:
     clock = FakeClock()
     adapter = ScriptedAdapter([PRIMARY_LIMITED_5S, FALLBACK_LIMITED_60S, *failure_script])
-    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    gateway = _gateway(adapter, clock)
     await gateway.complete(MESSAGES)  # both models 429: primary cools 5s, fallback 60s
     clock.now += 10
 
@@ -807,7 +809,7 @@ async def test_no_model_is_called_while_both_cool_down(
             RateLimited(retry_after_s=fallback_s, scope="minute", detail="fallback 429"),
         ]
     )
-    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    gateway = _gateway(adapter, clock)
     await gateway.complete(MESSAGES)
     before = gateway.snapshot()
     clock.now += 2
@@ -826,7 +828,7 @@ async def test_each_model_is_called_again_once_its_cooldown_ends() -> None:
     adapter = ScriptedAdapter(
         [PRIMARY_LIMITED_5S, FALLBACK_LIMITED_60S, "primary back", LIMITED, "fallback back"]
     )
-    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    gateway = _gateway(adapter, clock)
     await gateway.complete(MESSAGES)
     start = clock.now
 
@@ -874,7 +876,7 @@ async def test_the_primary_cooldown_length_follows_the_rate_limit_scope(
     monkeypatch.setattr(settings, "llm_max_cooldown_s", 900.0)
     clock = FakeClock()
     adapter = ScriptedAdapter([limited], quota=quota)
-    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    gateway = _gateway(adapter, clock)
     await gateway.complete(MESSAGES)
     start = clock.now
 
