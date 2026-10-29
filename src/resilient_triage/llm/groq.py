@@ -72,11 +72,11 @@ class GroqAdapter:
     ) -> None:
         self._api_key = api_key
         self._client = http_client if http_client is not None else new_groq_http_client(timeout_s)
-        self._headers = QuotaHeaders()
+        self._headers: dict[str, QuotaHeaders] = {}
 
-    def quota_headers(self) -> QuotaHeaders:
-        """Return the rate-limit headers and status of the latest responses."""
-        return self._headers
+    def quota_headers(self, model: str) -> QuotaHeaders:
+        """Return the rate-limit headers and status of model's latest responses."""
+        return self._headers.get(model, QuotaHeaders())
 
     async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
         """POST messages to model once; never raises except CancelledError."""
@@ -97,12 +97,12 @@ class GroqAdapter:
             return Unavailable(detail=f"Groq request to {model} timed out: {exc!r}")
         except httpx.HTTPError as exc:
             return Unavailable(detail=f"Groq request to {model} failed: {exc!r}")
-        self._record_headers(resp)
+        self._record_headers(model, resp)
         return self._to_result(resp, model)
 
-    def _record_headers(self, resp: httpx.Response) -> None:
-        known, headers = self._headers, resp.headers
-        self._headers = QuotaHeaders(
+    def _record_headers(self, model: str, resp: httpx.Response) -> None:
+        known, headers = self.quota_headers(model), resp.headers
+        self._headers[model] = QuotaHeaders(
             remaining_requests=_int_header(
                 headers, "x-ratelimit-remaining-requests", known.remaining_requests
             ),

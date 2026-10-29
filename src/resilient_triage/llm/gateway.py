@@ -16,11 +16,6 @@ from resilient_triage.schemas.api import LLMQuotaSnapshot
 
 logger = logging.getLogger(__name__)
 
-# Today's failover behaviour, moved unchanged: the primary gets two attempts on a transient
-# failure, and a rate limit without a usable reset header cools the primary down for 30s.
-PRIMARY_ATTEMPTS = 2
-DEFAULT_COOLDOWN_S = 30.0
-
 
 @dataclass(frozen=True)
 class Completion:
@@ -77,7 +72,7 @@ class ModelAdapter(Protocol):
 
 @dataclass(frozen=True)
 class QuotaHeaders:
-    """Rate-limit header values and HTTP status from the provider's latest responses."""
+    """Rate-limit header values and HTTP status from one model's latest responses."""
 
     remaining_requests: int | None = None
     limit_requests: int | None = None
@@ -92,13 +87,24 @@ class QuotaHeaders:
 class QuotaReporter(Protocol):
     """An adapter that reads rate-limit headers and reports them to the gateway's snapshot."""
 
-    def quota_headers(self) -> QuotaHeaders:
-        """Return the latest header values seen."""
+    def quota_headers(self, model: str) -> QuotaHeaders:
+        """Return the latest header values seen for model."""
         ...
 
 
+# One adapter call made during a complete(): the model called and what it returned.
+Attempt = tuple[str, Completion | ProviderFailure]
+
+
 class LLMGateway:
-    """Calls the primary model through an adapter, failing over to the fallback model."""
+    """Calls the primary model through an adapter, failing over to the fallback model.
+
+    At most 3 adapter calls per complete(). The primary's result decides what follows:
+    RateLimited cools the primary down and calls the fallback; Unavailable retries the primary
+    once after a jittered backoff, then calls the fallback; MalformedResponse calls the
+    fallback; Rejected returns at once. While the primary cools down, only the fallback is
+    called. Cooldowns are per model.
+    """
 
     def __init__(
         self,
@@ -113,14 +119,14 @@ class LLMGateway:
         self.primary = primary
         self.fallback = fallback
         self._label = label
+        self._clock = clock
         self._active_model = primary
         self._total_calls = 0
         self._rate_limit_hits = 0
         self._failover_events = 0
         self._last_error: str | None = None
         self._last_updated: datetime | None = None
-        self._cooldown_until = 0.0
-        self._clock = clock
+        self._cooldown_until: dict[str, float] = {}
 
     @property
     def label(self) -> str:
@@ -129,63 +135,72 @@ class LLMGateway:
 
     async def complete(self, messages: list[BaseMessage]) -> Completion | ProviderFailure:
         """Return a completion or a provider failure; raises nothing but CancelledError."""
+        attempts: list[Attempt] = []
+        result: Completion | ProviderFailure
         try:
-            return await self._complete(messages)
+            result = await self._complete(messages, attempts)
         except Exception as exc:
             logger.error("LLM gateway call failed unexpectedly: %s", exc)
-            return Unavailable(detail=f"LLM gateway error: {exc}")
+            result = Unavailable(detail=f"LLM gateway error: {exc}")
+        # Reached only when not cancelled: a cancelled call records nothing.
+        self._record(attempts, result)
+        return result
 
-    async def _complete(self, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        if self._clock() < self._cooldown_until:
-            return await self._call(self.fallback, messages, failover=True)
-        failure: ProviderFailure | None = None
-        for attempt in range(PRIMARY_ATTEMPTS):
-            if attempt:
-                await asyncio.sleep(
-                    random.uniform(settings.retry_min_wait_seconds, settings.retry_max_wait_seconds)
-                )
-            result = await self._call(self.primary, messages, failover=False)
-            if isinstance(result, RateLimited):
-                logger.warning(
-                    "LLM rate limit hit for %s; failing over to %s", self.primary, self.fallback
-                )
-                fallback_result = await self._call(self.fallback, messages, failover=True)
-                if isinstance(fallback_result, Completion):
-                    return fallback_result
-                failure = result
-            elif isinstance(result, Unavailable):
-                failure = result
-            else:
-                return result
-        assert failure is not None
-        return failure
+    async def _complete(
+        self, messages: list[BaseMessage], attempts: list[Attempt]
+    ) -> Completion | ProviderFailure:
+        if self._cooling_down(self.primary):
+            return await self._call(self.fallback, messages, attempts)
+        result = await self._call(self.primary, messages, attempts)
+        if isinstance(result, Unavailable):
+            await asyncio.sleep(
+                random.uniform(settings.retry_min_wait_seconds, settings.retry_max_wait_seconds)
+            )
+            result = await self._call(self.primary, messages, attempts)
+        if isinstance(result, Completion | Rejected):
+            return result
+        logger.warning("LLM primary %s failed; failing over to %s", self.primary, self.fallback)
+        return await self._call(self.fallback, messages, attempts)
+
+    def _cooling_down(self, model: str) -> bool:
+        return self._clock() < self._cooldown_until.get(model, 0.0)
 
     async def _call(
-        self, model: str, messages: list[BaseMessage], *, failover: bool
+        self, model: str, messages: list[BaseMessage], attempts: list[Attempt]
     ) -> Completion | ProviderFailure:
         result = await self.adapter.call(model, messages)
-        self._total_calls += 1
-        self._active_model = model
-        self._last_updated = datetime.now(UTC)
-        if isinstance(result, Completion):
-            if failover:
-                self._failover_events += 1
-            return result
-        self._last_error = result.detail
-        logger.warning("LLM call to %s failed: %s", model, result)
-        if isinstance(result, RateLimited):
-            self._rate_limit_hits += 1
-            cooldown = result.retry_after_s or DEFAULT_COOLDOWN_S
-            self._cooldown_until = self._clock() + cooldown
+        attempts.append((model, result))
+        if not isinstance(result, Completion):
+            logger.warning("LLM call to %s failed: %s", model, result)
         return result
+
+    def _record(self, attempts: list[Attempt], result: Completion | ProviderFailure) -> None:
+        """Apply one completed complete() call to the counters and cooldowns."""
+        now = self._clock()
+        for model, outcome in attempts:
+            self._total_calls += 1
+            self._last_updated = datetime.now(UTC)
+            if isinstance(outcome, Completion):
+                self._active_model = model
+                continue
+            self._last_error = outcome.detail
+            if isinstance(outcome, RateLimited):
+                self._rate_limit_hits += 1
+                self._cooldown_until[model] = now + self._cooldown_s(model, outcome)
+        if isinstance(result, Completion) and attempts and attempts[-1][0] == self.fallback:
+            self._failover_events += 1
+
+    def _cooldown_s(self, model: str, limited: RateLimited) -> float:
+        return settings.llm_default_cooldown_s
+
+    def _quota(self, model: str) -> QuotaHeaders:
+        if isinstance(self.adapter, QuotaReporter):
+            return self.adapter.quota_headers(model)
+        return QuotaHeaders()
 
     def snapshot(self) -> LLMQuotaSnapshot:
         """Return the quota, counters and last call of this gateway (the /llm/quota body)."""
-        headers = (
-            self.adapter.quota_headers()
-            if isinstance(self.adapter, QuotaReporter)
-            else QuotaHeaders()
-        )
+        headers = self._quota(self.primary)
         return LLMQuotaSnapshot(
             active_model=self._active_model,
             fallback_model=self.fallback,
@@ -209,7 +224,7 @@ class LLMGateway:
         self._rate_limit_hits = 0
         self._failover_events = 0
         self._last_error = None
-        self._cooldown_until = 0.0
+        self._cooldown_until.clear()
 
     async def aclose(self) -> None:
         """Close the adapter; never raises."""
