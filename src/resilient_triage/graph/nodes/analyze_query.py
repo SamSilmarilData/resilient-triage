@@ -74,4 +74,5 @@ def analyze_query_node(state: TriageState) -> dict[str, Any]:
         "refinement_attempts": 0,
         "validation_errors": [],
         "provider_failure": None,
+        "refined_from": None,
     }

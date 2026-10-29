@@ -21,6 +21,7 @@ def refine_reflection_node(state: TriageState) -> dict[str, Any]:
 
     return {
         "final_report": None,  # Reset to allow refined generation to pass through validate
+        "refined_from": report,  # Kept if the refine round runs out of self-repair
         "refinement_attempts": state.get("refinement_attempts", 0) + 1,
         "messages": [HumanMessage(content=reflection_prompt)],
     }

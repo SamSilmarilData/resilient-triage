@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from resilient_triage.config import settings
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.state import TriageState
 
@@ -72,8 +73,11 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
         else:
             errors.append(f"JSON Parsing Error: {exc}")
 
+        # A refine round that runs out of self-repair keeps the valid report it started from.
+        # It shares the first generation's repair budget, which bounds the longest path.
+        exhausted = repair_attempts + 1 >= settings.max_self_repair_retries
         return {
-            "final_report": None,
+            "final_report": state.get("refined_from") if exhausted else None,
             "repair_attempts": repair_attempts + 1,
             "validation_errors": errors,
         }
