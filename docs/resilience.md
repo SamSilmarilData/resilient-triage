@@ -178,6 +178,14 @@ If the triage graph itself raises (a bug in a node, an unexpected library error)
 
 The report is not stored, so the next identical query runs the graph again rather than replaying the fallback. The run slot is released either way. Cancellation is not a failure: `CancelledError` propagates unchanged, still releasing the slot. So `triage()` never raises except `CancelledError`, and every request ends in exactly one `TriageOutcome` (`CacheHit`, `Analyzed` or `Shed`).
 
+### Run deadline: a stalled run answers with a fallback
+
+Every graph run the Triage gateway starts has a **run deadline**, `triage_run_deadline_s` (default 45s, env `TRIAGE_RUN_DEADLINE_S`). The gateway wraps only the graph run in `asyncio.timeout(...)`: time spent waiting for a run slot is bounded separately by `triage_queue_timeout_s` and does not count against it. When the deadline passes, the run is cancelled (so breakers and the LLM gateway see a cancellation, which records nothing; a 429 the run already received still leaves its cooldown in place, see [section 6](#6-llm-gateway-failover-and-rate-limit-cooldowns)), its slot is released, and the caller gets `Analyzed` with `build_fallback_report(query, reason="Run deadline exceeded ...")`, reconciled on the same no-evidence `DegradationEvidence(..., synthesis_fell_back=True)` as a graph exception.
+
+What a caller sees: within about the deadline, a 200 with `X-Cache: MISS` and a `SEVERELY_DEGRADED`, `UNKNOWN`-severity report whose root cause says the run deadline was exceeded. It is not cached (the next identical query runs again) and `/metrics` counts it as a `miss`. Neither the slot nor the client is held indefinitely by a stalled LLM or telemetry call.
+
+Only the deadline's own timeout becomes a fallback. A `CancelledError` from the caller (e.g. a client disconnect) still propagates, releasing the slot. A `TimeoutError` raised by the graph itself, before the deadline, is treated as a graph exception (fallback reason "failed unexpectedly").
+
 ### Degradation status: report reconciliation in `finalize`
 
 A report's `degradation_status` and `circuit_breakers_tripped` are system facts, never the model's opinion. They are set by `reconcile(report, DegradationEvidence.from_state(state))` (`graph/reconciliation.py`), which has two call sites: `finalize` calls it on every report the graph produces, whether it came from the LLM, self-repair, refinement or the synthesis fallback; and the Triage gateway (`triage/gateway.py`) calls it when the graph returns no `final_report` and the gateway builds one with `build_fallback_report`, on the graph's evidence plus `synthesis_fell_back: True`. `finalize` does not write to the cache: the gateway is the only request-path cache writer.

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from fakes import fake_statuspage_http
+from fakes import AppServer, fake_statuspage_http
 from langchain_core.messages import HumanMessage
 
 from resilient_triage.api.app import create_app
@@ -548,33 +548,24 @@ class _BlockingAdapter(ScriptedAdapter):
 
 
 @pytest.mark.asyncio
-async def test_concurrency_semaphore_shedding():
+async def test_concurrency_semaphore_shedding(serve_app: AppServer):
     """Verify that a request finding every run slot busy past the queue timeout gets a 503."""
     llm = _BlockingAdapter()
-    rt = build_runtime(
-        settings.model_copy(
-            update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.02}
-        ),
-        llm_adapter=llm,
-        statuspage_http=fake_statuspage_http(),
+    one_slot = settings.model_copy(
+        update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.02}
     )
-    app = create_app(lambda: rt)
-    async with app.router.lifespan_context(app):
-        await rt.cache.clear()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as ac:
-            first = asyncio.create_task(
-                ac.post("/triage", json={"query": "Checkout API returning 503 errors"})
-            )
-            await asyncio.wait_for(llm.started.wait(), timeout=5.0)
+    async with serve_app(llm, one_slot) as (_, ac):
+        first = asyncio.create_task(
+            ac.post("/triage", json={"query": "Checkout API returning 503 errors"})
+        )
+        await asyncio.wait_for(llm.started.wait(), timeout=5.0)
 
-            resp = await ac.post(
-                "/triage",
-                json={"query": "Sudden traffic spike causing saturating concurrency"},
-            )
-            llm.release.set()
-            assert (await first).status_code == 200
+        resp = await ac.post(
+            "/triage",
+            json={"query": "Sudden traffic spike causing saturating concurrency"},
+        )
+        llm.release.set()
+        assert (await first).status_code == 200
 
     assert resp.status_code == 503
     assert "saturated" in resp.json()["detail"].lower()
@@ -696,31 +687,22 @@ async def test_status_routes_ping_the_cache_exactly_once(
 
 @pytest.mark.asyncio
 async def test_two_apps_keep_separate_breakers_and_request_metrics(
-    client: httpx.AsyncClient, runtime: AppRuntime
+    client: httpx.AsyncClient, runtime: AppRuntime, serve_app: AppServer
 ):
     """Verify a second app instance has its own runtime: breakers and counters don't leak."""
-    other_rt = build_runtime(
-        settings, llm_adapter=ScriptedAdapter(), statuspage_http=fake_statuspage_http()
-    )
-    other_app = create_app(lambda: other_rt)
-    async with other_app.router.lifespan_context(other_app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=other_app), base_url="http://testserver"
-        ) as other:
-            await client.post("/chaos/inject", json={"active": True, "inject_503": True})
-            for _ in range(runtime.breakers.get_or_create("chaos").info().fail_max):
-                await client.get("/chaos/probe")
-            await client.post(
-                "/triage", json={"query": "Payments API returning 503", "force_refresh": True}
-            )
+    async with serve_app(ScriptedAdapter()) as (_, other):
+        await client.post("/chaos/inject", json={"active": True, "inject_503": True})
+        for _ in range(runtime.breakers.get_or_create("chaos").info().fail_max):
+            await client.get("/chaos/probe")
+        await client.post(
+            "/triage", json={"query": "Payments API returning 503", "force_refresh": True}
+        )
 
-            assert (await client.get("/health")).json()["status"] == "degraded"
-            assert (await other.get("/health")).json()["status"] == "healthy"
-            assert (
-                'resilient_triage_requests_total{cache="miss"} 1'
-                in (await client.get("/metrics")).text
-            )
-            assert (
-                'resilient_triage_requests_total{cache="miss"} 0'
-                in (await other.get("/metrics")).text
-            )
+        assert (await client.get("/health")).json()["status"] == "degraded"
+        assert (await other.get("/health")).json()["status"] == "healthy"
+        assert (
+            'resilient_triage_requests_total{cache="miss"} 1' in (await client.get("/metrics")).text
+        )
+        assert (
+            'resilient_triage_requests_total{cache="miss"} 0' in (await other.get("/metrics")).text
+        )

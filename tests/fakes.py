@@ -1,5 +1,7 @@
 """Hand-built fakes for TriageDeps, so graph nodes run without the app or the network."""
 
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import httpx
@@ -8,9 +10,12 @@ from resilient_triage.cache.semantic_cache import CacheMatch
 from resilient_triage.config import settings
 from resilient_triage.llm import ModelAdapter, ScriptedAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
-from resilient_triage.runtime import TelemetrySources, TriageDeps
+from resilient_triage.runtime import AppRuntime, TelemetrySources, TriageDeps
 from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
 from resilient_triage.telemetry.statuspage import StatuspageClient
+
+AppServer = Callable[..., AbstractAsyncContextManager[tuple[AppRuntime, httpx.AsyncClient]]]
+"""The conftest `serve_app` factory: (llm_adapter, app_settings=settings) -> (runtime, client)."""
 
 FAKE_STATUSPAGE_URL = "https://statuspage.test/api/v2/summary.json"
 

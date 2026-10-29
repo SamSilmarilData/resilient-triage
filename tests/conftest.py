@@ -8,16 +8,17 @@ singletons to reset.
 import ipaddress
 import socket
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 import pytest
 import pytest_asyncio
-from fakes import fake_statuspage_http
+from fakes import AppServer, fake_statuspage_http
 
 from resilient_triage.api.app import create_app
-from resilient_triage.config import settings
-from resilient_triage.llm import ScriptedAdapter
+from resilient_triage.config import Settings, settings
+from resilient_triage.llm import ModelAdapter, ScriptedAdapter
 from resilient_triage.runtime import AppRuntime, build_runtime
 
 
@@ -78,11 +79,13 @@ def offline_only(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     )
 
 
-@pytest_asyncio.fixture
-async def runtime() -> AsyncIterator[AppRuntime]:
-    """A started runtime with a scripted LLM and a canned Statuspage, its cache emptied."""
+@asynccontextmanager
+async def _started_runtime(
+    llm_adapter: ModelAdapter, app_settings: Settings
+) -> AsyncIterator[AppRuntime]:
+    """Start a runtime with the given LLM adapter and a canned Statuspage, its cache emptied."""
     rt = build_runtime(
-        settings, llm_adapter=ScriptedAdapter(), statuspage_http=fake_statuspage_http()
+        app_settings, llm_adapter=llm_adapter, statuspage_http=fake_statuspage_http()
     )
     await rt.start()
     # The cache may sit on a live Redis shared across runtimes: start every test empty.
@@ -91,13 +94,41 @@ async def runtime() -> AsyncIterator[AppRuntime]:
     await rt.aclose()
 
 
+@asynccontextmanager
+async def _app_client(rt: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
+    """Open an async test client for an app that owns `rt`, lifespan included."""
+    app = create_app(lambda: rt)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            yield ac
+
+
+@asynccontextmanager
+async def _serve_app(
+    llm_adapter: ModelAdapter, app_settings: Settings = settings
+) -> AsyncIterator[tuple[AppRuntime, httpx.AsyncClient]]:
+    """Serve an app over a fresh runtime with the given LLM adapter; yield both."""
+    async with _started_runtime(llm_adapter, app_settings) as rt, _app_client(rt) as ac:
+        yield rt, ac
+
+
+@pytest_asyncio.fixture
+async def runtime() -> AsyncIterator[AppRuntime]:
+    """A started runtime with a scripted LLM and a canned Statuspage, its cache emptied."""
+    async with _started_runtime(ScriptedAdapter(), settings) as rt:
+        yield rt
+
+
 @pytest_asyncio.fixture
 async def client(runtime: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
     """An async test client for an app that owns the `runtime` fixture, lifespan included."""
-    app = create_app(lambda: runtime)
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
-        ) as ac:
-            yield ac
+    async with _app_client(runtime) as ac:
+        yield ac
+
+
+@pytest.fixture
+def serve_app() -> AppServer:
+    """A factory serving an app over its own runtime: `async with serve_app(adapter) as (rt, c)`."""
+    return _serve_app
