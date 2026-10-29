@@ -131,7 +131,7 @@ Liveness and readiness health probe for Kubernetes/load balancers, returning ser
 ```json
 {
   "status": "healthy",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "redis_connected": true,
   "cache_driver": "redisearch",
   "circuits": {

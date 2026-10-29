@@ -2,14 +2,14 @@
 
 > **Fault-tolerant incident triage gateway powered by LangGraph, Groq LPUs, and Redis 8 RediSearch that doesn't collapse when external systems are on fire.**
 
-[![Release v1.3.0](https://img.shields.io/badge/Release-v1.3.0-blue.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
+[![Release v2.0.0](https://img.shields.io/badge/Release-v2.0.0-blue.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-FF6F00.svg?style=flat&logo=chainlink&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![Redis 8](https://img.shields.io/badge/Redis_8-RediSearch_HNSW-DC382D.svg?style=flat&logo=redis&logoColor=white)](https://redis.io/)
 [![Groq LPU](https://img.shields.io/badge/Groq_LPU-Qwen_3.8_27B-F55036.svg?style=flat)](https://groq.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?style=flat&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
-[![Tests Passing](https://img.shields.io/badge/Tests-85%2F85_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
+[![Tests Passing](https://img.shields.io/badge/Tests-402_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 
 ---
