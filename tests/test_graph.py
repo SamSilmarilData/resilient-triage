@@ -444,28 +444,22 @@ async def test_longest_path_stays_within_the_recursion_limit(monkeypatch):
     assert len(mock_llm.calls) == 6
 
 
-@pytest.mark.asyncio
-async def test_graph_thread_checkpointing():
-    """Verify thread-scoped checkpointing maintains conversation context across calls."""
-    app = build_triage_graph(enable_checkpointing=True)
-    thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
+async def test_runs_of_the_same_query_keep_no_state_between_them():
+    """Each run is self-contained: no checkpointer carries state from one run into the next."""
+    app = build_triage_graph()
     deps = make_triage_deps()
+    query = {"query": "Initial incident report on GitHub Actions"}
 
-    # Call 1
-    res1 = await app.ainvoke(
-        {"query": "Initial incident report on GitHub Actions"}, config=config, context=deps
-    )
-    messages_after_call1 = len(res1["messages"])
+    first = await app.ainvoke(query, context=deps)
+    second = await app.ainvoke(query, context=deps)
 
-    # Call 2 with same thread_id
-    res2 = await app.ainvoke(
-        {"query": "What is the status of the runners now?"}, config=config, context=deps
-    )
-    messages_after_call2 = len(res2["messages"])
-
-    # Message history should have accumulated across turns
-    assert messages_after_call2 > messages_after_call1
+    assert len(first["messages"]) > 0
+    # The second run's messages start fresh: none of the first run's messages carry over.
+    assert len(second["messages"]) == len(first["messages"])
+    first_ids = {message.id for message in first["messages"]}
+    assert first_ids.isdisjoint(message.id for message in second["messages"])
+    assert second["repair_attempts"] == first["repair_attempts"]
+    assert second["refinement_attempts"] == first["refinement_attempts"]
 
 
 def test_groq_adapter_formats_messages_and_the_runtime_labels_groq():
