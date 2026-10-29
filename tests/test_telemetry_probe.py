@@ -119,6 +119,31 @@ async def test_a_refused_read_never_calls_the_source() -> None:
     assert time.monotonic() - started < 0.1
 
 
+async def test_a_read_refused_during_another_callers_half_open_trial_is_tripped() -> None:
+    source = FakeSource("alpha", delay_s=0.2)
+    registry = CircuitBreakerRegistry()
+    # A zero reset timeout lets the next call after opening become the half-open trial.
+    force_open_for_tests(registry.get_or_create("alpha", fail_max=1, reset_timeout=0))
+    probe = _probe(source, registry=registry)
+    targets = frozenset({"alpha"})
+
+    trial = asyncio.create_task(probe.collect(targets, QUERY, SCOPE))
+    while not source.reads:
+        await asyncio.sleep(0)
+    refused = await probe.collect(targets, QUERY, SCOPE)
+    trial_reading = await trial
+
+    assert source.reads == [(QUERY, SCOPE)]
+    assert refused.tripped_breakers == targets
+    assert refused.unavailable_sources == frozenset()
+    [degraded] = refused.signals
+    assert degraded.source == "alpha:billing"
+    assert degraded.status == SIGNAL_STATUS_CIRCUIT_OPEN
+    # The trial itself succeeded and closed the breaker.
+    assert [s.source for s in trial_reading.signals] == ["alpha:ok"]
+    assert trial_reading.breaker_states == {"alpha": "closed"}
+
+
 async def test_non_targeted_sources_are_never_read_and_never_counted_as_failed() -> None:
     targeted = FakeSource("alpha")
     tripped = FakeSource("beta", fail=True)
