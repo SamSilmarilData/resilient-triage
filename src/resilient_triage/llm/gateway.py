@@ -149,13 +149,15 @@ class LLMGateway:
     ) -> Completion | ProviderFailure:
         result = await self.adapter.call(model, messages)
         attempts.append(Attempt(model=model, result=result))
+        if isinstance(result, RateLimited):
+            # Started here, not in _record, so concurrent and cancelled calls see it at once.
+            self._cooldown_until[model] = self._clock() + self._cooldown_s(model, result)
         if not isinstance(result, Completion):
             logger.warning("LLM call to %s failed: %s", model, result)
         return result
 
     def _record(self, attempts: list[Attempt], result: Completion | ProviderFailure) -> None:
-        """Apply one completed complete() call to the counters and cooldowns."""
-        now = self._clock()
+        """Apply one completed complete() call to the counters (cooldowns start in _call)."""
         for attempt in attempts:
             model, outcome = attempt.model, attempt.result
             self._total_calls += 1
@@ -166,7 +168,6 @@ class LLMGateway:
             self._last_error = outcome.detail
             if isinstance(outcome, RateLimited):
                 self._rate_limit_hits += 1
-                self._cooldown_until[model] = now + self._cooldown_s(model, outcome)
         if isinstance(result, Completion) and attempts and attempts[-1].model == self.fallback:
             self._failover_events += 1
 
