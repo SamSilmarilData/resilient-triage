@@ -444,3 +444,26 @@ def test_fastembed_fallback_to_deterministic_when_offline(mocker):
     assert len(batch) == 2
     assert len(batch[0]) == 384
     provider.warmup()
+
+
+class _RaisingEmbeddingProvider(DeterministicEmbeddingProvider):
+    """Embedding provider whose query embedding always fails, like a crashed ONNX runtime."""
+
+    def embed_query(self, text: str) -> list[float]:
+        raise RuntimeError("onnxruntime: bad alloc")
+
+
+async def test_embedding_failure_degrades_lookup_to_miss_and_skips_store(caplog):
+    """An embedding failure makes lookup a logged MISS and store a logged no-op, never a raise."""
+    cache = SemanticCacheManager(embedding_provider=_RaisingEmbeddingProvider())
+    await cache.initialize()
+    await cache.clear()
+    caplog.set_level("WARNING", logger="resilient_triage.cache.semantic_cache")
+
+    await cache.store("GitHub Actions runner jobs are not picking up", _make_sample_report())
+    assert cache.count == 0
+    assert "bad alloc" in caplog.text
+
+    caplog.clear()
+    assert await cache.lookup("GitHub Actions runner jobs are not picking up") is None
+    assert "bad alloc" in caplog.text
