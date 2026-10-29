@@ -106,6 +106,8 @@ class SemanticCacheManager:
         self._lock = asyncio.Lock()
         self._last_reconnect_attempt: float | None = None
         self.reconnect_cooldown_seconds: float = 5.0
+        # Set by a clear() that could not reach Redis; the next connect clears Redis first.
+        self._clear_pending: bool = False
 
         # In-memory standby: every write lands here; it serves reads whenever Redis search can't.
         # Its dimension guard keeps a wrong-size vector (from store or hydration) out of the matrix.
@@ -156,6 +158,18 @@ class SemanticCacheManager:
             )
             await store.aclose()
             return
+
+        if self._clear_pending:
+            try:
+                await store.clear()
+            except Exception as clear_err:
+                logger.warning(
+                    "Pending Redis clear failed (%s). Staying on the in-memory standby.", clear_err
+                )
+                await store.aclose()
+                return
+            self._clear_pending = False
+            logger.info("Ran the pending Redis clear before serving from Redis.")
 
         self._redis = store
         logger.info(
@@ -381,10 +395,19 @@ class SemanticCacheManager:
             logger.warning("Redis store error: %s (in-memory copy active).", err)
 
     async def clear(self) -> None:
-        """Clear all in-memory and Redis cache entries."""
+        """Clear all in-memory and Redis cache entries.
+
+        While Redis is down, this reconnects at once (ignoring the cooldown); if Redis is still
+        down, the clear stays pending and runs on the next successful connect, before Redis
+        serves a search or hydrates the standby.
+        """
         await self._standby.clear()
         redis = self._redis
         if redis is None:
+            self._clear_pending = True
+            async with self._lock:
+                if self._redis is None:
+                    await self._connect()
             return
         try:
             await redis.clear()
