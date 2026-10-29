@@ -19,14 +19,20 @@ class InMemoryVectorStore:
     """Process-local VectorStore; vectors are L2-normalised, so a dot product is cosine."""
 
     def __init__(
-        self, max_capacity: int = 10000, clock: Callable[[], float] = time.monotonic
+        self,
+        max_capacity: int = 10000,
+        clock: Callable[[], float] = time.monotonic,
+        dimension: int | None = None,
     ) -> None:
         self.max_capacity = max_capacity
+        self.dimension = dimension
         self._clock = clock
         self._docs: dict[str, _Stored] = {}
 
     async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
         """Return the most similar live entry in `scope` at or above `threshold`."""
+        if not self._fits(vector):
+            return None
         self._purge_expired()
         candidates = list(self._docs.values())
         if scope:
@@ -51,7 +57,14 @@ class InMemoryVectorStore:
         )
 
     async def put(self, entry: VectorEntry, ttl: float) -> None:
-        """Store `entry` for `ttl` seconds, evicting the oldest entry when at capacity."""
+        """Store `entry` for `ttl` seconds, evicting the oldest entry when at capacity.
+
+        Raises ValueError, storing nothing, if the vector's size isn't `dimension`.
+        """
+        if not self._fits(entry.vector):
+            raise ValueError(
+                f"vector has {np.size(entry.vector)} dimensions, expected {self.dimension}"
+            )
         if entry.doc_id not in self._docs and len(self._docs) >= self.max_capacity:
             self._docs.pop(next(iter(self._docs)), None)
         self._docs[entry.doc_id] = _Stored(entry=entry, expires_at=self._clock() + ttl)
@@ -68,6 +81,11 @@ class InMemoryVectorStore:
     def count(self) -> int:
         """Number of entries held, including any expired ones not yet purged by a search."""
         return len(self._docs)
+
+    def _fits(self, vector: np.ndarray) -> bool:
+        """True if `vector` is 1-d with `dimension` elements (any size when unset)."""
+        shape = np.shape(vector)
+        return len(shape) == 1 and (self.dimension is None or shape[0] == self.dimension)
 
     def _purge_expired(self) -> None:
         """Drop entries whose TTL has passed."""

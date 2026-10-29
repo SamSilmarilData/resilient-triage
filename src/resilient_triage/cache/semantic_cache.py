@@ -116,7 +116,10 @@ class SemanticCacheManager:
         self.reconnect_cooldown_seconds: float = 5.0
 
         # In-memory standby: every write lands here; it serves reads whenever Redis search can't.
-        self._standby = InMemoryVectorStore(max_capacity=max_capacity)
+        # Its dimension guard keeps a wrong-size vector (from store or hydration) out of the matrix.
+        self._standby = InMemoryVectorStore(
+            max_capacity=max_capacity, dimension=self.embedding_provider.dimension
+        )
 
     async def initialize(self) -> None:
         """Initialize Redis connection and test for RediSearch module availability."""
@@ -497,16 +500,20 @@ class SemanticCacheManager:
         report_json = report.model_dump_json()
         # 1. Write through to the in-memory standby (it evicts oldest-first at capacity)
         vec_arr = np.array(query_vec, dtype=np.float32)
-        await self._standby.put(
-            VectorEntry(
-                doc_id=doc_id,
-                query=scoped_q,
-                service_scope=target_scope,
-                report_json=report_json,
-                vector=vec_arr,
-            ),
-            ttl=effective_ttl,
-        )
+        try:
+            await self._standby.put(
+                VectorEntry(
+                    doc_id=doc_id,
+                    query=scoped_q,
+                    service_scope=target_scope,
+                    report_json=report_json,
+                    vector=vec_arr,
+                ),
+                ttl=effective_ttl,
+            )
+        except ValueError as rejected:
+            logger.warning("Cache store rejected the embedding: %s. Skipping store.", rejected)
+            return
 
         # 2. Update Redis if connected
         if self._redis:
