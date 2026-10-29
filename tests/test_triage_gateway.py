@@ -110,7 +110,7 @@ async def test_a_miss_stores_the_report_under_its_scope(cache):
     assert await cache.lookup(QUERY, service_filter="actions") is None
 
 
-async def test_a_run_without_a_final_report_answers_with_a_stored_synthesis_fallback(cache):
+async def test_a_run_without_a_final_report_answers_with_an_unstored_synthesis_fallback(cache):
     graph = ReturningGraph({"tripped_breakers": ["statuspage"]})
 
     outcome = await _gateway(cache, graph).triage(QUERY, None)
@@ -123,9 +123,7 @@ async def test_a_run_without_a_final_report_answers_with_a_stored_synthesis_fall
     assert outcome.report.root_cause_analysis == (
         "Self-repair limits reached. Diagnostic context: LLM synthesis error"
     )
-    stored = await cache.lookup(QUERY)
-    assert stored is not None
-    assert stored.report == outcome.report
+    assert await cache.lookup(QUERY) is None
 
 
 def _one_slot(timeout_s: float = 0.05) -> Settings:
@@ -189,3 +187,62 @@ async def test_metrics_are_a_snapshot(cache):
 
     assert before == TriageMetrics(hit=0, miss=0, saturated=0)
     assert gateway.metrics.miss == 1
+
+
+def _fallback_report() -> IncidentTriageReport:
+    return IncidentTriageReport(
+        summary="Automated incident triage degraded",
+        severity=SeverityLevel.UNKNOWN,
+        root_cause_analysis="Self-repair limits reached. Diagnostic context: LLM synthesis error",
+        degradation_status=DegradationStatus.SEVERELY_DEGRADED,
+        circuit_breakers_tripped=[],
+        confidence_score=0.2,
+    )
+
+
+async def test_a_synthesis_fallback_is_answered_but_not_stored(cache):
+    fallback = _fallback_report()
+    graph = ReturningGraph({"final_report": fallback, "synthesis_fell_back": True})
+    gateway = _gateway(cache, graph)
+
+    outcome = await gateway.triage(QUERY, None)
+
+    assert outcome == Analyzed(report=fallback)
+    assert await cache.lookup(QUERY) is None
+    assert gateway.metrics == TriageMetrics(hit=0, miss=1, saturated=0)
+
+    again = await gateway.triage(QUERY, None)
+
+    assert isinstance(again, Analyzed)
+    assert len(graph.calls) == 2
+    assert gateway.metrics == TriageMetrics(hit=0, miss=2, saturated=0)
+
+
+async def test_a_telemetry_degraded_report_is_stored_with_the_degraded_ttl():
+    now = [1000.0]
+    cache = SemanticCacheManager(
+        redis_url=UNREACHABLE_REDIS,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        default_ttl=300,
+        degraded_ttl=60,
+        clock=lambda: now[0],
+    )
+    await cache.initialize()
+    degraded = _report().model_copy(
+        update={
+            "degradation_status": DegradationStatus.PARTIALLY_DEGRADED,
+            "circuit_breakers_tripped": ["statuspage"],
+        }
+    )
+    graph = ReturningGraph({"final_report": degraded, "tripped_breakers": ["statuspage"]})
+    try:
+        await _gateway(cache, graph).triage(QUERY, None)
+
+        now[0] += 59
+        stored = await cache.lookup(QUERY)
+        assert stored is not None
+        assert stored.report == degraded
+        now[0] += 2
+        assert await cache.lookup(QUERY) is None
+    finally:
+        await cache.close()

@@ -35,7 +35,7 @@ Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(
 1. Looks up the semantic cache unless `force_refresh` is set; a hit is `CacheHit`.
 2. Waits up to `triage_queue_timeout_s` (5s) for one of `triage_max_concurrent_runs` (10) run slots; if none frees in time the request is shed (`Shed()`, HTTP 503).
 3. Runs the graph through its `GraphRunner` (`AppRuntime.run_graph`, which passes `context=runtime.deps`), releasing the slot in a `finally`. If the graph returns no `final_report`, the gateway builds a synthesis fallback with `build_fallback_report` and reconciles it.
-4. Stores the report under the request's service scope and returns `Analyzed`.
+4. Stores the report under the request's service scope, unless it is a synthesis fallback (never cached, see [resilience](resilience.md#degradation-status-report-reconciliation-in-finalize)), and returns `Analyzed`.
 
 The gateway is the only code on the request path that writes to the semantic cache: graph nodes get a read-only `CacheReader` (`TriageDeps.history`) and `finalize` only reconciles. It also counts outcomes (`TriageGateway.metrics`: `hit`, `miss`, `saturated`), which `/metrics` exports as `resilient_triage_requests_total{cache=...}`.
 
@@ -49,7 +49,7 @@ The gateway is the only code on the request path that writes to the semantic cac
   - Ingress queries are embedded into a dense 384-dimensional vector in ~3.5ms via FastEmbed ONNX runtime (`BAAI/bge-small-en-v1.5`).
   - RediSearch performs KNN similarity search using an HNSW Float32 Cosine distance index (`triage_vector_idx`).
   - If cosine similarity $\ge 0.90$, the cached `IncidentTriageReport` is immediately returned in **`7.71ms`** with header `X-Cache: HIT`.
-  - Cache misses proceed to the LangGraph state machine, and the Triage gateway (the only request-path cache writer) stores the final report under `triage:doc:*` with its service scope and a TTL (300s healthy, 60s degraded).
+  - Cache misses proceed to the LangGraph state machine, and the Triage gateway (the only request-path cache writer) stores the final report (unless it is a synthesis fallback) under `triage:doc:*` with its service scope and a TTL (300s healthy, 60s degraded).
   - **Service scope is exact**: a lookup reuses only an entry stored under exactly the same normalized scope (`normalize_scope()`), and "no scope" is a scope of its own, not a wildcard. RediSearch fetches the `SEARCH_KNN = 5` nearest neighbours and takes the best one in the exact scope; if none of the 5 is, the lookup is a MISS.
 - **Structure** (`cache/`):
   - `vector_store.py` — the `VectorStore` seam (`search`, `put`, `delete`, `clear`, `count`), its `RemoteVectorStore` extension (`connect`, `ping`, `aclose`, `supports_search`, `entries`), the `VectorEntry` / `VectorHit` records, and the two failure kinds `StoreUnavailable` and `StoreQueryError`.
@@ -135,7 +135,7 @@ The gateway is the only code on the request path that writes to the semantic cac
 
 **Approval rule.** `reconcile` also sets `requires_approval=True` on every recommended action whose `action_type.strip().lower()` is not `"diagnostic"`, so an unexpected label such as `"Remediation"` or `"mutating"` fails safe. The rule only raises the flag, never lowers it, and is the only code that writes `requires_approval`; `validate_report` just parses and fills defaults.
 
-**Second call site: the emergency path.** If the graph returns no `final_report`, the Triage gateway (`triage_gateway.py`) builds one with `build_fallback_report`, never reaching `finalize`. It then calls `reconcile` itself, on the graph's evidence with `synthesis_fell_back: True`, before storing and returning, so that report is `SEVERELY_DEGRADED` and lists any tripped targeted breakers.
+**Second call site: the emergency path.** If the graph returns no `final_report`, the Triage gateway (`triage_gateway.py`) builds one with `build_fallback_report`, never reaching `finalize`. It then calls `reconcile` itself, on the graph's evidence with `synthesis_fell_back: True`, and returns it without storing it, so that report is `SEVERELY_DEGRADED` and lists any tripped targeted breakers.
 
 ---
 
