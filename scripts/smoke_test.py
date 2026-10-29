@@ -17,6 +17,10 @@ CYAN = "\033[96m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
+# Step 7 must reach Cluster Sentinel, whose breaker step 6 opened: a whole-word internal
+# keyword and no external keyword, even as a substring ("reporting" contains "repo").
+OUTAGE_QUERY = "Kubernetes ingress reporting 502 bad gateway across backend pods"
+
 
 def print_step(name: str):
     print(f"\n{BOLD}{CYAN}▶ {name}{RESET}")
@@ -142,7 +146,7 @@ def run_battery(base_url: str):
 
     # 7. Triage Under Outage (Degraded Recovery)
     print_step("Step 7: Incident Triage Under Active Upstream Outage (Compensatory Routing)")
-    q_chaos = "Kubernetes ingress reporting 502 bad gateway across backend pods"
+    q_chaos = OUTAGE_QUERY
     res_under_chaos = client.post("/triage", json={"query": q_chaos})
     if res_under_chaos.status_code != 200:
         print_fail(f"Triage failed during outage: HTTP {res_under_chaos.status_code}")

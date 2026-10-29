@@ -1,8 +1,11 @@
 """Tests for LangGraph cyclic state machine, self-repair loops, and resilience routing."""
 
+import importlib.util
 import json
+import re
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -11,7 +14,11 @@ from langgraph.runtime import Runtime
 
 from resilient_triage.graph.builder import build_triage_graph
 from resilient_triage.graph.llm import MockTriageChatModel
-from resilient_triage.graph.nodes.analyze_query import analyze_query_node
+from resilient_triage.graph.nodes.analyze_query import (
+    EXTERNAL_KEYWORDS,
+    INTERNAL_KEYWORDS,
+    analyze_query_node,
+)
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
@@ -94,6 +101,20 @@ def test_dynamic_tool_targeting():
     # Broad query -> both
     state3 = analyze_query_node({"query": "Service outage across entire infrastructure"})
     assert state3["target_tools"] == ["statuspage", "chaos"]
+
+
+def test_smoke_outage_query_targets_cluster_sentinel():
+    """Smoke step 7 reaches Cluster Sentinel under substring and whole-word matching (#46)."""
+    script = Path(__file__).resolve().parents[1] / "scripts" / "smoke_test.py"
+    spec = importlib.util.spec_from_file_location("smoke_test", script)
+    assert spec is not None and spec.loader is not None
+    smoke_test = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke_test)
+    query = smoke_test.OUTAGE_QUERY.lower()
+
+    assert analyze_query_node({"query": query})["target_tools"] == ["chaos"]
+    assert any(re.search(rf"\b{re.escape(kw)}\b", query) for kw in INTERNAL_KEYWORDS)
+    assert not [kw for kw in EXTERNAL_KEYWORDS if kw in query]
 
 
 @pytest.mark.asyncio
