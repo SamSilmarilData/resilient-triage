@@ -97,6 +97,18 @@ Only genuinely transient exceptions trigger retries:
 - `httpx.HTTPStatusError` with status codes: `429`, `502`, `503`, `504`
 - Non-transient exceptions (such as `400 Bad Request`, `401 Unauthorized`, `404 Not Found`) fail fast without wasting retry cycles.
 
+### Source deadline: call order for a Telemetry source read
+
+Every Telemetry source read (Statuspage, Cluster Sentinel) runs in this order:
+
+```
+breaker → asyncio.timeout(telemetry_source_deadline_s) → with_retry → read
+```
+
+The **source deadline**, `telemetry_source_deadline_s` (default 5s, 0.5–30, env `TELEMETRY_SOURCE_DEADLINE_S`), covers the read *including its retries and backoff*, and sits inside the breaker. Running out of time raises `TimeoutError` inside the breaker call, so it counts as exactly one breaker failure, and the source becomes an **Unavailable source** for the run: it adds one degraded signal (`status="UNAVAILABLE"`, `error_rate=1.0`) under its usual label (`statuspage:global`, or the matched Cluster Sentinel sub-probe name). A cancellation from outside the read (the run deadline, a client disconnect) records nothing on the breaker ([section 2](#cancellation-is-neither-success-nor-failure)). For Statuspage, the httpx timeouts (connect 2s, read 3s) stay the inner limit on each attempt. `GET /chaos/probe` runs under the same deadline and answers 503 when it passes.
+
+So a Chaos injection with a large `latency_ms` (capped at 30 000 ms) costs a triage at most the source deadline, not the injected latency.
+
 ---
 
 ## 4. Zero-Downtime Dual-Engine Vector Caching

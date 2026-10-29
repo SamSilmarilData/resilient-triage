@@ -126,10 +126,16 @@ class ChaosClient:
         Raises:
             BreakerOpen: If the chaos circuit breaker is OPEN.
             httpx.HTTPStatusError: If injected 503 or transient failure persists after retries.
+            TimeoutError: If the probe, retries included, outruns the source deadline.
         """
-        # Tenacity retry sits INSIDE the circuit breaker call
+        # breaker -> source deadline -> retry -> read: running out of time is a breaker failure.
         retry_fn = with_retry()(self._execute_probe)
-        return await self.circuit_breaker.call(retry_fn)
+
+        async def within_deadline() -> ChaosTelemetryResponse:
+            async with asyncio.timeout(settings.telemetry_source_deadline_s):
+                return await retry_fn()
+
+        return await self.circuit_breaker.call(within_deadline)
 
     async def fetch_signals(
         self,

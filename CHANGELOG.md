@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **A slow telemetry source can no longer stall a triage** (bug-hunt finding 8): every Statuspage and Cluster Sentinel read, retries included, now runs under a source deadline that sits inside the source's breaker (breaker → deadline → retry → read). Running out of time counts as one breaker failure and the source is reported unavailable for the run, with its usual degraded-signal label. A cancellation from outside the read still records nothing. `GET /chaos/probe` runs under the same deadline and answers 503 when it passes. Statuspage's httpx timeouts stay the inner limit. See `docs/resilience.md` section 3. New setting, in `.env.example`:
+  - `TELEMETRY_SOURCE_DEADLINE_S` (default 5.0s, 0.5 to 30): the source deadline.
+- **`ChaosConfig.latency_ms` is capped at 30 000 ms**: `POST /chaos/inject` with a larger `latency_ms` now returns 422.
 - **A stalled triage run no longer holds its slot or client indefinitely**: every graph run the Triage gateway starts now has a run deadline. When it passes, the run is cancelled, its slot released, and `POST /triage` answers 200 (`X-Cache: MISS`) with a `SEVERELY_DEGRADED` synthesis fallback report ("Run deadline exceeded"). That report is not cached and `/metrics` counts it as a `miss`. Slot wait does not count against the deadline, and a client disconnect still cancels the run as before. See `docs/resilience.md` section 5. New setting, in `.env.example`:
   - `TRIAGE_RUN_DEADLINE_S` (default 45.0s, above 0 and at most 120): the run deadline.
 - **A graph exception no longer gives `POST /triage` a 500**: if the triage graph raises anything except `CancelledError`, the Triage gateway logs it and answers 200 (`X-Cache: MISS`) with a `SEVERELY_DEGRADED` synthesis fallback report. That report is not cached, and the run slot is released. See `docs/resilience.md` section 5.

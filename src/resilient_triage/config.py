@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     retry_max_attempts: int = Field(default=3, ge=1, description="Max tenacity retry attempts")
     retry_min_wait_seconds: float = Field(default=0.1, ge=0.0, description="Tenacity min wait")
     retry_max_wait_seconds: float = Field(default=1.0, ge=0.0, description="Tenacity max wait")
+    telemetry_source_deadline_s: float = Field(
+        default=5.0,
+        ge=0.5,
+        le=30,
+        description=(
+            "Source deadline: seconds one Telemetry source read may take, retries included, "
+            "before it is cut off, counted as a breaker failure and the source is unavailable"
+        ),
+    )
 
     # Self-Repair Loop
     max_self_repair_retries: int = Field(

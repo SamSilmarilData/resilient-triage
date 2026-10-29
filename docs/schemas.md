@@ -42,7 +42,7 @@ Runtime parameters for the configurable `/chaos` endpoint:
 - `active: bool`: Master toggle for chaos injection.
 - `inject_503: bool`: If true, immediately raises HTTP 503.
 - `failure_rate: float`: Probability fraction between `0.0` and `1.0`.
-- `latency_ms: int`: Milliseconds of artificial latency to introduce.
+- `latency_ms: int`: Milliseconds of artificial latency to introduce (`ge=0, le=30_000`; `/chaos/inject` answers 422 above 30 000).
 
 ---
 
