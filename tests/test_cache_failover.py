@@ -430,3 +430,28 @@ async def test_clear_query_error_is_retried_before_redis_serves(clock):
     assert cache.driver == "redisearch"
     assert remote.acloses == 0
     assert remote.count == 0
+
+
+async def test_hydration_skips_wrong_dimension_vector_and_keeps_the_rest(clock):
+    """A Redis hash whose vector is the wrong size is skipped; every other entry still hydrates."""
+    remote = ScriptedStore(searchable=False)
+    seeder = _cache(remote, clock)
+    await seeder.initialize()
+    await seeder.store(QUERY, _report("Persisted in Redis"))
+    await seeder.close()
+    wrong_size = VectorEntry(
+        doc_id="wrong-dim",
+        query="Some other query",
+        service_scope="",
+        report_json=_report("Wrong dimension").model_dump_json(),
+        vector=np.ones(7, dtype=np.float32),
+    )
+    await remote.data.put(wrong_size, ttl=60)
+
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    match = await cache.lookup(QUERY)
+
+    assert cache.driver == "redis_hash_fallback"
+    assert cache.count == 1
+    assert match is not None and match.report.summary == "Persisted in Redis"
