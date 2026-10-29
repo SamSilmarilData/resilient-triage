@@ -42,6 +42,7 @@ class TriageState(TypedDict, total=False):
     refinement_attempts: int
     validation_errors: list[str]
     provider_failure: ProviderFailure | None  # the latest generation's failure, else None
+    refined_from: IncidentTriageReport | None  # the valid report a refine round started from
 
     # Validated final output
     final_report: IncidentTriageReport | None
