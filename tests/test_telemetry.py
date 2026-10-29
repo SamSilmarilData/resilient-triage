@@ -314,7 +314,7 @@ def test_the_probe_registers_breakers_in_the_registry_it_is_given():
     """A probe built with a registry creates both source breakers in it."""
     registry = CircuitBreakerRegistry()
 
-    probe = TelemetryProbe(
+    TelemetryProbe(
         [
             ClusterSentinelSource(ChaosManager()),
             _statuspage(CountingStatuspage(_summary("none"))),
@@ -322,7 +322,6 @@ def test_the_probe_registers_breakers_in_the_registry_it_is_given():
         breakers=registry,
     )
 
-    assert probe.breakers is registry
     assert registry.get("chaos") is not None
     assert registry.get("statuspage") is not None
     assert set(registry.get_all_statuses()) == {"chaos", "statuspage"}

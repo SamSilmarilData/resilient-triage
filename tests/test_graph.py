@@ -22,7 +22,7 @@ from resilient_triage.llm import (
     ScriptedAdapter,
     Unavailable,
 )
-from resilient_triage.resilience.circuit_breaker import force_open_for_tests
+from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
 from resilient_triage.schemas.incident import (
     DegradationStatus,
     IncidentTriageReport,
@@ -189,8 +189,9 @@ async def test_graph_happy_path():
 async def test_graph_degraded_and_compensatory_routing():
     """Verify an OPEN breaker routes through compensatory cache and degraded fallback."""
     # Deliberately trip the chaos breaker
-    deps = make_triage_deps()
-    chaos_cb = deps.telemetry.breakers.get_or_create("chaos")
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(breakers=breakers)
+    chaos_cb = breakers.get_or_create("chaos")
     force_open_for_tests(chaos_cb)
     assert chaos_cb.info().is_open is True
 
@@ -464,8 +465,9 @@ async def test_longest_path_stays_within_the_recursion_limit(monkeypatch):
     monkeypatch.setattr(settings, "max_self_repair_retries", 5)
     pre_refine_json = _make_valid_report_json(confidence=0.50)
     mock_llm = ScriptedAdapter([pre_refine_json] + ["not json"] * 5)
-    deps = make_triage_deps(llm_adapter=mock_llm)
-    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(llm_adapter=mock_llm, breakers=breakers)
+    force_open_for_tests(breakers.get_or_create("chaos"))
     app = build_triage_graph()
 
     visited = [
@@ -610,8 +612,9 @@ async def test_collect_telemetry_records_source_whose_task_raised():
 @pytest.mark.asyncio
 async def test_collect_telemetry_tripped_breaker_is_not_unavailable():
     """A source whose breaker is tripped counts as a tripped breaker, not an unavailable source."""
-    deps = make_triage_deps(statuspage_http=_statuspage_http(_connection_reset))
-    force_open_for_tests(deps.telemetry.breakers.get_or_create("statuspage"))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(statuspage_http=_statuspage_http(_connection_reset), breakers=breakers)
+    force_open_for_tests(breakers.get_or_create("statuspage"))
 
     result = await collect_telemetry_node(
         {"query": "q", "targeted_sources": ["statuspage"]}, Runtime(context=deps)
@@ -767,8 +770,9 @@ async def test_groq_proactive_cooldown_routing():
 async def test_synthesis_fallback_status_is_never_downgraded():
     """Synthesis fallback with one tripped breaker gives SEVERELY_DEGRADED, not PARTIALLY."""
     mock_llm = ScriptedAdapter(["not json"] * 5)
-    deps = make_triage_deps(llm_adapter=mock_llm)
-    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(llm_adapter=mock_llm, breakers=breakers)
+    force_open_for_tests(breakers.get_or_create("chaos"))
 
     app = build_triage_graph()
     final_state = await app.ainvoke(
@@ -785,8 +789,9 @@ async def test_synthesis_fallback_status_is_never_downgraded():
 @pytest.mark.asyncio
 async def test_only_targeted_breakers_degrade_the_report():
     """An open breaker the query never targets leaves the report HEALTHY."""
-    deps = make_triage_deps()
-    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(breakers=breakers)
+    force_open_for_tests(breakers.get_or_create("chaos"))
 
     app = build_triage_graph()
     final_state = await app.ainvoke(
@@ -821,7 +826,8 @@ async def test_llm_invented_breaker_names_are_dropped():
 @pytest.mark.asyncio
 async def test_unavailable_source_degrades_the_report():
     """A targeted source failing its read with a closed breaker gives PARTIALLY_DEGRADED."""
-    deps = make_triage_deps(statuspage_http=_statuspage_http(_connection_reset))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(statuspage_http=_statuspage_http(_connection_reset), breakers=breakers)
 
     app = build_triage_graph()
     final_state = await app.ainvoke(
@@ -829,7 +835,7 @@ async def test_unavailable_source_degrades_the_report():
     )
 
     assert final_state["targeted_sources"] == ["statuspage"]
-    assert not deps.telemetry.breakers.get_or_create("statuspage").info().is_open
+    assert not breakers.get_or_create("statuspage").info().is_open
     report = final_state["final_report"]
     assert report.circuit_breakers_tripped == []
     assert report.degradation_status == DegradationStatus.PARTIALLY_DEGRADED

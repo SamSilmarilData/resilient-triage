@@ -45,8 +45,10 @@ class FakeSource:
         return f"{self.id}:{scope}"
 
 
-def _probe(*sources: FakeSource, fail_max: int = 3) -> TelemetryProbe:
-    registry = CircuitBreakerRegistry()
+def _probe(
+    *sources: FakeSource, fail_max: int = 3, registry: CircuitBreakerRegistry | None = None
+) -> TelemetryProbe:
+    registry = registry if registry is not None else CircuitBreakerRegistry()
     for source in sources:
         registry.get_or_create(source.id, fail_max=fail_max)
     return TelemetryProbe(sources, breakers=registry)
@@ -99,8 +101,9 @@ async def test_fail_max_failures_trip_the_source_on_the_tripping_read_and_the_ne
 
 async def test_a_refused_read_never_calls_the_source() -> None:
     source = FakeSource("alpha")
-    probe = _probe(source)
-    force_open_for_tests(probe.breakers.get_or_create("alpha"))
+    registry = CircuitBreakerRegistry()
+    probe = _probe(source, registry=registry)
+    force_open_for_tests(registry.get_or_create("alpha"))
 
     started = time.monotonic()
     reading = await probe.collect(frozenset({"alpha"}), QUERY, SCOPE)
@@ -116,11 +119,37 @@ async def test_a_refused_read_never_calls_the_source() -> None:
     assert time.monotonic() - started < 0.1
 
 
+async def test_a_read_refused_during_another_callers_half_open_trial_is_tripped() -> None:
+    source = FakeSource("alpha", delay_s=0.2)
+    registry = CircuitBreakerRegistry()
+    # A zero reset timeout lets the next call after opening become the half-open trial.
+    force_open_for_tests(registry.get_or_create("alpha", fail_max=1, reset_timeout=0))
+    probe = _probe(source, registry=registry)
+    targets = frozenset({"alpha"})
+
+    trial = asyncio.create_task(probe.collect(targets, QUERY, SCOPE))
+    while not source.reads:
+        await asyncio.sleep(0)
+    refused = await probe.collect(targets, QUERY, SCOPE)
+    trial_reading = await trial
+
+    assert source.reads == [(QUERY, SCOPE)]
+    assert refused.tripped_breakers == targets
+    assert refused.unavailable_sources == frozenset()
+    [degraded] = refused.signals
+    assert degraded.source == "alpha:billing"
+    assert degraded.status == SIGNAL_STATUS_CIRCUIT_OPEN
+    # The trial itself succeeded and closed the breaker.
+    assert [s.source for s in trial_reading.signals] == ["alpha:ok"]
+    assert trial_reading.breaker_states == {"alpha": "closed"}
+
+
 async def test_non_targeted_sources_are_never_read_and_never_counted_as_failed() -> None:
     targeted = FakeSource("alpha")
     tripped = FakeSource("beta", fail=True)
-    probe = _probe(targeted, tripped)
-    force_open_for_tests(probe.breakers.get_or_create("beta"))
+    registry = CircuitBreakerRegistry()
+    probe = _probe(targeted, tripped, registry=registry)
+    force_open_for_tests(registry.get_or_create("beta"))
 
     reading = await probe.collect(frozenset({"alpha"}), QUERY, SCOPE)
 
@@ -132,8 +161,11 @@ async def test_non_targeted_sources_are_never_read_and_never_counted_as_failed()
 
 
 async def test_each_failed_source_adds_exactly_one_degraded_signal_with_its_label() -> None:
-    probe = _probe(FakeSource("alpha", fail=True), FakeSource("beta"), FakeSource("gamma"))
-    force_open_for_tests(probe.breakers.get_or_create("gamma"))
+    registry = CircuitBreakerRegistry()
+    probe = _probe(
+        FakeSource("alpha", fail=True), FakeSource("beta"), FakeSource("gamma"), registry=registry
+    )
+    force_open_for_tests(registry.get_or_create("gamma"))
 
     reading = await probe.collect(frozenset({"alpha", "beta", "gamma"}), QUERY, SCOPE)
 
@@ -157,12 +189,13 @@ async def test_sources_are_read_concurrently() -> None:
 
 
 async def test_cancelling_collect_records_nothing_on_any_breaker() -> None:
-    probe = _probe(FakeSource("alpha", delay_s=5), FakeSource("beta", delay_s=5))
+    registry = CircuitBreakerRegistry()
+    probe = _probe(FakeSource("alpha", delay_s=5), FakeSource("beta", delay_s=5), registry=registry)
 
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(probe.collect(frozenset({"alpha", "beta"}), QUERY, SCOPE), 0.05)
 
-    statuses = probe.breakers.get_all_statuses()
+    statuses = registry.get_all_statuses()
     assert {name: info.fail_counter for name, info in statuses.items()} == {"alpha": 0, "beta": 0}
 
 
@@ -170,7 +203,8 @@ async def test_a_source_past_the_deadline_is_unavailable_and_records_one_failure
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "telemetry_source_deadline_s", 0.5)
-    probe = _probe(FakeSource("alpha", delay_s=5))
+    registry = CircuitBreakerRegistry()
+    probe = _probe(FakeSource("alpha", delay_s=5), registry=registry)
 
     started = time.monotonic()
     reading = await probe.collect(frozenset({"alpha"}), QUERY, SCOPE)
@@ -178,7 +212,7 @@ async def test_a_source_past_the_deadline_is_unavailable_and_records_one_failure
     assert time.monotonic() - started < 0.5 + 0.3
     assert reading.unavailable_sources == frozenset({"alpha"})
     assert [s.status for s in reading.signals] == [SIGNAL_STATUS_UNAVAILABLE]
-    alpha = probe.breakers.get_all_statuses()["alpha"]
+    alpha = registry.get_all_statuses()["alpha"]
     assert alpha.fail_counter == 1
     assert alpha.state == "closed"
 
@@ -193,8 +227,9 @@ def test_building_the_probe_creates_one_breaker_per_source() -> None:
     assert statuses["alpha"].fail_max == settings.circuit_breaker_fail_max
 
 
-async def test_guarded_runs_a_read_through_the_source_breaker_and_raises_its_failure() -> None:
-    probe = _probe(FakeSource("alpha"))
+async def test_call_source_runs_through_the_source_breaker_and_raises_its_failure() -> None:
+    registry = CircuitBreakerRegistry()
+    probe = _probe(FakeSource("alpha"), registry=registry)
 
     async def failing() -> str:
         raise RuntimeError("boom")
@@ -202,10 +237,10 @@ async def test_guarded_runs_a_read_through_the_source_breaker_and_raises_its_fai
     async def ok() -> str:
         return "pong"
 
-    assert await probe.guarded("alpha", ok) == "pong"
+    assert await probe.call_source(FakeSource, lambda source: ok()) == "pong"
     with pytest.raises(RuntimeError, match="boom"):
-        await probe.guarded("alpha", failing)
-    assert probe.breakers.get_all_statuses()["alpha"].fail_counter == 1
+        await probe.call_source(FakeSource, lambda source: failing())
+    assert registry.get_all_statuses()["alpha"].fail_counter == 1
 
 
 def _targeting_probe() -> TelemetryProbe:

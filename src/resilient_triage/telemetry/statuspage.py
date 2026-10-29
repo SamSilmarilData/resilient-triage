@@ -21,6 +21,9 @@ STATUSPAGE_TIMEOUT = httpx.Timeout(connect=2.0, read=3.0, write=2.0, pool=1.0)
 # Short-TTL per-source cache that skips redundant ~700ms fetches.
 SUMMARY_CACHE_TTL_SECONDS = 10.0
 
+# Signal source of the page-wide status, also the degraded label when a read fails.
+GLOBAL_SIGNAL_SOURCE = "statuspage:global"
+
 
 def new_statuspage_http_client() -> httpx.AsyncClient:
     """Build a keep-alive pooled httpx.AsyncClient for Statuspage (no I/O until used)."""
@@ -54,7 +57,7 @@ class StatuspageSource:
 
     def degraded_label(self, query: str, scope: str | None) -> str:
         """Signal source used when this source cannot be read."""
-        return "statuspage:global"
+        return GLOBAL_SIGNAL_SOURCE
 
     async def read(self, query: str, scope: str | None) -> list[TelemetrySignal]:
         """Fetch (or reuse) the summary and parse it into signals; raises on failure."""
@@ -64,7 +67,7 @@ class StatuspageSource:
 
         signals: list[TelemetrySignal] = [
             TelemetrySignal(
-                source="statuspage:global",
+                source=GLOBAL_SIGNAL_SOURCE,
                 status=summary.indicator,
                 latency_ms=elapsed_ms,
                 error_rate=0.0 if summary.indicator == "none" else 0.5,
