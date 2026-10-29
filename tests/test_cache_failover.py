@@ -394,3 +394,39 @@ async def test_clear_before_initialize_leaks_no_client_and_connects_once(clock):
     assert cache.driver == "redis_hash_fallback"
     await cache.close()
     assert all(store.acloses == 1 for store in created)
+
+
+async def test_clear_that_loses_redis_midway_stays_pending_until_reconnect(clock):
+    """If Redis drops during the clear itself, the clear runs on reconnect before Redis serves."""
+    remote = ScriptedStore()
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    await cache.store(QUERY, _report())
+    remote.fail["clear"] = StoreUnavailable("connection reset")
+
+    await cache.clear()
+    del remote.fail["clear"]
+    clock.now += cache.reconnect_cooldown_seconds + 1
+    match = await cache.lookup(QUERY)  # reconnects
+
+    assert match is None
+    assert cache.driver == "redisearch"
+    assert remote.count == 0
+
+
+async def test_clear_query_error_is_retried_before_redis_serves(clock):
+    """A clear rejected by Redis stays pending and is retried before Redis serves a read."""
+    remote = ScriptedStore()
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    await cache.store(QUERY, _report())
+    remote.fail["clear"] = StoreQueryError("BUSY")
+
+    await cache.clear()
+    del remote.fail["clear"]
+    match = await cache.lookup(QUERY)
+
+    assert match is None
+    assert cache.driver == "redisearch"
+    assert remote.acloses == 0
+    assert remote.count == 0
