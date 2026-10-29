@@ -81,7 +81,7 @@ fail, fail, cancel, fail opens the breaker.
 
 ## 3. Exponential Backoff with Randomized Jitter (Tenacity)
 
-All network calls are wrapped with `@with_retry` using Tenacity:
+Telemetry calls are wrapped with `@with_retry` using Tenacity. Model calls are not: the LLM gateway retries and fails over by its own policy ([section 6](#6-llm-gateway-failover-and-rate-limit-cooldowns)).
 
 ### Formula
 To prevent the "thundering herd" problem where multiple workers retry on identical synchronized intervals, we employ **Randomized Exponential Backoff with Full Jitter**:
@@ -162,21 +162,59 @@ The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED)
 
 ---
 
-## 6. Real-Time Groq Quota Tracking & Secondary Failover
+## 6. LLM Gateway: Failover and Rate-Limit Cooldowns
 
-To operate safely within Groq free-tier constraints (1,000 output tokens/minute ceiling):
+Every model call goes through `LLMGateway.complete(messages)` (`src/resilient_triage/llm/gateway.py`, ADR-006). It returns a `Completion` or a typed provider failure (`RateLimited`, `Unavailable`, `Rejected`, `MalformedResponse`; see [architecture](architecture.md#2-llm-gateway-groq-lpus)) and never raises anything except `CancelledError`. The adapter underneath makes exactly one call to one model; retries, failover and cooldowns all live in the gateway.
 
-1. **Header Extraction**:
-   Every response through `GroqChatModel` is recorded by its `GroqQuotaTracker` (one per `AppRuntime`, passed in by `build_runtime`):
-   - `x-ratelimit-remaining-tokens` / `x-ratelimit-limit-tokens`
-   - `x-ratelimit-remaining-requests` / `x-ratelimit-limit-requests`
-2. **Automated Secondary Failover**:
-   ```python
-   if resp.status_code == 429 and self.fallback_model:
-       # Automatically retries using secondary model openai/gpt-oss-20b
-   ```
-   - Primary: `qwen/qwen3.8-27b`
-   - Fallback: `openai/gpt-oss-20b` (independent rate-limit quota bucket)
-3. **Logging & Observability**:
-   - Success on fallback logged at `INFO`.
-   - Failure on fallback logs exact status code and raw response body (`fb_resp.text`) at `WARNING`.
+### Failover policy
+
+The primary is `GROQ_MODEL` (`qwen/qwen3.8-27b`), the fallback `GROQ_FALLBACK_MODEL` (`llama-3.1-8b-instant`). One `complete()` makes **at most 3 calls**, and what follows depends on the primary's result:
+
+| Primary returns | Gateway action |
+| :--- | :--- |
+| `Completion` | Return it. |
+| `RateLimited` | Start the primary's cooldown and call the fallback once. The primary is never retried. |
+| `Unavailable` | Retry the primary once after a jittered backoff (`random.uniform(RETRY_MIN_WAIT_SECONDS, RETRY_MAX_WAIT_SECONDS)`). If the retry fails with anything but `Rejected`, call the fallback once. |
+| `MalformedResponse` | Call the fallback once. |
+| `Rejected` | Return it at once: no retry, no failover. |
+| *(primary in cooldown)* | Skip the primary and call the fallback once. |
+
+If the fallback fails too, `complete()` returns the fallback's failure. `generate_report` turns any failure into the `fallback_report` route, so a dead model still yields a `SEVERELY_DEGRADED` report instead of an error.
+
+**Cooldowns are per model.** A 429 from the fallback records a cooldown for the fallback only; it never cools down the primary. The fallback's cooldown is recorded but not consulted: a call that reaches the fallback always tries it.
+
+**Cancellation records nothing.** The gateway applies a call's counters and cooldowns only after `complete()` finishes, so a call cancelled mid-way (run deadline, client disconnect, during the backoff) starts no cooldown and counts no call, rate-limit hit or failover.
+
+### Cooldown length
+
+| `RateLimited.scope` | Cooldown |
+| :--- | :--- |
+| `minute` | `retry_after_s`, else the tokens bucket's reset (`x-ratelimit-reset-tokens`). |
+| `day` | The requests bucket's reset (`x-ratelimit-reset-requests`). |
+| `unknown` | `LLM_DEFAULT_COOLDOWN_S` (default 30s). |
+
+If the chosen value is missing, the cooldown falls back to `LLM_DEFAULT_COOLDOWN_S`. **Every cooldown, whatever its scope, is capped at `LLM_MAX_COOLDOWN_S`** (default 3600s), so a bogus header cannot lock the primary out for a day. `POST /resilience/reset` ends all cooldowns.
+
+### Reading Groq's 429 headers
+
+`GroqAdapter` turns a 429 into a `RateLimited` in this order:
+
+1. **`retry-after`**, read as seconds (a float is fine), becomes `retry_after_s`.
+2. **The bucket at 0 sets the scope.** On Groq, `x-ratelimit-*-requests` is the per-day request bucket and `x-ratelimit-*-tokens` the per-minute token bucket. `remaining-requests: 0` gives `day`; otherwise `remaining-tokens: 0` gives `minute`. **If both are at 0, `day` wins**, since its reset is the longer wait. Without a `retry-after`, `retry_after_s` is that bucket's reset.
+3. **No bucket at 0 but a `retry-after`: the scope is `minute`**, so the gateway honours the `retry-after` (it ignores `retry_after_s` for `unknown`). Groq's per-minute request limit has no header, so it is the likely cause.
+4. Otherwise the scope is `unknown`, which gets the default cooldown.
+
+So a 429 with both a `retry-after` and `remaining-requests: 0` is sized from the requests bucket's reset (capped), not from the `retry-after`.
+
+Reset headers are Go-style durations: every `<number><unit>` part counts (`h`, `m`, `s`, `ms`, `us`, `ns`), and a bare number means seconds. `2m59.56s` is 179.56s, `1h2m3s` is 3723s and `120ms` is 0.12s; anything else (`soon`, `-2`) is ignored. The format is inferred from Groq's examples rather than documented by Groq. The adapter reads these headers on every response, not only on a 429, and keeps the latest value per model: a header missing from a response keeps its previous value.
+
+### Quota snapshot
+
+`LLMGateway.snapshot()` is the `LLMQuotaSnapshot` behind `GET /llm/quota` and the `llm_quota` field of `/health` and `/resilience/status`:
+- `remaining_*`, `limit_*`, `reset_*` and `last_status` come from the **primary model's** headers only, so a fallback call never overwrites the primary's budget.
+- `active_model` is the model that served the last completion; `fallback_model` is `GROQ_FALLBACK_MODEL`.
+- `total_calls` (adapter calls, not `complete()` calls), `rate_limit_hits` and `failover_events` cover both models. `failover_events` counts completions answered by the fallback, whether after a live failure or a cooldown skip.
+
+### Logging
+- A failover from the primary logs at `WARNING` with both model names.
+- Every failed call logs its model and failure kind at `WARNING`; the provider's error message becomes the snapshot's `last_error`.

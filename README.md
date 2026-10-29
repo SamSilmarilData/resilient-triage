@@ -83,7 +83,7 @@
    - Guards external telemetry probes against systemic failures (`fail_max=3`, `reset_timeout=30s`).
    - If an external status page crashes or hangs, the breaker trips `OPEN`, causing the LangGraph state machine to route into `DegradedFallbackNode` instead of stalling requests.
 3. **Tenacity Exponential Backoff & Jitter**:
-   - Telemetry clients and LLM invocation wrappers absorb transient network drops and HTTP 429 rate limits via exponential backoff with full randomized jitter.
+   - Telemetry clients absorb transient network drops and HTTP 429 rate limits via exponential backoff with full randomized jitter. Model calls go through the LLM gateway, which retries an outage once and fails over to a second Groq model on a 429 ([resilience guide](docs/resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns)).
 4. **Pydantic Validation & Automated Self-Repair**:
    - All LLM outputs are strictly validated against `IncidentTriageReport`.
    - Any `ValidationError` extracts exact error paths and feeds the traceback back to the LLM context to iteratively repair malformed fields (capped at 2 retries).
@@ -177,7 +177,8 @@ Explore the architecture, resilience engineering, API specifications, and archit
   - [ADR 0002: Dual-Engine Semantic Caching](docs/decisions/0002-dual-engine-semantic-caching.md)
   - [ADR 0003: Pybreaker & Tenacity for Resilience](docs/decisions/0003-pybreaker-and-tenacity-for-resilience.md)
   - [ADR 0004: Strict Pydantic Contracts & Self-Repair Loop](docs/decisions/0004-strict-pydantic-contracts-and-self-repair.md)
-  - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md)
+  - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md) (fallback model superseded by ADR 0006)
+  - [ADR 0006: Project-Owned LLM Gateway](docs/decisions/0006-project-owned-llm-gateway.md)
 
 ---
 

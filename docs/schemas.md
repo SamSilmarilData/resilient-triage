@@ -88,20 +88,21 @@ Snapshot representation of an individual circuit breaker's operational state:
 - `last_failure_reason: str | None`: Error message or reason for the latest failure.
 
 ### `LLMQuotaSnapshot`
-Real-time quota, rate limit, and failover telemetry for the active LLM provider (specifically Groq free tier):
+Quota, rate limit and failover telemetry from the LLM gateway (`LLMGateway.snapshot()`). The budget fields and `last_status` describe the primary model only; the counters cover both models.
+
 - `provider: str`: Provider name (`"groq"`).
-- `active_model: str`: Active primary model (`"llama-3.3-70b-versatile"` or simulation).
-- `fallback_model: str | None`: Active fallback model (`"openai/gpt-oss-20b"`).
+- `active_model: str`: The model that served the last completion (the primary `"qwen/qwen3.8-27b"` until a fallback answers).
+- `fallback_model: str | None`: The fallback model, `GROQ_FALLBACK_MODEL` (`"llama-3.1-8b-instant"`).
 - `remaining_requests: int | None`: Requests remaining in current rate-limit window.
 - `limit_requests: int | None`: Total request limit for current window.
 - `remaining_tokens: int | None`: Tokens remaining in current rate-limit window.
 - `limit_tokens: int | None`: Total token limit for current window.
 - `reset_requests: str | None`: Duration until request quota window resets (e.g., `"12.4s"`).
 - `reset_tokens: str | None`: Duration until token quota window resets (e.g., `"8.1s"`).
-- `total_calls: int`: Total LLM API calls executed since process start.
+- `total_calls: int`: Model calls made since the app started or the last reset. A `complete()` that fails over counts each call.
 - `rate_limit_hits: int`: Total HTTP 429 rate limit events encountered.
-- `failover_events: int`: Total successful fallback model invocations.
-- `last_status: int | None`: HTTP status code of the most recent LLM API response.
+- `failover_events: int`: Completions answered by the fallback model, after a primary failure or while the primary cooled down.
+- `last_status: int | None`: HTTP status code of the primary model's most recent response.
 - `last_error: str | None`: Most recent error message or rate limit description.
 - `last_updated: datetime | None`: Timestamp of the most recent telemetry update.
 

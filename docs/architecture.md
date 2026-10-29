@@ -10,7 +10,7 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
 
 `resilient-triage` is engineered on four core architectural pillars:
 1. **Never stall on dead dependencies**: Use circuit breakers with fail-fast degraded fallbacks.
-2. **Absorb transient turbulence**: Wrap external telemetry and model calls with exponential backoff and randomized jitter.
+2. **Absorb transient turbulence**: Wrap external telemetry calls with exponential backoff and randomized jitter; model calls get a single jittered retry and a fallback model from the LLM gateway.
 3. **Guarantee structural determinism**: Strictly enforce Pydantic contracts with an automated self-repair loop that catches invalid outputs before they reach engineers.
 4. **Sub-20ms Semantic Caching with Zero-Downtime Failover**: Offload redundant incident traffic using Redis 8 RediSearch, with instantaneous fallback to in-memory vectorized search if Redis disconnects.
 
@@ -28,7 +28,7 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
 </p>
 
 ### App runtime
-Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(settings)` and started and closed by the FastAPI lifespan. It holds every stateful module: the semantic cache, the circuit breaker registry, the chaos manager, the Groq quota tracker, and the Statuspage and Groq HTTP clients (the Statuspage summary cache lives inside its Statuspage source). Graph nodes see these only through `TriageDeps` (`graph/deps.py`), passed as LangGraph's run context (`triage_graph.ainvoke(..., context=runtime.deps)`). There are no module-level singletons; only `settings`, the FastEmbed embedder and its LRU, and the compiled `triage_graph` are process-wide. Tests build a fresh runtime per test.
+Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(settings)` and started and closed by the FastAPI lifespan. It holds every stateful module: the semantic cache, the circuit breaker registry, the chaos manager, the LLM gateway (`AppRuntime.llm`, which owns its model adapter and, for Groq, the Groq HTTP client), and the Statuspage HTTP client (the Statuspage summary cache lives inside its Statuspage source). Graph nodes see these only through `TriageDeps` (`graph/deps.py`; `TriageDeps.llm` is the same gateway), passed as LangGraph's run context (`triage_graph.ainvoke(..., context=runtime.deps)`). There are no module-level singletons; only `settings`, the FastEmbed embedder and its LRU, and the compiled `triage_graph` are process-wide. Tests build a fresh runtime per test.
 
 ---
 
@@ -47,21 +47,30 @@ Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(
 
 ---
 
-### 2. SOTA LLM Engine (Groq LPUs)
-- **Model**: `qwen/qwen3.8-27b` (Flagship 27-Billion parameter SRE model).
+### 2. LLM Gateway (Groq LPUs)
+- **Model**: `qwen/qwen3.8-27b` on Groq (`GROQ_MODEL`), failing over to `llama-3.1-8b-instant` (`GROQ_FALLBACK_MODEL`).
 - **Latency**: **~1.1s** generation turnaround (166ms TTFT).
-- **Protocol**: Direct async HTTP client with strict `response_format={"type": "json_object"}`.
-- **Provider Ladder**:
-  1. Groq LPUs (`qwen/qwen3.8-27b`, `openai/gpt-oss-120b`).
-  2. Local Apple Silicon GPU via Ollama (`qwen2.5:1.5b`).
-  3. Google Gemini 2.5 Flash.
-  4. OpenAI GPT-4o-mini.
-  5. High-fidelity zero-config SRE simulation fallback.
+- **Protocol**: Direct async HTTP with strict `response_format={"type": "json_object"}`, one request per call, timing out after `LLM_REQUEST_TIMEOUT_S` (default 20s).
+- **One seam**: every model call goes through `LLMGateway.complete(messages)` in `src/resilient_triage/llm/` (ADR-006). It returns a `Completion` (text plus the model that answered) or a **provider failure**, and never raises anything except `CancelledError`. The failure kinds are:
+
+  | Kind | Cause |
+  | :--- | :--- |
+  | `RateLimited(retry_after_s, scope)` | HTTP 429. `scope` is `minute`, `day` or `unknown`. |
+  | `Unavailable` | 5xx, timeout or connection error. |
+  | `Rejected` | A 4xx other than 429. |
+  | `MalformedResponse` | A 2xx without `choices[0].message.content`. |
+
+  A completion that is not valid report JSON is not a provider failure; validation and self-repair handle it (ADR-004).
+- **Adapters**: the gateway owns model failover and per-model cooldowns ([resilience guide](resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns)). An adapter makes exactly one call to one model:
+  - `GroqAdapter` (`llm/groq.py`) owns the pooled `httpx.AsyncClient`, maps each response to a result, and parses the rate-limit headers.
+  - `ScriptedAdapter` (`llm/scripted.py`) returns scripted results in order, then a valid default report. It is both the test fake and the zero-config simulation.
+- **Provider selection**: `build_llm_gateway(settings, adapter=None)` (`llm/__init__.py`) is the only place a provider is chosen. With `GROQ_API_KEY` set it uses `GroqAdapter` and the `/health` label `Groq LPU (<GROQ_MODEL>)`; without it, `ScriptedAdapter` and `Zero-Config SRE Simulation`. No other key selects a provider. `build_runtime(settings, llm_adapter=...)` passes an adapter through, which is how tests script the model.
+- **Graph contract**: `generate_report` calls `runtime.context.llm.complete(messages)`. On a provider failure it sets `validation_errors=["LLM Provider Failure: <Kind>: <detail>"]` and `repair_attempts` to the maximum, so `route_after_validation` goes to `fallback_report`.
 
 ---
 
 ### 3. Resilience Layer: Tenacity Retries
-- **Purpose**: Absorb transient networking hiccups, intermittent 503s, and HTTP 429 rate limits from telemetry and model providers.
+- **Purpose**: Absorb transient networking hiccups, intermittent 503s, and HTTP 429 rate limits from telemetry sources. Model calls are not wrapped: the LLM gateway applies its own failover policy (section 2).
 - **Parameters**:
   - Retry on `httpx.TimeoutException`, `httpx.NetworkError`, and specific HTTP status codes (429, 502, 503, 504).
   - Exponential backoff with randomized jitter (`wait_random_exponential`) to prevent thundering herd problems against upstream services.
@@ -142,17 +151,17 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
 
 ---
 
-### 8. Real-Time Groq Quota Monitoring & Model Failover (v1.2.0)
+### 8. Real-Time Groq Quota Monitoring & Model Failover
 - **Problem**: Groq free tier imposes a strict 1,000 output tokens/minute limit on `qwen/qwen3.8-27b`. Bursts of incident triage requests can hit HTTP 429 mid-incident.
-- **Header Telemetry (`GroqQuotaTracker`)**:
-  - Thread-safe tracker, one per `AppRuntime` and passed to `GroqChatModel`, inspects response headers (`x-ratelimit-remaining-tokens`, `x-ratelimit-limit-tokens`, `x-ratelimit-reset-tokens`, etc.).
-  - Tracks rolling metrics: total calls, 429 rate limit hits, and fallback invocations.
-  - Returns strict typed snapshot [`LLMQuotaSnapshot`](schemas.md#llmquotasnapshot) via `GET /llm/quota` and embeds into `GET /health`.
+- **Header Telemetry**:
+  - `GroqAdapter` reads the rate-limit headers (`x-ratelimit-remaining-tokens`, `x-ratelimit-limit-tokens`, `x-ratelimit-reset-tokens`, and the `-requests` set) on every response and keeps them per model.
+  - The gateway counts adapter calls, 429 rate-limit hits and failover events.
+  - `LLMGateway.snapshot()` returns the strict typed [`LLMQuotaSnapshot`](schemas.md#llmquotasnapshot) served by `GET /llm/quota` and embedded in `GET /health` and `GET /resilience/status`. Its budget fields describe the primary model only.
 - **Secondary Model Failover**:
-  - On HTTP 429, `GroqChatModel` immediately falls back to `openai/gpt-oss-20b`, which possesses an independent quota bucket.
-  - SRE incident response continues without interruptions or gateway timeouts.
+  - A 429 from the primary puts it into a cooldown sized by the rate limit's scope, and the same prompt goes to the fallback model, which has its own quota bucket. While the primary cools down, calls go straight to the fallback.
+  - Each `complete()` makes at most 3 calls. The full policy is in the [resilience guide](resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns).
 - **Diagnostic Logging**:
-  - Fallback errors log exact HTTP status codes and full response body (`fb_resp.text`) for rapid upstream root-cause diagnosis.
+  - Every failed call logs its model and failure kind at `WARNING`, and the provider's error message is kept as the snapshot's `last_error`.
 
 ---
 
