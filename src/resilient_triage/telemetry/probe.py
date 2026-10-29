@@ -41,6 +41,11 @@ class TelemetrySource(Protocol):
         """Words or phrases that route a query to this source, matched as whole words."""
         ...
 
+    @property
+    def display_name(self) -> str:
+        """Human name used when describing this source, e.g. in a degradation reason."""
+        ...
+
     async def read(self, query: str, scope: str | None) -> list[TelemetrySignal]: ...
 
     def degraded_label(self, query: str, scope: str | None) -> str: ...
@@ -108,6 +113,13 @@ class TelemetryProbe:
     def source_ids(self) -> list[str]:
         """Every source id, in registration order."""
         return [source.id for source in self._sources]
+
+    def describe(self, source_id: str) -> str:
+        """Name a source as "<display name> [<id>]"; an id no source owns is named as itself."""
+        for source in self._sources:
+            if source.id == source_id:
+                return f"{source.display_name} [{source.id}]"
+        return source_id
 
     def select_targets(self, query: str, scope: str | None) -> frozenset[str]:
         """Targeted sources: those whose keywords appear in query or scope, else every source."""

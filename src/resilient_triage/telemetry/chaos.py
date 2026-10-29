@@ -63,6 +63,7 @@ class ClusterSentinelSource:
     """Cluster Sentinel Telemetry source: one sub-probe signal, subject to Chaos injection."""
 
     id = "chaos"
+    display_name = "Cluster Sentinel"
     keywords = frozenset(
         {
             "internal",

@@ -2,18 +2,19 @@
 
 from typing import Any
 
+from langgraph.runtime import Runtime
+
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
 
 
-def degraded_fallback_node(state: TriageState) -> dict[str, Any]:
+def degraded_fallback_node(state: TriageState, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
     """Annotate state when one or more circuit breakers are OPEN."""
     tripped = state.get("tripped_breakers", [])
     signals = list(state.get("telemetry_signals", []))
 
-    tripped_desc = ", ".join(
-        f"Cluster Sentinel [{name}]" if name == "chaos" else name for name in tripped
-    )
+    tripped_desc = ", ".join(runtime.context.telemetry.describe(name) for name in tripped)
     degradation_reason = (
         f"Circuit breaker(s) [{tripped_desc}] tripped OPEN. Upstream telemetry unavailable; "
         "protecting downstream services."

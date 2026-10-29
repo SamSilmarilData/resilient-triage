@@ -34,6 +34,7 @@ class StatuspageSource:
     """Statuspage Telemetry source: one global signal plus degraded components and incidents."""
 
     id = "statuspage"
+    display_name = "Statuspage"
     keywords = frozenset(
         {"github", "statuspage", "actions", "repo", "webhook", "cloud", "aws", "gcp", "atlassian"}
     )
