@@ -12,6 +12,7 @@ from resilient_triage.cache.semantic_cache import (
     CacheMatch,
     SemanticCacheManager,
     format_scoped_query,
+    normalize_scope,
 )
 from resilient_triage.schemas.incident import (
     DegradationStatus,
@@ -128,6 +129,15 @@ def test_format_scoped_query():
     assert format_scoped_query("  Is Actions down?  ", "  CI  ") == "[scope: ci] Is Actions down?"
 
 
+def test_normalize_scope():
+    """Verify scopes are stripped, lower-cased and reduced to [a-z0-9_-], and None means none."""
+    assert normalize_scope(None) == ""
+    assert normalize_scope("   ") == ""
+    assert normalize_scope("  GitHub-Actions ") == "github-actions"
+    assert normalize_scope("api_gw (prod)!") == "api_gwprod"
+    assert normalize_scope("{*}") == ""
+
+
 @pytest.mark.asyncio
 async def test_semantic_cache_hit_under_20ms():
     """Verify cache hit for identical query returns in sub-20ms with similarity >= 0.90."""
@@ -234,11 +244,11 @@ async def test_degraded_report_reduced_ttl():
     await cache.store("Degraded query", degraded_report)
 
     # Check in-memory document TTLs
-    entries = list(cache._in_memory_docs.values())
+    entries = list(cache._standby._docs.values())
     assert len(entries) == 2
 
-    healthy_entry = next(e for e in entries if "Healthy query" in e.query)
-    degraded_entry = next(e for e in entries if "Degraded query" in e.query)
+    healthy_entry = next(e for e in entries if "Healthy query" in e.entry.query)
+    degraded_entry = next(e for e in entries if "Degraded query" in e.entry.query)
 
     import time
 

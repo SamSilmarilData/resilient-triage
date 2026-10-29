@@ -17,10 +17,19 @@ from resilient_triage.cache.embeddings import (
     BaseEmbeddingProvider,
     get_embedding_provider,
 )
+from resilient_triage.cache.in_memory_store import InMemoryVectorStore
+from resilient_triage.cache.vector_store import VectorEntry, VectorHit
 from resilient_triage.config import settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_scope(service_filter: str | None) -> str:
+    """Return the canonical service scope: stripped, lower-cased, [a-z0-9_-] only; "" for none."""
+    if not service_filter:
+        return ""
+    return re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
 
 
 def format_scoped_query(query: str, service_filter: str | None = None) -> str:
@@ -34,10 +43,9 @@ def format_scoped_query(query: str, service_filter: str | None = None) -> str:
         str: Scope-prefixed string (e.g. '[scope: internal] query') or original query.
     """
     clean_q = query.strip()
-    if service_filter and service_filter.strip():
-        scope = re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
-        if scope:
-            return f"[scope: {scope}] {clean_q}"
+    scope = normalize_scope(service_filter)
+    if scope:
+        return f"[scope: {scope}] {clean_q}"
     return clean_q
 
 
@@ -67,26 +75,6 @@ class CacheMatch(BaseModel):
     execution_time_ms: float = Field(..., description="Lookup turnaround time in milliseconds")
     matched_query: str = Field(..., description="Previous query that produced the cached match")
     cache_hit: bool = Field(default=True, description="Always True for CacheMatch")
-
-
-class InMemoryVectorEntry:
-    """In-memory cache record containing vector and metadata."""
-
-    def __init__(
-        self,
-        doc_id: str,
-        query: str,
-        report_json: str,
-        vector: np.ndarray,
-        expires_at: float,
-        service_scope: str = "",
-    ) -> None:
-        self.doc_id = doc_id
-        self.query = query
-        self.report_json = report_json
-        self.vector = vector
-        self.expires_at = expires_at
-        self.service_scope = service_scope
 
 
 class SemanticCacheManager:
@@ -127,8 +115,8 @@ class SemanticCacheManager:
         self._last_reconnect_attempt: float = 0.0
         self.reconnect_cooldown_seconds: float = 5.0
 
-        # In-memory vectorized store (fallback or standalone)
-        self._in_memory_docs: dict[str, InMemoryVectorEntry] = {}
+        # In-memory standby: every write lands here; it serves reads whenever Redis search can't.
+        self._standby = InMemoryVectorStore(max_capacity=max_capacity)
 
     async def initialize(self) -> None:
         """Initialize Redis connection and test for RediSearch module availability."""
@@ -215,7 +203,6 @@ class SemanticCacheManager:
             if not keys:
                 return
 
-            now = time.monotonic()
             for key in keys:
                 try:
                     data = await self._redis.hgetall(key)
@@ -236,22 +223,21 @@ class SemanticCacheManager:
                     vec_bytes = _to_bytes(vec_raw)
                     vec_arr = np.frombuffer(vec_bytes, dtype=np.float32)
                     ttl = await self._redis.ttl(key)
-                    expires_at = now + (ttl if ttl > 0 else self.default_ttl)
 
-                    self._in_memory_docs[doc_id] = InMemoryVectorEntry(
-                        doc_id=doc_id,
-                        query=query,
-                        report_json=report_json,
-                        vector=vec_arr,
-                        expires_at=expires_at,
-                        service_scope=service_scope,
+                    await self._standby.put(
+                        VectorEntry(
+                            doc_id=doc_id,
+                            query=query,
+                            service_scope=service_scope,
+                            report_json=report_json,
+                            vector=vec_arr,
+                        ),
+                        ttl=ttl if ttl > 0 else self.default_ttl,
                     )
                 except Exception as doc_err:
                     logger.debug("Failed to hydrate document key %s: %s", key, doc_err)
 
-            logger.info(
-                "Hydrated %d cached documents from Redis into memory.", len(self._in_memory_docs)
-            )
+            logger.info("Hydrated %d cached documents from Redis into memory.", self._standby.count)
         except Exception as err:
             logger.warning("Error hydrating from Redis: %s", err)
 
@@ -338,16 +324,12 @@ class SemanticCacheManager:
 
         start_time = time.monotonic()
         effective_threshold = threshold if threshold is not None else self.similarity_threshold
-        target_scope = (
-            re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
-            if service_filter and service_filter.strip()
-            else ""
-        )
+        target_scope = normalize_scope(service_filter)
         scoped_q = format_scoped_query(query, service_filter)
 
         # 1. Generate query embedding; a failing embedder degrades to a MISS
         try:
-            query_vec = self.embedding_provider.embed_query(scoped_q)
+            query_vec = np.array(self.embedding_provider.embed_query(scoped_q), dtype=np.float32)
         except Exception as embed_err:
             logger.warning("Embedding failed during cache lookup: %s. Treating as MISS.", embed_err)
             return None
@@ -384,15 +366,14 @@ class SemanticCacheManager:
                     e,
                 )
 
-        # 3. Fallback to high-performance in-memory vector search
-        return self._search_in_memory(
-            scoped_q, query_vec, effective_threshold, start_time, target_scope=target_scope
-        )
+        # 3. Fall back to the in-memory standby
+        hit = await self._standby.search(query_vec, target_scope, effective_threshold)
+        return self._to_match(hit, start_time) if hit else None
 
     async def _search_redisearch(
         self,
         scoped_query: str,
-        query_vec: list[float],
+        query_vec: np.ndarray,
         threshold: float,
         start_time: float,
         target_scope: str = "",
@@ -403,12 +384,12 @@ class SemanticCacheManager:
         from redis.commands.search.query import Query
 
         # Cosine distance = 1.0 - cosine_similarity
-        query_bytes = np.array(query_vec, dtype=np.float32).tobytes()
+        query_bytes = np.asarray(query_vec, dtype=np.float32).tobytes()
 
-        # Strict scope filter: sanitize scope with regex to prevent grammar parsing errors
-        clean_scope = re.sub(r"[^a-zA-Z0-9_\-]", "", target_scope)
-        if clean_scope:
-            safe_scope = clean_scope.replace("-", "\\-")
+        # Strict scope filter: target_scope is already normalize_scope()'d, so only "-" needs
+        # escaping for the tag grammar.
+        if target_scope:
+            safe_scope = target_scope.replace("-", "\\-")
             filter_query = f"(@service_scope:{{{safe_scope}}})=>[KNN 1 @vector $vec AS score]"
         else:
             filter_query = "*=>[KNN 1 @vector $vec AS score]"
@@ -443,63 +424,18 @@ class SemanticCacheManager:
 
         return None
 
-    def _search_in_memory(
-        self,
-        scoped_query: str,
-        query_vec: list[float],
-        threshold: float,
-        start_time: float,
-        target_scope: str = "",
-    ) -> CacheMatch | None:
-        """Query in-memory numpy matrix with vectorized dot product and strict scope filtering."""
-        now = time.monotonic()
-
-        # Purge expired entries safely
-        expired_keys = [k for k, v in list(self._in_memory_docs.items()) if v.expires_at < now]
-        for k in expired_keys:
-            self._in_memory_docs.pop(k, None)
-
-        if not self._in_memory_docs:
-            return None
-
-        # Filter candidate documents matching requested scope
-        if target_scope:
-            matching_items = [
-                (k, v)
-                for k, v in list(self._in_memory_docs.items())
-                if v.service_scope.lower() == target_scope.lower()
-            ]
-        else:
-            matching_items = list(self._in_memory_docs.items())
-
-        if not matching_items:
-            return None
-
-        # Build matrix and compute similarities
-        doc_ids = [item[0] for item in matching_items]
-        vectors = np.array([item[1].vector for item in matching_items], dtype=np.float32)
-        q_arr = np.array(query_vec, dtype=np.float32)
-
-        # In normalized vector space, dot product is exact cosine similarity
-        similarities = np.dot(vectors, q_arr)
-        best_idx = int(np.argmax(similarities))
-        best_similarity = float(similarities[best_idx])
-
-        if best_similarity >= threshold:
-            best_doc = self._in_memory_docs[doc_ids[best_idx]]
-            report_data = json.loads(best_doc.report_json)
-            report = IncidentTriageReport.model_validate(report_data)
-            elapsed_ms = (time.monotonic() - start_time) * 1000.0
-
-            return CacheMatch(
-                report=report,
-                similarity=round(best_similarity, 4),
-                execution_time_ms=round(elapsed_ms, 2),
-                matched_query=best_doc.query,
-                cache_hit=True,
-            )
-
-        return None
+    @staticmethod
+    def _to_match(hit: VectorHit, start_time: float) -> CacheMatch:
+        """Validate a store hit's report and wrap it as a CacheMatch."""
+        report = IncidentTriageReport.model_validate(json.loads(hit.report_json))
+        elapsed_ms = (time.monotonic() - start_time) * 1000.0
+        return CacheMatch(
+            report=report,
+            similarity=round(hit.similarity, 4),
+            execution_time_ms=round(elapsed_ms, 2),
+            matched_query=hit.query,
+            cache_hit=True,
+        )
 
     async def store(
         self,
@@ -525,11 +461,7 @@ class SemanticCacheManager:
         elif self._redis is None:
             await self._ensure_connected()
 
-        target_scope = (
-            re.sub(r"[^a-zA-Z0-9_\-]", "", service_filter.strip().lower())
-            if service_filter and service_filter.strip()
-            else ""
-        )
+        target_scope = normalize_scope(service_filter)
         scoped_q = format_scoped_query(query, service_filter)
         try:
             query_vec = self.embedding_provider.embed_query(scoped_q)
@@ -550,21 +482,17 @@ class SemanticCacheManager:
 
         doc_id = str(uuid.uuid4())
         report_json = report.model_dump_json()
-        now = time.monotonic()
-
-        # 1. Update in-memory store with LRU capacity protection
+        # 1. Write through to the in-memory standby (it evicts oldest-first at capacity)
         vec_arr = np.array(query_vec, dtype=np.float32)
-        if len(self._in_memory_docs) >= self.max_capacity:
-            oldest_key = next(iter(self._in_memory_docs))
-            self._in_memory_docs.pop(oldest_key, None)
-
-        self._in_memory_docs[doc_id] = InMemoryVectorEntry(
-            doc_id=doc_id,
-            query=scoped_q,
-            report_json=report_json,
-            vector=vec_arr,
-            expires_at=now + effective_ttl,
-            service_scope=target_scope,
+        await self._standby.put(
+            VectorEntry(
+                doc_id=doc_id,
+                query=scoped_q,
+                service_scope=target_scope,
+                report_json=report_json,
+                vector=vec_arr,
+            ),
+            ttl=effective_ttl,
         )
 
         # 2. Update Redis if connected
@@ -588,7 +516,7 @@ class SemanticCacheManager:
 
     async def clear(self) -> None:
         """Clear all in-memory and Redis cache entries."""
-        self._in_memory_docs.clear()
+        await self._standby.clear()
         if self._redis:
             try:
                 keys = [
@@ -619,7 +547,7 @@ class SemanticCacheManager:
     @property
     def count(self) -> int:
         """Return total count of cached documents in memory."""
-        return len(self._in_memory_docs)
+        return self._standby.count
 
     async def close(self) -> None:
         """Gracefully close Redis client connection and reset state."""
