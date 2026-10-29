@@ -10,7 +10,6 @@ from typing import Protocol
 from resilient_triage.cache.semantic_cache import CacheMatch
 from resilient_triage.llm import LLMGateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
-from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.telemetry.chaos import ChaosClient
 from resilient_triage.telemetry.statuspage import StatuspageClient
 
@@ -21,14 +20,6 @@ class CacheReader(Protocol):
     async def lookup(
         self, query: str, service_filter: str | None, threshold: float
     ) -> CacheMatch | None: ...
-
-
-class CacheWriter(Protocol):
-    """Write side of the semantic cache (temporary: the Triage gateway, #17, takes it over)."""
-
-    async def store(
-        self, query: str, report: IncidentTriageReport, service_filter: str | None = None
-    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -47,4 +38,3 @@ class TriageDeps:
     llm: LLMGateway
     telemetry: TelemetrySources
     history: CacheReader
-    cache_writer: CacheWriter

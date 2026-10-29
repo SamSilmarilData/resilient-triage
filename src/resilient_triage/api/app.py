@@ -1,13 +1,12 @@
 """FastAPI application for Resilient Incident Triage Gateway."""
 
-import asyncio
 import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, assert_never, cast
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
@@ -16,8 +15,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 
 from resilient_triage import __version__
 from resilient_triage.config import settings
-from resilient_triage.graph.builder import triage_graph
-from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
@@ -28,8 +25,8 @@ from resilient_triage.schemas.api import (
     TriageRequest,
     TriageResponse,
 )
-from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
+from resilient_triage.triage_gateway import Analyzed, CacheHit, Shed
 
 logger = logging.getLogger(__name__)
 
@@ -122,94 +119,40 @@ async def triage_incident(
     """
     thread_id = request.headers.get("X-Thread-ID") or str(uuid.uuid4())
     start_req = time.monotonic()
+    outcome = await runtime.triage_gateway.triage(
+        payload.query, payload.service_filter, force_refresh=payload.force_refresh
+    )
+    elapsed_ms = round((time.monotonic() - start_req) * 1000.0, 2)
 
-    # 1. Check Semantic Cache (<20ms fast path)
-    if not payload.force_refresh:
-        match = await runtime.cache.lookup(
-            query=payload.query,
-            service_filter=payload.service_filter,
-        )
-        if match:
-            runtime.requests.answered_from_cache += 1
-            elapsed_ms = (time.monotonic() - start_req) * 1000.0
-            response_data = TriageResponse(
-                report=match.report,
+    match outcome:
+        case CacheHit(report=report, similarity=similarity):
+            response = TriageResponse(
+                report=report,
                 cached=True,
-                cache_similarity=match.similarity,
-                execution_time_ms=round(elapsed_ms, 2),
+                cache_similarity=similarity,
+                execution_time_ms=elapsed_ms,
             )
-            return JSONResponse(
-                content=response_data.model_dump(mode="json"),
-                headers={
-                    "X-Cache": "HIT",
-                    "X-Cache-Similarity": str(match.similarity),
-                    "X-Thread-ID": thread_id,
-                },
+            headers = {
+                "X-Cache": "HIT",
+                "X-Cache-Similarity": str(similarity),
+                "X-Thread-ID": thread_id,
+            }
+        case Analyzed(report=report):
+            response = TriageResponse(
+                report=report, cached=False, cache_similarity=None, execution_time_ms=elapsed_ms
             )
-
-    # 2. Cache MISS: Acquire concurrency semaphore with 5.0s load-shedding boundary
-    try:
-        await asyncio.wait_for(runtime.graph_semaphore.acquire(), timeout=5.0)
-    except TimeoutError:
-        runtime.requests.shed += 1
-        logger.warning("No run slot freed up in time; shed request.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Triage state machine is currently saturated. "
-                "Please retry with exponential backoff."
-            ),
-        ) from None
-
-    try:
-        initial_state: TriageState = {
-            "query": payload.query,
-            "service_filter": payload.service_filter,
-        }
-        state_result = await triage_graph.ainvoke(initial_state, context=runtime.deps)
-    finally:
-        runtime.graph_semaphore.release()
-
-    runtime.requests.answered_by_run += 1
-
-    final_report = state_result.get("final_report")
-    if not final_report:
-        from resilient_triage.graph.nodes.fallback_report import fallback_report_node
-
-        logger.warning("Graph produced no final report. Engaging emergency fallback report.")
-        fallback_input = dict(state_result)
-        if not fallback_input.get("query"):
-            fallback_input["query"] = payload.query
-        if not fallback_input.get("service_filter"):
-            fallback_input["service_filter"] = payload.service_filter
-        fallback_state = fallback_report_node(cast(TriageState, fallback_input))
-        fallback_input.update(fallback_state)
-        # Second reconciliation call site (after finalize): the graph never reached it.
-        final_report = reconcile(
-            fallback_state["final_report"],
-            DegradationEvidence.from_state(cast(TriageState, fallback_input)),
-        )
-        # Persist emergency fallback report to semantic cache
-        await runtime.cache.store(
-            query=payload.query,
-            report=final_report,
-            service_filter=payload.service_filter,
-        )
-
-    elapsed_ms = (time.monotonic() - start_req) * 1000.0
-    response_data = TriageResponse(
-        report=final_report,
-        cached=False,
-        cache_similarity=None,
-        execution_time_ms=round(elapsed_ms, 2),
-    )
-    return JSONResponse(
-        content=response_data.model_dump(mode="json"),
-        headers={
-            "X-Cache": "MISS",
-            "X-Thread-ID": thread_id,
-        },
-    )
+            headers = {"X-Cache": "MISS", "X-Thread-ID": thread_id}
+        case Shed():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Triage state machine is currently saturated. "
+                    "Please retry with exponential backoff."
+                ),
+            )
+        case _:
+            assert_never(outcome)
+    return JSONResponse(content=response.model_dump(mode="json"), headers=headers)
 
 
 @router.post("/chaos/inject", response_model=ChaosConfig, dependencies=[Depends(verify_admin_key)])
@@ -389,13 +332,13 @@ async def get_metrics(runtime: RuntimeDep) -> PlainTextResponse:
     """Prometheus text exposition format endpoint for scraping operational metrics."""
     snapshot = await runtime.snapshot()
     statuses = snapshot.breakers
-    counts = runtime.requests
+    counts = runtime.triage_gateway.metrics
     lines = [
         "# HELP resilient_triage_requests_total Total incident triage requests handled by gateway",
         "# TYPE resilient_triage_requests_total counter",
-        f'resilient_triage_requests_total{{cache="hit"}} {counts.answered_from_cache}',
-        f'resilient_triage_requests_total{{cache="miss"}} {counts.answered_by_run}',
-        f'resilient_triage_requests_total{{cache="saturated"}} {counts.shed}',
+        f'resilient_triage_requests_total{{cache="hit"}} {counts.hit}',
+        f'resilient_triage_requests_total{{cache="miss"}} {counts.miss}',
+        f'resilient_triage_requests_total{{cache="saturated"}} {counts.saturated}',
         "",
         (
             "# HELP resilient_triage_circuit_breaker_state Active circuit breaker state (1 if "
