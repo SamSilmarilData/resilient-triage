@@ -1,5 +1,6 @@
 """Triage gateway: the POST /triage request path, and the only request-path cache writer."""
 
+import asyncio
 import logging
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
@@ -56,6 +57,7 @@ class TriageGateway:
         self._cache = cache
         self._run_graph = run_graph
         self._settings = settings
+        self._run_slots = asyncio.Semaphore(settings.triage_max_concurrent_runs)
 
     async def triage(
         self, query: str, scope: str | None, *, force_refresh: bool = False
@@ -65,7 +67,17 @@ class TriageGateway:
             match = await self._cache.lookup(query=query, service_filter=scope)
             if match:
                 return CacheHit(report=match.report, similarity=match.similarity)
-        state = await self._run_graph({"query": query, "service_filter": scope})
+        try:
+            await asyncio.wait_for(
+                self._run_slots.acquire(), timeout=self._settings.triage_queue_timeout_s
+            )
+        except TimeoutError:
+            logger.warning("No run slot freed up in time; shed request.")
+            return Shed()
+        try:
+            state = await self._run_graph({"query": query, "service_filter": scope})
+        finally:
+            self._run_slots.release()
         report = state.get("final_report") or _synthesis_fallback(query, state)
         await self._cache.store(query=query, report=report, service_filter=scope)
         return Analyzed(report=report)
