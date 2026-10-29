@@ -16,8 +16,8 @@ class TriageState(TypedDict, total=False):
     query: str
     service_filter: str | None
 
-    # Dynamic tool targeting
-    target_tools: list[str]
+    # Targeted sources: Telemetry source ids the probe selected, sorted
+    targeted_sources: list[str]
 
     # Message history for agent nodes and self-repair loop
     messages: Annotated[list[Any], add_messages]
@@ -29,8 +29,8 @@ class TriageState(TypedDict, total=False):
 
     # Resilience tracking & compensatory history
     circuit_breaker_status: dict[str, str]  # e.g. {"statuspage": "CLOSED", "chaos": "OPEN"}
-    tripped_breakers: list[str]  # targeted tools whose breaker was open at collection
-    unavailable_sources: list[str]  # targeted tools that could not be read, breaker not tripped
+    tripped_breakers: list[str]  # targeted sources whose breaker was open at collection
+    unavailable_sources: list[str]  # targeted sources that could not be read, breaker not tripped
     synthesis_fell_back: bool  # report was built by fallback_report
     is_degraded: bool
     degradation_reason: str | None

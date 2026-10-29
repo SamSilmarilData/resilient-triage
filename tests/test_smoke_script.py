@@ -4,11 +4,12 @@ import importlib.util
 import re
 from pathlib import Path
 
-from resilient_triage.graph.nodes.analyze_query import (
-    EXTERNAL_KEYWORDS,
-    INTERNAL_KEYWORDS,
-    analyze_query_node,
-)
+from fakes import make_triage_deps
+from langgraph.runtime import Runtime
+
+from resilient_triage.graph.nodes.analyze_query import analyze_query_node
+from resilient_triage.telemetry.chaos import ClusterSentinelSource
+from resilient_triage.telemetry.statuspage import StatuspageSource
 
 
 def test_outage_query_targets_cluster_sentinel():
@@ -20,8 +21,9 @@ def test_outage_query_targets_cluster_sentinel():
     spec.loader.exec_module(smoke_test)
     query = smoke_test.OUTAGE_QUERY
 
-    assert analyze_query_node({"query": query})["target_tools"] == ["chaos"]
+    state = analyze_query_node({"query": query}, Runtime(context=make_triage_deps()))
+    assert state["targeted_sources"] == ["chaos"]
     # Whole-word matching (#46) must still find an internal keyword and no external one.
     lowered = query.lower()
-    assert any(re.search(rf"\b{re.escape(kw)}\b", lowered) for kw in INTERNAL_KEYWORDS)
-    assert not [kw for kw in EXTERNAL_KEYWORDS if kw in lowered]
+    assert any(re.search(rf"\b{re.escape(kw)}\b", lowered) for kw in ClusterSentinelSource.keywords)
+    assert not [kw for kw in StatuspageSource.keywords if kw in lowered]

@@ -9,10 +9,11 @@ from langgraph.runtime import Runtime
 from resilient_triage.cache.semantic_cache import CacheMatch
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.compensate_blindspots import compensate_blindspots_node
+from resilient_triage.graph.nodes.degraded_fallback import degraded_fallback_node
 from resilient_triage.graph.nodes.finalize import finalize_node
 from resilient_triage.graph.nodes.generate_report import generate_report_node
 from resilient_triage.llm import ScriptedAdapter
-from resilient_triage.resilience.circuit_breaker import force_open_for_tests
+from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 
 
@@ -28,11 +29,12 @@ def _report() -> IncidentTriageReport:
 
 
 async def test_collect_telemetry_reads_statuspage_and_breakers_from_context():
-    deps = make_triage_deps()
-    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(breakers=breakers)
+    force_open_for_tests(breakers.get_or_create("chaos"))
 
     result = await collect_telemetry_node(
-        {"query": "Service outage", "target_tools": ["statuspage", "chaos"]},
+        {"query": "Service outage", "targeted_sources": ["statuspage", "chaos"]},
         Runtime(context=deps),
     )
 
@@ -87,3 +89,16 @@ def test_finalize_reconciles_the_report_without_any_context():
     report = result["final_report"]
     assert report.circuit_breakers_tripped == ["statuspage"]
     assert report.degradation_status == DegradationStatus.PARTIALLY_DEGRADED
+
+
+def test_degraded_fallback_names_tripped_breakers_by_their_source_display_name():
+    """The degradation reason names each tripped breaker the way its Telemetry source does."""
+    result = degraded_fallback_node(
+        {"tripped_breakers": ["chaos", "statuspage"], "telemetry_signals": []},
+        Runtime(context=make_triage_deps()),
+    )
+
+    reason = result["degradation_reason"]
+    assert "[Cluster Sentinel [chaos], Statuspage [statuspage]]" in reason
+    assert result["is_degraded"] is True
+    assert result["telemetry_signals"][-1]["raw_snippet"] == reason

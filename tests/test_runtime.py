@@ -101,8 +101,9 @@ async def test_deps_telemetry_chaos_probe_follows_this_runtimes_chaos_config(mak
     chaotic, calm = make_runtime(), make_runtime()
     chaotic.chaos.update_config(ChaosConfig(active=True, inject_503=True))
 
-    chaotic_signals = await chaotic.deps.telemetry.chaos.fetch_signals()
-    calm_signals = await calm.deps.telemetry.chaos.fetch_signals()
+    chaos = frozenset({"chaos"})
+    chaotic_signals = (await chaotic.deps.telemetry.collect(chaos, "", None)).signals
+    calm_signals = (await calm.deps.telemetry.collect(chaos, "", None)).signals
 
     assert chaotic_signals[0].status == SIGNAL_STATUS_UNAVAILABLE
     assert calm_signals[0].status == "OK"
@@ -114,7 +115,7 @@ async def test_deps_telemetry_statuspage_fails_fast_on_this_runtimes_open_breake
     runtime = make_runtime()
     force_open_for_tests(runtime.breakers.get_or_create("statuspage"))
 
-    signals = await runtime.deps.telemetry.statuspage.fetch_signals()
+    signals = (await runtime.deps.telemetry.collect(frozenset({"statuspage"}), "", None)).signals
 
     assert [s.status for s in signals] == ["CIRCUIT_OPEN"]
 
@@ -236,7 +237,7 @@ async def test_start_warms_the_injected_embedder(make_runtime):
     assert len(embedder.queries) > 1
 
 
-async def test_start_never_raises_and_still_registers_default_breakers(make_runtime):
+async def test_start_never_raises_and_both_source_breakers_stay_listed(make_runtime):
     runtime = make_runtime(embedder=RecordingEmbedder(fail=True))
 
     async def broken_initialize() -> None:
@@ -276,13 +277,15 @@ def _explode(*args: object, **kwargs: object) -> object:
     raise RuntimeError("member exploded")
 
 
-async def test_start_never_raises_when_registering_default_breakers_fails(make_runtime):
+async def test_source_breakers_exist_from_build_even_if_the_registry_breaks_before_start(
+    make_runtime,
+):
     runtime = make_runtime()
     runtime.breakers.get_or_create = _explode  # type: ignore[method-assign]
 
     await runtime.start()
 
-    # The telemetry sources registered both breakers when the runtime was built.
+    # Building the telemetry probe created both breakers; start() registers none.
     assert set((await runtime.snapshot()).breakers) == {"statuspage", "chaos"}
 
 

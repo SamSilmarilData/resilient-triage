@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # TelemetrySignal.status for a source that could not be read.
 SIGNAL_STATUS_UNAVAILABLE = "UNAVAILABLE"
+# TelemetrySignal.status for a source whose breaker is open (a Tripped breaker).
+SIGNAL_STATUS_CIRCUIT_OPEN = "CIRCUIT_OPEN"
 
 
 class StatuspageComponent(BaseModel):
@@ -71,7 +73,9 @@ class ChaosConfig(BaseModel):
     failure_rate: Annotated[
         float, Field(default=0.0, ge=0.0, le=1.0, description="Random failure rate (0.0 to 1.0)")
     ] = 0.0
-    latency_ms: int = Field(default=0, ge=0, description="Artificial latency delay in milliseconds")
+    latency_ms: int = Field(
+        default=0, ge=0, le=30_000, description="Artificial latency delay in milliseconds"
+    )
 
 
 class ChaosTelemetryResponse(BaseModel):

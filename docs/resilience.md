@@ -50,7 +50,7 @@ stateDiagram-v2
 2. **`OPEN` (Failing Fast)**:
    - Calls immediately raise `BreakerOpen` (from `resilience/circuit_breaker.py`) in $<0.01\text{ms}$ without executing network I/O.
    - Protects the failing dependency from retry storms.
-   - If the breaker belongs to a targeted tool, it is recorded as a tripped breaker and triggers `DegradedFallbackNode` in LangGraph.
+   - If the breaker belongs to a targeted source, the probe records it as a tripped breaker, which triggers `DegradedFallbackNode` in LangGraph.
 3. **`HALF_OPEN` (Trial Probe)**:
    - After `reset_timeout = 30` seconds, the breaker enters `HALF_OPEN`.
    - Exactly one call, the first caller after the timeout, becomes the **trial** and reaches the
@@ -81,7 +81,7 @@ fail, fail, cancel, fail opens the breaker.
 
 ## 3. Exponential Backoff with Randomized Jitter (Tenacity)
 
-Telemetry calls are wrapped with `@with_retry` using Tenacity. Model calls are not: the LLM gateway retries and fails over by its own policy ([section 6](#6-llm-gateway-failover-and-rate-limit-cooldowns)).
+Telemetry source reads are wrapped with `with_retry` (Tenacity) by the guarded telemetry probe. Model calls are not: the LLM gateway retries and fails over by its own policy ([section 6](#6-llm-gateway-failover-and-rate-limit-cooldowns)).
 
 ### Formula
 To prevent the "thundering herd" problem where multiple workers retry on identical synchronized intervals, we employ **Randomized Exponential Backoff with Full Jitter**:
@@ -96,6 +96,29 @@ Only genuinely transient exceptions trigger retries:
 - `httpx.NetworkError`
 - `httpx.HTTPStatusError` with status codes: `429`, `502`, `503`, `504`
 - Non-transient exceptions (such as `400 Bad Request`, `401 Unauthorized`, `404 Not Found`) fail fast without wasting retry cycles.
+
+### The guarded telemetry probe owns the call order
+
+`TelemetryProbe` (`telemetry/probe.py`) is the one place that guards Telemetry sources. `build_runtime` builds it with both adapters and the runtime's breaker registry, and nodes reach it as `TriageDeps.telemetry`. The adapters only read and parse: `StatuspageSource` (`telemetry/statuspage.py`, which keeps the 10 s summary cache) and `ClusterSentinelSource` (`telemetry/chaos.py`, which names the matching sub-probe). Each adapter has an `id` (also its breaker name: `statuspage`, `chaos`), its `keywords`, a `display_name` and a `degraded_label`, and its `read` raises on failure.
+
+- **Breakers at build time**: building the probe creates one breaker per source with the shared `circuit_breaker_fail_max` / `circuit_breaker_reset_timeout`, so `/health` lists both from startup. `AppRuntime.start()` registers none.
+- **`select_targets(query, scope)`** returns the Targeted sources: those whose keywords appear as whole words in `f"{query} {scope or ''}".lower()`, or every source when none match. `analyze_query` stores the result, sorted, as `targeted_sources`.
+- **`collect(targets, query, scope)`** reads the targeted sources concurrently and returns a `TelemetryReading` (`signals`, `tripped_breakers`, `unavailable_sources`, `breaker_states`). It never raises except `CancelledError`. Sources not in `targets` are never read and never appear in either set.
+- **Tripped vs Unavailable**: a read is a **Tripped breaker** if the breaker refused it (`BreakerOpen`, including a refusal during someone else's half-open trial) or the breaker is open right after it (the read that trips it). It is an **Unavailable source** if the read failed and the breaker is not open afterwards.
+- **One degraded signal per failed source**: `source=degraded_label(...)` (`statuspage:global`, or the matched Cluster Sentinel sub-probe name), `status` `CIRCUIT_OPEN` or `UNAVAILABLE`, `error_rate=1.0`; the snippet carries the failure. The read that trips the breaker is `CIRCUIT_OPEN` and still names the real error.
+- **`guarded(source_id, read)`** runs any read through the same breaker → deadline → retry and raises its failure; `GET /chaos/probe` uses it with the `chaos` breaker.
+
+### Source deadline: call order for a Telemetry source read
+
+Every Telemetry source read (Statuspage, Cluster Sentinel) runs in this order, applied by the probe:
+
+```
+breaker → asyncio.timeout(telemetry_source_deadline_s) → with_retry → read
+```
+
+The **source deadline**, `telemetry_source_deadline_s` (default 5s, 0.5–30, env `TELEMETRY_SOURCE_DEADLINE_S`), covers the read *including its retries and backoff*, and sits inside the breaker. Running out of time raises `TimeoutError` inside the breaker call, so it counts as exactly one breaker failure, and the source becomes an **Unavailable source** for the run: it adds one degraded signal (`status="UNAVAILABLE"`, `error_rate=1.0`) under its usual label (`statuspage:global`, or the matched Cluster Sentinel sub-probe name). A cancellation from outside the read (the run deadline, a client disconnect) records nothing on the breaker ([section 2](#cancellation-is-neither-success-nor-failure)). For Statuspage, the httpx timeouts (connect 2s, read 3s) stay the inner limit on each attempt. `GET /chaos/probe` runs under the same deadline and answers 503 when it passes.
+
+So a Chaos injection with a large `latency_ms` (capped at 30 000 ms) costs a triage at most the source deadline, not the injected latency.
 
 ---
 
@@ -193,8 +216,8 @@ A report's `degradation_status` and `circuit_breakers_tripped` are system facts,
 **Synthesis fallbacks are never cached.** The gateway still answers with a synthesis fallback (`X-Cache: MISS`, counted as a `miss` on `/metrics`) but does not store it, so the next identical query runs the graph again instead of getting the degraded answer as a HIT. A synthesis fallback is a run whose state has `synthesis_fell_back` set, or one of the gateway's own fallbacks: for a run with no `final_report`, or for a graph that raised (above). Every other report is stored; one degraded only by telemetry (a tripped breaker or an unavailable source) gets the shorter `CACHE_DEGRADED_TTL_SECONDS`.
 
 The evidence is:
-- **Tripped breakers**: targeted tools whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
-- **Unavailable sources**: targeted tools that could not be read while their breaker was *not* tripped: the fetch task raised, or a signal it returned has `status == "UNAVAILABLE"`. `collect_telemetry` records them as `unavailable_sources`. A tool whose breaker is tripped counts only as a tripped breaker, never also as an unavailable source.
+- **Tripped breakers**: targeted sources whose breaker was `OPEN` when `collect_telemetry` ran. A breaker the query does not target never degrades the report.
+- **Unavailable sources**: targeted sources that could not be read while their breaker was *not* tripped (the probe's read failed). `collect_telemetry` records them as `unavailable_sources`. A source whose breaker is tripped counts only as a tripped breaker, never also as an unavailable source.
 - **Synthesis fallback**: the report was built by `fallback_report`.
 
 The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED):

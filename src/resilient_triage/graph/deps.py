@@ -9,9 +9,7 @@ from typing import Protocol
 
 from resilient_triage.cache.semantic_cache import CacheMatch
 from resilient_triage.llm import LLMGateway
-from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
-from resilient_triage.telemetry.chaos import ChaosClient
-from resilient_triage.telemetry.statuspage import StatuspageClient
+from resilient_triage.telemetry.probe import TelemetryProbe
 
 
 class CacheReader(Protocol):
@@ -23,18 +21,9 @@ class CacheReader(Protocol):
 
 
 @dataclass(frozen=True)
-class TelemetrySources:
-    """Today's telemetry sources, bound to one runtime's chaos manager and breakers."""
-
-    statuspage: StatuspageClient
-    chaos: ChaosClient
-    breakers: CircuitBreakerRegistry
-
-
-@dataclass(frozen=True)
 class TriageDeps:
     """Everything a graph node can see (LangGraph context_schema)."""
 
     llm: LLMGateway
-    telemetry: TelemetrySources
+    telemetry: TelemetryProbe
     history: CacheReader

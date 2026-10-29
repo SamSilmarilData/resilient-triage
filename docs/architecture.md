@@ -115,9 +115,9 @@ The gateway is the only code on the request path that writes to the semantic cac
   <em>Figure 2: LangGraph cyclic state machine lifecycle showing the primary execution rail, adaptive recovery detours (blindspot compensation & self-repair), and terminal resolution outcomes. <a href="state-machine-diagram.html">Open interactive view &rarr;</a></em>
 </p>
 
-- **`analyze_query`**: Analyzes incident keywords and service scope to dynamically target telemetry tools (`statuspage`, `chaos`, or both).
-- **`collect_telemetry`**: Concurrently fetches telemetry through Tenacity retry wrappers and Pybreaker circuit breakers using `asyncio.gather(..., return_exceptions=True)`.
-- **`degraded_fallback`**: Invoked if any tripped breaker was recorded (a targeted tool whose circuit breaker is `OPEN`). Annotates the incident with known blind spots and synthesizes available telemetry.
+- **`analyze_query`**: Asks the guarded telemetry probe which **Targeted sources** to read (`runtime.context.telemetry.select_targets(query, service_filter)`) and writes them, sorted, as `targeted_sources`. Each Telemetry source carries its own keywords (Statuspage the external set, Cluster Sentinel the internal set), matched as whole words in the query and scope; a query that matches no source's keywords targets every source. The node holds no keyword sets or source names, so adding a source means writing one adapter and registering it with the probe.
+- **`collect_telemetry`**: One `probe.collect(targeted_sources, query, service_filter)` call: the probe reads the targeted sources concurrently, each through breaker → source deadline → retry, and returns the signals plus the tripped breakers and unavailable sources (`docs/resilience.md` section 3).
+- **`degraded_fallback`**: Invoked if any tripped breaker was recorded (a targeted source whose circuit breaker is `OPEN`). Annotates the incident with known blind spots, naming each tripped breaker by its source (`probe.describe(id)`, e.g. `Cluster Sentinel [chaos]`), and synthesizes available telemetry.
 - **`synthesize`**: Merges telemetry signals and historical context.
 - **`generate_report`**: Emits a structured candidate JSON triage report via the active LLM engine.
 - **`route_after_generation`**: A completion goes to `validate_report`. A provider failure (`provider_failure` set) skips `self_repair`: in a refine round, `generate_report` has put the pre-refine report (`refined_from`) back in `final_report`, so the run goes to `finalize` with that report; otherwise it goes straight to `fallback_report`.
@@ -128,7 +128,7 @@ The gateway is the only code on the request path that writes to the semantic cac
 
 ### Report reconciliation
 
-`collect_telemetry` records `tripped_breakers` in state: the *targeted* tools whose breaker is `OPEN` at collection time. An open breaker the query never targets does not count. It also records `unavailable_sources`: targeted tools whose fetch raised or returned an `UNAVAILABLE` signal while their breaker was not tripped. `fallback_report` records `synthesis_fell_back: True`. `finalize` builds a `DegradationEvidence` from that state and calls the pure `reconcile(report, evidence)`, which returns a copy with:
+`collect_telemetry` records `tripped_breakers` in state: the *targeted* sources whose breaker is `OPEN` at collection time. An open breaker the query never targets does not count. It also records `unavailable_sources`: targeted sources whose read failed while their breaker was not tripped. `fallback_report` records `synthesis_fell_back: True`. `finalize` builds a `DegradationEvidence` from that state and calls the pure `reconcile(report, evidence)`, which returns a copy with:
 
 - `circuit_breakers_tripped` = the sorted tripped-breaker set. Whatever the LLM wrote is discarded.
 - `degradation_status` = the maximum (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED) of: synthesis fallback ⇒ SEVERELY_DEGRADED; two or more tripped breakers ⇒ SEVERELY_DEGRADED; exactly one ⇒ PARTIALLY_DEGRADED; any unavailable source ⇒ PARTIALLY_DEGRADED; otherwise HEALTHY. The LLM's value is discarded and `UNKNOWN` is never produced.
@@ -153,7 +153,7 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
 
 1. **Statuspage 10-Second Short-TTL Cache**:
    - Upstream Atlassian/GitHub status pages update every 1–5 minutes.
-   - `StatuspageClient` caches parsed summaries for 10 seconds in-memory, eliminating transcontinental HTTPS latency (**~650ms – 700ms saved per query**).
+   - `StatuspageSource` caches parsed summaries for 10 seconds in-memory, eliminating transcontinental HTTPS latency (**~650ms – 700ms saved per query**).
 2. **Persistent Groq HTTP Connection Pooling & Token Budget**:
    - Replaced per-request HTTP client creation with a persistent, keep-alive client pool (`httpx.Limits(max_keepalive_connections=LLM_MAX_KEEPALIVE_CONNECTIONS, max_connections=LLM_MAX_CONNECTIONS)`, defaults 20 and 50).
    - Caps the Groq LPU payload at `max_tokens=LLM_MAX_TOKENS` (default 2500) to stop runaway token generation while leaving room for a complete, structured incident report.

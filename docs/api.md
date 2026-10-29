@@ -332,7 +332,7 @@ Configures live chaos injection parameters to simulate upstream infrastructure f
 | `active` | `boolean` | Master enable toggle for chaos injection. |
 | `inject_503` | `boolean` | If `true`, probe immediately returns HTTP 503. |
 | `failure_rate` | `float` | Probability of injected failure ($0.0 \le p \le 1.0$). |
-| `latency_ms` | `integer` | Artificial lag to introduce in milliseconds. |
+| `latency_ms` | `integer` | Artificial lag to introduce in milliseconds (0 to 30 000; above that the request is rejected with `422`). A probe slower than the source deadline (`TELEMETRY_SOURCE_DEADLINE_S`) is cut off and counts as a failure. |
 
 #### Response (`200 OK`)
 ```json

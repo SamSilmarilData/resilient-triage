@@ -3,7 +3,6 @@
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from typing import Any, TypeVar
 
 import httpx
@@ -12,16 +11,17 @@ from resilient_triage.cache.embeddings import BaseEmbeddingProvider
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
 from resilient_triage.graph.builder import triage_graph
-from resilient_triage.graph.deps import CacheReader, TelemetrySources, TriageDeps
+from resilient_triage.graph.deps import CacheReader, TriageDeps
 from resilient_triage.llm import LLMGateway, ModelAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
 from resilient_triage.schemas.api import LLMQuotaSnapshot
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosTelemetryResponse
-from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
+from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
+from resilient_triage.telemetry.probe import TelemetryProbe
 from resilient_triage.telemetry.statuspage import (
     SUMMARY_CACHE_TTL_SECONDS,
-    StatuspageClient,
+    StatuspageSource,
     new_statuspage_http_client,
 )
 from resilient_triage.triage.gateway import TriageGateway
@@ -31,7 +31,6 @@ __all__ = [
     "AppRuntime",
     "CacheReader",
     "ResilienceSnapshot",
-    "TelemetrySources",
     "TriageDeps",
     "build_runtime",
 ]
@@ -97,7 +96,7 @@ class AppRuntime:
         self.triage_gateway = TriageGateway(cache, self.run_graph, settings)
 
     async def start(self) -> None:
-        """Connect the cache (else use memory) and register default breakers; never raises."""
+        """Connect the cache (else use memory) and warm the embedder; never raises."""
         try:
             await self.cache.initialize()
         except Exception as exc:
@@ -110,18 +109,16 @@ class AppRuntime:
             )
         except Exception as exc:
             logger.warning("Embedding pre-warmup warning: %s", exc)
-        for name in ("statuspage", "chaos"):
-            _guarded(
-                f"Registering the {name} breaker", partial(self.breakers.get_or_create, name), None
-            )
 
     async def run_graph(self, run_input: TriageState) -> dict[str, Any]:
         """Run the triage graph with this runtime's deps as its context (the gateway's runner)."""
         return await triage_graph.ainvoke(run_input, context=self.deps)
 
     async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:
-        """Probe Cluster Sentinel through this runtime's retries and breaker; raises on failure."""
-        return await self.deps.telemetry.chaos.probe()
+        """Probe Cluster Sentinel through its breaker, deadline and retry; raises on failure."""
+        return await self.deps.telemetry.call_source(
+            ClusterSentinelSource, lambda sentinel: sentinel.probe()
+        )
 
     async def aclose(self) -> None:
         """Close every client this runtime owns."""
@@ -185,21 +182,20 @@ def build_runtime(
     if statuspage_http is None:
         statuspage_http = new_statuspage_http_client()
     http_clients: list[httpx.AsyncClient] = [statuspage_http]
-    statuspage = StatuspageClient(
+    statuspage = StatuspageSource(
         url=settings.statuspage_url,
         client=statuspage_http,
         cache_ttl_seconds=SUMMARY_CACHE_TTL_SECONDS,
-        breaker_registry=breakers,
     )
-    deps = TriageDeps(
-        llm=llm,
-        telemetry=TelemetrySources(
-            statuspage=statuspage,
-            chaos=ChaosClient(manager=chaos, breaker_registry=breakers),
-            breakers=breakers,
-        ),
-        history=cache,
+    # Building the probe creates both source breakers, so /health lists them from the start.
+    telemetry = TelemetryProbe(
+        [statuspage, ClusterSentinelSource(chaos)],
+        breakers=breakers,
+        fail_max=settings.circuit_breaker_fail_max,
+        reset_timeout=settings.circuit_breaker_reset_timeout,
+        source_deadline_s=settings.telemetry_source_deadline_s,
     )
+    deps = TriageDeps(llm=llm, telemetry=telemetry, history=cache)
     return AppRuntime(
         cache=cache,
         breakers=breakers,

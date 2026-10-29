@@ -15,6 +15,8 @@ from resilient_triage.config import settings
 from resilient_triage.llm import RateLimited, ScriptedAdapter, build_llm_gateway
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import SeverityLevel
+from resilient_triage.telemetry.chaos import ClusterSentinelSource
+from resilient_triage.telemetry.statuspage import StatuspageSource
 
 
 @pytest.mark.asyncio
@@ -469,10 +471,9 @@ async def test_triage_internal_scope_only_targets_chaos(
 ):
     """Verify service_filter='internal' targets only chaos telemetry, not external Statuspage."""
     with (
-        patch("resilient_triage.telemetry.statuspage.StatuspageClient.fetch_signals") as mock_sp,
-        patch(
-            "resilient_triage.telemetry.chaos.ChaosClient.fetch_signals",
-            wraps=runtime.deps.telemetry.chaos.fetch_signals,
+        patch.object(StatuspageSource, "read", new_callable=AsyncMock) as mock_sp,
+        patch.object(
+            ClusterSentinelSource, "read", autospec=True, side_effect=ClusterSentinelSource.read
         ) as mock_chaos,
     ):
         resp = await client.post(
@@ -487,9 +488,9 @@ async def test_triage_internal_scope_only_targets_chaos(
             },
         )
         assert resp.status_code == 200
-        # StatuspageClient must never be invoked for internal scope
+        # The Statuspage source must never be invoked for internal scope
         mock_sp.assert_not_called()
-        # ChaosClient must be invoked for internal scope
+        # Cluster Sentinel must be invoked for internal scope
         assert mock_chaos.called
 
 
