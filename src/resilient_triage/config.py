@@ -91,6 +91,15 @@ class Settings(BaseSettings):
         le=30,
         description="Seconds a request waits for a run slot before it is shed with a 503",
     )
+    triage_run_deadline_s: float = Field(
+        default=45.0,
+        gt=0,
+        le=120,
+        description=(
+            "Run deadline: seconds a graph run may take before it is cancelled and the request "
+            "is answered with an uncached synthesis fallback (slot wait not included)"
+        ),
+    )
 
     # LLM Provider (Groq LPU; without a key the app runs the zero-config simulation)
     groq_api_key: str | None = Field(
