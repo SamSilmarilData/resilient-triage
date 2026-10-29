@@ -547,7 +547,8 @@ async def test_generate_report_records_a_provider_failure_without_touching_repai
         Runtime(context=make_triage_deps(llm_adapter=ScriptedAdapter([failure] * 3))),
     )
 
-    assert result == {"candidate_report_raw": "", "provider_failure": failure}
+    # No refine round in progress, so there is no pre-refine report to keep.
+    assert result == {"candidate_report_raw": "", "provider_failure": failure, "final_report": None}
 
 
 async def test_generate_report_clears_the_provider_failure_on_a_completion() -> None:

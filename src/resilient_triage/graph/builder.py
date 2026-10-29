@@ -70,10 +70,16 @@ def route_after_telemetry(state: TriageState) -> Literal["compensate", "synthesi
     return "synthesize"
 
 
-def route_after_generation(state: TriageState) -> Literal["validate", "fallback"]:
-    """Send a provider failure straight to fallback_report; re-prompting cannot fix an outage."""
+def route_after_generation(state: TriageState) -> Literal["validate", "finalize", "fallback"]:
+    """Route a provider failure past self-repair: keep a pre-refine report, else fall back."""
     failure = state.get("provider_failure")
     if failure is not None:
+        if state.get("final_report") is not None:
+            logger.warning(
+                "LLM provider failure (%s) in a refine round. Finalizing the pre-refine report.",
+                failure,
+            )
+            return "finalize"
         logger.warning("LLM provider failure (%s). Routing to fallback_report.", failure)
         return "fallback"
     return "validate"
@@ -170,7 +176,11 @@ def build_triage_graph(
     graph.add_conditional_edges(
         "generate_report",
         route_after_generation,
-        {"validate": "validate_report", "fallback": "fallback_report"},
+        {
+            "validate": "validate_report",
+            "finalize": "finalize_report",
+            "fallback": "fallback_report",
+        },
     )
 
     # 6. Validation conditional routing (Self-repair, Refine, Fallback, Finalize)

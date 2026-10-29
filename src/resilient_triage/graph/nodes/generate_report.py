@@ -25,4 +25,9 @@ async def generate_report_node(state: TriageState, runtime: Runtime[TriageDeps])
     logger.error(
         "LLM provider failure in generate_report_node: %s: %s", type(result).__name__, result.detail
     )
-    return {"candidate_report_raw": "", "provider_failure": result}
+    # In a refine round, keep the valid report the round started from (None otherwise).
+    return {
+        "candidate_report_raw": "",
+        "provider_failure": result,
+        "final_report": state.get("refined_from"),
+    }

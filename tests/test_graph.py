@@ -391,6 +391,35 @@ async def test_refine_round_that_exhausts_self_repair_keeps_the_pre_refine_repor
     assert report.degradation_status == DegradationStatus.HEALTHY
 
 
+async def test_provider_failure_during_a_refine_round_keeps_the_pre_refine_report():
+    """A provider outage mid-refine finalizes the valid report from before the refine round."""
+    pre_refine_json = _make_valid_report_json(severity="MEDIUM", confidence=0.50)
+    outage = Unavailable(detail="HTTP 503: upstream overloaded")
+    mock_llm = ScriptedAdapter([pre_refine_json, outage, outage, outage])
+    deps = make_triage_deps(llm_adapter=mock_llm)
+    app = build_triage_graph(enable_checkpointing=True)
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+    visited = [
+        node
+        async for update in app.astream(
+            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
+        )
+        for node in update
+    ]
+
+    assert "refine_reflection" in visited
+    assert "self_repair" not in visited
+    assert "fallback_report" not in visited
+    assert visited[-2:] == ["generate_report", "finalize_report"]
+    final_state = (await app.aget_state(config)).values
+    assert final_state["synthesis_fell_back"] is False
+    report = final_state["final_report"]
+    assert report.confidence_score == 0.50
+    assert report.severity == SeverityLevel.MEDIUM
+    assert report.degradation_status != DegradationStatus.SEVERELY_DEGRADED
+
+
 async def test_longest_path_stays_within_the_recursion_limit(monkeypatch):
     """Max self-repair, a tripped breaker and a failing refine round still fit 24 supersteps."""
     monkeypatch.setattr(settings, "max_self_repair_retries", 5)
