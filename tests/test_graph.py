@@ -12,7 +12,14 @@ from resilient_triage.graph.builder import build_triage_graph
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
-from resilient_triage.llm import ScriptedAdapter
+from resilient_triage.llm import (
+    MalformedResponse,
+    ProviderFailure,
+    RateLimited,
+    Rejected,
+    ScriptedAdapter,
+    Unavailable,
+)
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.schemas.incident import (
     DegradationStatus,
@@ -249,6 +256,40 @@ async def test_graph_self_repair_cap_routes_to_fallback():
     assert report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
     assert report.confidence_score == 0.20
     assert "Self-repair" in report.root_cause_analysis
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RateLimited(retry_after_s=30.0, scope="minute", detail="Rate limit"),
+        Unavailable(detail="HTTP 503: upstream overloaded"),
+        Rejected(detail="HTTP 400: bad model"),
+        MalformedResponse(detail="no choices"),
+    ],
+)
+async def test_provider_failure_on_first_generation_skips_self_repair(failure: ProviderFailure):
+    """A provider failure goes straight to fallback_report: re-prompting cannot fix an outage."""
+    deps = make_triage_deps(llm_adapter=ScriptedAdapter([failure] * 3))
+    app = build_triage_graph(enable_checkpointing=True)
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+    visited = [
+        node
+        async for update in app.astream(
+            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
+        )
+        for node in update
+    ]
+
+    assert visited[-3:] == ["generate_report", "fallback_report", "finalize_report"]
+    assert "self_repair" not in visited
+    assert "validate_report" not in visited
+    # The failure survives the BoundedMemorySaver checkpoint, typed.
+    checkpointed = (await app.aget_state(config)).values
+    assert checkpointed["provider_failure"] == failure
+    report = checkpointed["final_report"]
+    assert report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+    assert report.confidence_score == 0.20
 
 
 @pytest.mark.asyncio
