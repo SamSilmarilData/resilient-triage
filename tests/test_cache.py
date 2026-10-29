@@ -282,7 +282,7 @@ async def test_redis_connectivity_and_driver():
     if not is_connected:
         pytest.skip("Local Redis server is not reachable on localhost:6379 in this environment")
     assert is_connected is True
-    assert cache.is_redis_connected is True
+    assert cache.driver != "in_memory"
     assert cache.driver in ("redisearch", "redis_hash_fallback")
     await cache.close()
 
@@ -299,7 +299,7 @@ async def test_redis_disconnect_and_in_memory_failover():
     unreachable_cache.reconnect_cooldown_seconds = 0.01
     await unreachable_cache.initialize()
 
-    assert unreachable_cache.is_redis_connected is False
+    assert await unreachable_cache.check_connection() is False
     assert unreachable_cache.driver == "in_memory"
 
     # Store and lookup should work completely fine in in-memory mode
@@ -379,19 +379,26 @@ async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     """Verify that RediSearch query syntax errors do not drop the Redis connection."""
     import redis.exceptions
 
-    provider = DeterministicEmbeddingProvider()
-    cache = SemanticCacheManager(embedding_provider=provider)
-    cache._initialized = True
+    from resilient_triage.cache.redis_store import RedisVectorStore
 
-    # Simulate connected Redis with RediSearch module
+    # A connected Redis with the search module whose FT.SEARCH rejects the query
     mock_redis = mocker.AsyncMock()
+    mock_redis.module_list.return_value = [{b"name": b"search"}]
     mock_ft = mocker.MagicMock()
+    mock_ft.info = mocker.AsyncMock(return_value={})
     mock_ft.search = mocker.AsyncMock(
         side_effect=redis.exceptions.ResponseError("Syntax error at offset 5")
     )
     mock_redis.ft = mocker.MagicMock(return_value=mock_ft)
-    cache._redis = mock_redis
-    cache._has_redisearch = True
+    provider = DeterministicEmbeddingProvider()
+    cache = SemanticCacheManager(
+        embedding_provider=provider,
+        remote_store_factory=lambda: RedisVectorStore(
+            "redis://127.0.0.1:6379/0", provider.dimension, client_factory=lambda _: mock_redis
+        ),
+    )
+    await cache.initialize()
+    assert cache.driver == "redisearch"
 
     # Pre-populate in-memory fallback
     report = _make_sample_report("Fallback incident")
@@ -401,8 +408,8 @@ async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     match = await cache.lookup("Special query", service_filter="billing")
 
     # Redis must NOT be disconnected by a query execution syntax error
-    assert cache._redis is not None
-    assert cache.is_redis_connected is True
+    assert cache.driver == "redisearch"
+    mock_redis.aclose.assert_not_awaited()
     # In-memory search successfully served the match as fallback
     assert match is not None
     assert match.report.summary == "Fallback incident"

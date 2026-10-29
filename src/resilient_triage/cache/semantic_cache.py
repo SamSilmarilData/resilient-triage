@@ -6,11 +6,9 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable
 
 import numpy as np
-import redis.asyncio as aioredis
 from pydantic import BaseModel, Field
 
 from resilient_triage.cache.embeddings import (
@@ -18,7 +16,13 @@ from resilient_triage.cache.embeddings import (
     get_embedding_provider,
 )
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
-from resilient_triage.cache.vector_store import VectorEntry, VectorHit
+from resilient_triage.cache.redis_store import DOC_PREFIX, INDEX_NAME, RedisVectorStore
+from resilient_triage.cache.vector_store import (
+    RemoteVectorStore,
+    StoreUnavailable,
+    VectorEntry,
+    VectorHit,
+)
 from resilient_triage.config import settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 
@@ -49,24 +53,6 @@ def format_scoped_query(query: str, service_filter: str | None = None) -> str:
     return clean_q
 
 
-def _to_str(val: Any) -> str:
-    """Safely convert Redis bytes or string to str."""
-    if val is None:
-        return ""
-    if isinstance(val, bytes):
-        return val.decode("utf-8", errors="replace")
-    return str(val)
-
-
-def _to_bytes(val: Any) -> bytes:
-    """Safely convert Redis string or bytes to bytes."""
-    if val is None:
-        return b""
-    if isinstance(val, bytes):
-        return val
-    return str(val).encode("utf-8")
-
-
 class CacheMatch(BaseModel):
     """Output metadata and payload when a semantic cache hit occurs."""
 
@@ -78,13 +64,15 @@ class CacheMatch(BaseModel):
 
 
 class SemanticCacheManager:
-    """Semantic vector cache manager supporting native RediSearch and vectorized in-memory fallback.
+    """Semantic vector cache over a Redis VectorStore with an in-memory standby.
 
-    Guarantees sub-20ms lookups for cosine similarity >= 0.90.
+    Every write lands in the standby and, while Redis is up, in Redis. Reads use Redis search
+    when Redis is up and searchable, otherwise the standby. Every Redis drop goes through
+    `_mark_down`. `lookup`, `store` and `clear` never raise: a failure is a MISS or a no-op.
     """
 
-    INDEX_NAME = "triage_vector_idx"
-    DOC_PREFIX = "triage:doc:"
+    INDEX_NAME = INDEX_NAME
+    DOC_PREFIX = DOC_PREFIX
 
     def __init__(
         self,
@@ -94,6 +82,8 @@ class SemanticCacheManager:
         degraded_ttl: int | None = None,
         embedding_provider: BaseEmbeddingProvider | None = None,
         max_capacity: int = 10000,
+        remote_store_factory: Callable[[], RemoteVectorStore] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.redis_url = redis_url or settings.redis_url
         self.similarity_threshold = (
@@ -107,177 +97,99 @@ class SemanticCacheManager:
         )
         self.embedding_provider = embedding_provider or get_embedding_provider()
         self.max_capacity = max_capacity
+        self._remote_store_factory = remote_store_factory or self._new_redis_store
+        self._clock = clock
 
-        self._redis: aioredis.Redis | None = None
-        self._has_redisearch: bool = False
+        # The connected Redis store, or None while down; only _mark_down and close clear it.
+        self._redis: RemoteVectorStore | None = None
         self._initialized: bool = False
         self._lock = asyncio.Lock()
-        self._last_reconnect_attempt: float = 0.0
+        self._last_reconnect_attempt: float | None = None
         self.reconnect_cooldown_seconds: float = 5.0
 
         # In-memory standby: every write lands here; it serves reads whenever Redis search can't.
         # Its dimension guard keeps a wrong-size vector (from store or hydration) out of the matrix.
         self._standby = InMemoryVectorStore(
-            max_capacity=max_capacity, dimension=self.embedding_provider.dimension
+            max_capacity=max_capacity, clock=clock, dimension=self.embedding_provider.dimension
         )
 
+    def _new_redis_store(self) -> RemoteVectorStore:
+        """Build the production Redis adapter for this manager's URL and embedding size."""
+        return RedisVectorStore(self.redis_url, dimension=self.embedding_provider.dimension)
+
     async def initialize(self) -> None:
-        """Initialize Redis connection and test for RediSearch module availability."""
+        """Connect to Redis (else run on the standby) and hydrate the standby in hash mode."""
         if self._initialized and self._redis is not None:
             return
 
         async with self._lock:
             if self._initialized and self._redis is not None:
                 return
-
-            await self._connect_redis()
+            await self._connect()
             self._initialized = True
 
     async def _ensure_connected(self) -> None:
-        """Throttled non-blocking auto-reconnect attempt if Redis is currently disconnected."""
-        if self._redis is not None:
-            return
-
-        now = time.monotonic()
-        if now - self._last_reconnect_attempt < self.reconnect_cooldown_seconds:
+        """Reconnect if Redis is down and the reconnect cooldown has passed; never blocks long."""
+        if self._redis is not None or self._cooling_down():
             return
 
         async with self._lock:
-            if self._redis is not None:
+            if self._redis is not None or self._cooling_down():
                 return
-            self._last_reconnect_attempt = time.monotonic()
-            await self._connect_redis()
+            await self._connect()
 
-    async def _connect_redis(self) -> None:
-        """Establish Redis connection, detect RediSearch capabilities, and hydrate cache."""
+    def _cooling_down(self) -> bool:
+        """True within `reconnect_cooldown_seconds` of the last connect attempt or drop."""
+        last = self._last_reconnect_attempt
+        return last is not None and self._clock() - last < self.reconnect_cooldown_seconds
+
+    async def _connect(self) -> None:
+        """Try one connection; on success adopt the store, hydrating the standby in hash mode."""
+        self._last_reconnect_attempt = self._clock()
+        store = self._remote_store_factory()
         try:
-            client = aioredis.from_url(
-                self.redis_url,
-                decode_responses=False,
-                socket_connect_timeout=1.0,
-                socket_timeout=1.0,
-            )
-            # Test connection
-            await client.ping()
-
-            # Check RediSearch module or native command support
-            has_search = False
-            try:
-                modules = await client.module_list()
-                module_names = [m.get(b"name", b"").decode("utf-8").lower() for m in modules]
-                has_search = "search" in module_names or "ft" in module_names
-            except Exception as mod_err:
-                logger.debug("RediSearch module check: %s", mod_err)
-
-            if not has_search:
-                try:
-                    await client.execute_command("FT._LIST")
-                    has_search = True
-                except Exception as cmd_err:
-                    logger.debug("Native FT._LIST check: %s", cmd_err)
-
-            self._redis = client
-            self._has_redisearch = has_search
-
-            if self._has_redisearch:
-                await self._ensure_redisearch_index()
-            else:
-                await self._hydrate_from_redis()
-
-            logger.info(
-                "SemanticCacheManager connected to Redis at %s (RediSearch: %s)",
-                self.redis_url,
-                self._has_redisearch,
-            )
+            await store.connect()
         except Exception as conn_err:
             logger.warning(
                 "Redis unavailable (%s). SemanticCacheManager operating in in-memory vector mode.",
                 conn_err,
             )
-            self._redis = None
-            self._has_redisearch = False
-
-    async def _hydrate_from_redis(self) -> None:
-        """Hydrate in-memory vector index from persistent Redis hashes on startup/reconnect."""
-        if not self._redis:
+            await store.aclose()
             return
+
+        self._redis = store
+        logger.info(
+            "SemanticCacheManager connected to Redis at %s (RediSearch: %s)",
+            self.redis_url,
+            store.supports_search,
+        )
+        if not store.supports_search:
+            await self._hydrate_from(store)
+
+    async def _hydrate_from(self, store: RemoteVectorStore) -> None:
+        """Copy Redis hashes into the standby so hash mode can serve reads from memory."""
         try:
-            keys = [k async for k in self._redis.scan_iter(match=f"{self.DOC_PREFIX}*", count=100)]
-            if not keys:
-                return
-
-            for key in keys:
+            async for entry, ttl in store.entries():
                 try:
-                    data = await self._redis.hgetall(key)
-                    if not data:
-                        continue
-                    vec_raw = data.get(b"vector") if b"vector" in data else data.get("vector")
-                    report_raw = data.get(b"report") if b"report" in data else data.get("report")
-                    if vec_raw is None or report_raw is None:
-                        continue
-                    doc_id = _to_str(key).replace(self.DOC_PREFIX, "")
-                    query = _to_str(data.get(b"query") if b"query" in data else data.get("query"))
-                    report_json = _to_str(report_raw)
-                    service_scope = _to_str(
-                        data.get(b"service_scope")
-                        if b"service_scope" in data
-                        else data.get("service_scope")
-                    )
-                    vec_bytes = _to_bytes(vec_raw)
-                    vec_arr = np.frombuffer(vec_bytes, dtype=np.float32)
-                    ttl = await self._redis.ttl(key)
-
-                    await self._standby.put(
-                        VectorEntry(
-                            doc_id=doc_id,
-                            query=query,
-                            service_scope=service_scope,
-                            report_json=report_json,
-                            vector=vec_arr,
-                        ),
-                        ttl=ttl if ttl > 0 else self.default_ttl,
-                    )
-                except Exception as doc_err:
-                    logger.debug("Failed to hydrate document key %s: %s", key, doc_err)
-
-            logger.info("Hydrated %d cached documents from Redis into memory.", self._standby.count)
+                    await self._standby.put(entry, ttl=ttl if ttl > 0 else self.default_ttl)
+                except ValueError as rejected:
+                    logger.debug("Skipping hydrated document %s: %s", entry.doc_id, rejected)
+        except StoreUnavailable as err:
+            await self._mark_down(f"hydration failed: {err}")
+            return
         except Exception as err:
             logger.warning("Error hydrating from Redis: %s", err)
+        logger.info("Hydrated %d cached documents from Redis into memory.", self._standby.count)
 
-    async def _ensure_redisearch_index(self) -> None:
-        """Create RediSearch HNSW vector index if it does not already exist."""
-        if not self._redis or not self._has_redisearch:
+    async def _mark_down(self, reason: str) -> None:
+        """Drop Redis: release its pool with aclose() and start the reconnect cooldown."""
+        store = self._redis
+        if store is None:
             return
-
-        from redis.commands.search.field import TagField, TextField, VectorField
-        from redis.commands.search.index_definition import IndexDefinition, IndexType
-
-        try:
-            await self._redis.ft(self.INDEX_NAME).info()
-            logger.debug("RediSearch index '%s' already exists.", self.INDEX_NAME)
-        except Exception:
-            try:
-                schema = [
-                    TextField("query"),
-                    TagField("service_scope"),
-                    VectorField(
-                        "vector",
-                        "HNSW",
-                        {
-                            "TYPE": "FLOAT32",
-                            "DIM": self.embedding_provider.dimension,
-                            "DISTANCE_METRIC": "COSINE",
-                        },
-                    ),
-                ]
-                definition = IndexDefinition(prefix=[self.DOC_PREFIX], index_type=IndexType.HASH)
-                await self._redis.ft(self.INDEX_NAME).create_index(schema, definition=definition)
-                logger.info("Created RediSearch vector index '%s'.", self.INDEX_NAME)
-            except Exception as e:
-                logger.warning(
-                    "Failed to create RediSearch index: %s. Falling back to in-memory.", e
-                )
-                self._has_redisearch = False
+        self._redis = None
+        self._last_reconnect_attempt = self._clock()
+        logger.warning("Redis marked down (%s). Serving from the in-memory standby.", reason)
+        await store.aclose()
 
     async def check_connection(self) -> bool:
         """Actively test Redis connectivity and attempt reconnection if offline.
@@ -293,9 +205,7 @@ class SemanticCacheManager:
             await self._redis.ping()
             return True
         except Exception as ping_err:
-            logger.warning("Redis ping failed (%s). Disconnecting.", ping_err)
-            self._redis = None
-            self._has_redisearch = False
+            await self._mark_down(f"ping failed: {ping_err}")
             return False
 
     async def lookup(
@@ -320,10 +230,7 @@ class SemanticCacheManager:
             logger.debug("force_refresh=True: bypassing semantic cache lookup.")
             return None
 
-        if not self._initialized:
-            await self.initialize()
-        elif self._redis is None:
-            await self._ensure_connected()
+        await self._ready()
 
         start_time = time.monotonic()
         effective_threshold = threshold if threshold is not None else self.similarity_threshold
@@ -337,37 +244,24 @@ class SemanticCacheManager:
             logger.warning("Embedding failed during cache lookup: %s. Treating as MISS.", embed_err)
             return None
 
-        # 2. Search RediSearch index if available
-        if self._redis and self._has_redisearch:
+        # 2. Search Redis if it is up and searchable; a Redis MISS still checks the standby
+        redis = self._redis
+        if redis is not None and redis.supports_search:
             try:
-                match = await self._search_redisearch(
-                    scoped_q, query_vec, effective_threshold, start_time, target_scope=target_scope
+                redis_hit = await redis.search(query_vec, target_scope, effective_threshold)
+            except StoreUnavailable as conn_err:
+                await self._mark_down(f"search failed: {conn_err}")
+            except Exception as query_err:
+                logger.warning(
+                    "Redis search error: %s. Falling back to the standby without disconnecting.",
+                    query_err,
                 )
-                if match:
+            else:
+                if redis_hit is not None:
+                    match = self._to_match(redis_hit, start_time)
+                    if match is None:
+                        await self._evict(redis_hit.doc_id)
                     return match
-            except (
-                aioredis.ConnectionError,
-                aioredis.TimeoutError,
-                ConnectionRefusedError,
-                OSError,
-            ) as conn_err:
-                logger.warning(
-                    (
-                        "RediSearch connection failure: %s. Disconnecting and checking in-memory "
-                        "store."
-                    ),
-                    conn_err,
-                )
-                self._redis = None
-                self._has_redisearch = False
-            except Exception as e:
-                logger.warning(
-                    (
-                        "RediSearch query execution error: %s. Query falling back to in-memory "
-                        "store without disconnecting Redis."
-                    ),
-                    e,
-                )
 
         # 3. Fall back to the in-memory standby
         hit = await self._standby.search(query_vec, target_scope, effective_threshold)
@@ -378,59 +272,25 @@ class SemanticCacheManager:
             await self._standby.delete(hit.doc_id)
         return match
 
-    async def _search_redisearch(
-        self,
-        scoped_query: str,
-        query_vec: np.ndarray,
-        threshold: float,
-        start_time: float,
-        target_scope: str = "",
-    ) -> CacheMatch | None:
-        """Query native RediSearch HNSW vector index with strict scope isolation."""
-        if self._redis is None:
-            return None
-        from redis.commands.search.query import Query
+    async def _ready(self) -> None:
+        """Initialize on first use, else attempt a cooldown-throttled reconnect while down."""
+        if not self._initialized:
+            await self.initialize()
+        elif self._redis is None:
+            await self._ensure_connected()
 
-        # Cosine distance = 1.0 - cosine_similarity
-        query_bytes = np.asarray(query_vec, dtype=np.float32).tobytes()
-
-        # Strict scope filter: target_scope is already normalize_scope()'d, so only "-" needs
-        # escaping for the tag grammar.
-        if target_scope:
-            safe_scope = target_scope.replace("-", "\\-")
-            filter_query = f"(@service_scope:{{{safe_scope}}})=>[KNN 1 @vector $vec AS score]"
-        else:
-            filter_query = "*=>[KNN 1 @vector $vec AS score]"
-
-        q = (
-            Query(filter_query)
-            .sort_by("score")
-            .return_fields("query", "report", "score")
-            .paging(0, 1)
-            .dialect(2)
-        )
-
-        res = await self._redis.ft(self.INDEX_NAME).search(q, query_params={"vec": query_bytes})
-        if not res.docs:
-            return None
-
-        doc = res.docs[0]
-        score = float(getattr(doc, "score", 1.0))
-        similarity = 1.0 - score
-
-        if similarity >= threshold:
-            report_data = json.loads(doc.report)
-            report = IncidentTriageReport.model_validate(report_data)
-            elapsed_ms = (time.monotonic() - start_time) * 1000.0
-            return CacheMatch(
-                report=report,
-                similarity=round(similarity, 4),
-                execution_time_ms=round(elapsed_ms, 2),
-                matched_query=doc.query,
-                cache_hit=True,
-            )
-
-        return None
+    async def _evict(self, doc_id: str) -> None:
+        """Delete an invalid entry from the standby and, while up, from Redis; never raises."""
+        await self._standby.delete(doc_id)
+        redis = self._redis
+        if redis is None:
+            return
+        try:
+            await redis.delete(doc_id)
+        except StoreUnavailable as conn_err:
+            await self._mark_down(f"delete failed: {conn_err}")
+        except Exception as err:
+            logger.warning("Redis delete of invalid entry %s failed: %s", doc_id, err)
 
     @staticmethod
     def _to_match(hit: VectorHit, start_time: float) -> CacheMatch | None:
@@ -472,10 +332,7 @@ class SemanticCacheManager:
             service_filter: Optional component or service filter string.
             ttl_seconds: Optional explicit TTL override in seconds.
         """
-        if not self._initialized:
-            await self.initialize()
-        elif self._redis is None:
-            await self._ensure_connected()
+        await self._ready()
 
         target_scope = normalize_scope(service_filter)
         scoped_q = format_scoped_query(query, service_filter)
@@ -498,68 +355,49 @@ class SemanticCacheManager:
 
         doc_id = str(uuid.uuid4())
         report_json = report.model_dump_json()
+        entry = VectorEntry(
+            doc_id=doc_id,
+            query=scoped_q,
+            service_scope=target_scope,
+            report_json=report_json,
+            vector=np.array(query_vec, dtype=np.float32),
+        )
         # 1. Write through to the in-memory standby (it evicts oldest-first at capacity)
-        vec_arr = np.array(query_vec, dtype=np.float32)
         try:
-            await self._standby.put(
-                VectorEntry(
-                    doc_id=doc_id,
-                    query=scoped_q,
-                    service_scope=target_scope,
-                    report_json=report_json,
-                    vector=vec_arr,
-                ),
-                ttl=effective_ttl,
-            )
+            await self._standby.put(entry, ttl=effective_ttl)
         except ValueError as rejected:
             logger.warning("Cache store rejected the embedding: %s. Skipping store.", rejected)
             return
 
-        # 2. Update Redis if connected
-        if self._redis:
-            try:
-                redis_key = f"{self.DOC_PREFIX}{doc_id}"
-                mapping: Mapping[Any, Any] = {
-                    "query": scoped_q,
-                    "service_scope": target_scope,
-                    "report": report_json,
-                    "vector": vec_arr.tobytes(),
-                }
-                await self._redis.hset(redis_key, mapping=mapping)
-                await self._redis.expire(redis_key, effective_ttl)
-            except Exception as e:
-                logger.warning(
-                    "Redis store error: %s (in-memory copy active). Marking disconnected.", e
-                )
-                self._redis = None
-                self._has_redisearch = False
+        # 2. Write to Redis too while it is up; only a connection failure drops it
+        redis = self._redis
+        if redis is None:
+            return
+        try:
+            await redis.put(entry, ttl=effective_ttl)
+        except StoreUnavailable as conn_err:
+            await self._mark_down(f"store failed: {conn_err}")
+        except Exception as err:
+            logger.warning("Redis store error: %s (in-memory copy active).", err)
 
     async def clear(self) -> None:
         """Clear all in-memory and Redis cache entries."""
         await self._standby.clear()
-        if self._redis:
-            try:
-                keys = [
-                    k async for k in self._redis.scan_iter(match=f"{self.DOC_PREFIX}*", count=100)
-                ]
-                if keys:
-                    for i in range(0, len(keys), 500):
-                        await self._redis.delete(*keys[i : i + 500])
-            except Exception as e:
-                logger.warning("Redis clear error: %s", e)
-                self._redis = None
-                self._has_redisearch = False
-
-    @property
-    def is_redis_connected(self) -> bool:
-        """Check if Redis connection is established."""
-        return self._redis is not None
+        redis = self._redis
+        if redis is None:
+            return
+        try:
+            await redis.clear()
+        except StoreUnavailable as conn_err:
+            await self._mark_down(f"clear failed: {conn_err}")
+        except Exception as err:
+            logger.warning("Redis clear error: %s", err)
 
     @property
     def driver(self) -> str:
         """Return the active vector search driver name."""
         if self._redis is not None:
-            if self._has_redisearch:
+            if self._redis.supports_search:
                 return "redisearch"
             return "redis_hash_fallback"
         return "in_memory"
@@ -571,11 +409,8 @@ class SemanticCacheManager:
 
     async def close(self) -> None:
         """Gracefully close Redis client connection and reset state."""
-        if self._redis:
-            try:
-                await self._redis.aclose()
-            except Exception as e:
-                logger.debug("Error closing Redis connection: %s", e)
-            finally:
-                self._redis = None
-                self._initialized = False
+        store = self._redis
+        self._redis = None
+        self._initialized = False
+        if store is not None:
+            await store.aclose()

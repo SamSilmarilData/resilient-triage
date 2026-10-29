@@ -82,6 +82,10 @@ class ScriptedStore:
         self._check("put")
         await self.data.put(entry, ttl)
 
+    async def delete(self, doc_id: str) -> None:
+        self._check("delete")
+        await self.data.delete(doc_id)
+
     async def clear(self) -> None:
         self._check("clear")
         await self.data.clear()
@@ -303,4 +307,20 @@ async def test_close_releases_client_and_reinitialises(clock):
     assert cache.driver == "in_memory"
     await cache.lookup(QUERY)
     assert remote.connects == 2
+    assert cache.driver == "redisearch"
+
+
+async def test_invalid_report_from_redis_search_is_a_miss_and_evicted(clock):
+    """A Redis search hit whose report fails validation is a MISS, deleted from Redis."""
+    remote = ScriptedStore()
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    vector = np.array(cache.embedding_provider.embed_query(QUERY), dtype=np.float32)
+    corrupt = VectorEntry(
+        doc_id="corrupt", query=QUERY, service_scope="", report_json="{not json", vector=vector
+    )
+    await remote.put(corrupt, ttl=60)
+
+    assert await cache.lookup(QUERY) is None
+    assert remote.count == 0
     assert cache.driver == "redisearch"
