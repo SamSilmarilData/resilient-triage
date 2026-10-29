@@ -13,7 +13,7 @@ from fakes import make_triage_deps
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.runtime import Runtime
 
-from resilient_triage.config import settings
+from resilient_triage.config import Settings, settings
 from resilient_triage.graph.nodes.generate_report import generate_report_node
 from resilient_triage.llm import (
     DEFAULT_REPORT_JSON,
@@ -25,11 +25,13 @@ from resilient_triage.llm import (
     ProviderFailure,
     QuotaHeaders,
     RateLimited,
+    RateLimitScope,
     Rejected,
     ScriptedAdapter,
     Unavailable,
     build_llm_gateway,
 )
+from resilient_triage.llm.groq import new_groq_http_client
 from resilient_triage.runtime import build_runtime
 from resilient_triage.schemas.incident import IncidentTriageReport, SeverityLevel
 
@@ -159,12 +161,12 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
         ),
         (
             {"x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "7.66s"},
-            7.66,
+            None,
             "minute",
         ),
         (
             {"x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "2m59.56s"},
-            179.56,
+            None,
             "day",
         ),
         (
@@ -174,7 +176,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
                 "x-ratelimit-remaining-tokens": "0",
                 "x-ratelimit-reset-tokens": "1h2m3s",
             },
-            3723.0,
+            None,
             "minute",
         ),
         (
@@ -183,7 +185,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
                 "x-ratelimit-remaining-tokens": "0",
                 "x-ratelimit-reset-tokens": "120ms",
             },
-            0.12,
+            None,
             "minute",
         ),
         (
@@ -193,7 +195,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
                 "x-ratelimit-remaining-tokens": "0",
                 "x-ratelimit-reset-tokens": "7.66s",
             },
-            179.56,
+            None,
             "day",
         ),
         (
@@ -218,7 +220,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
     ],
 )
 async def test_groq_adapter_reads_the_rate_limit_from_the_429_headers(
-    headers: dict[str, str], retry_after_s: float | None, scope: str
+    headers: dict[str, str], retry_after_s: float | None, scope: RateLimitScope
 ) -> None:
     result = await _limited(headers).call(PRIMARY, MESSAGES)
 
@@ -314,6 +316,61 @@ async def test_a_groq_daily_429_cools_the_primary_until_the_requests_reset() -> 
     clock.now = start + 179.0
     await gateway.complete(MESSAGES)
     clock.now = start + 179.56
+    await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_a_groq_daily_429_with_an_unparseable_reset_uses_the_retry_after() -> None:
+    sent: list[str] = []
+    daily = {
+        "retry-after": "45",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-reset-requests": "soon",
+    }
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["model"])
+        if len(sent) == 1:
+            return httpx.Response(429, json={"error": {"message": "daily"}}, headers=daily)
+        return httpx.Response(200, json=_content("{}"))
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + 44.5
+    await gateway.complete(MESSAGES)
+    clock.now = start + 45
+    await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_a_groq_tokens_429_cools_the_primary_until_the_tokens_reset() -> None:
+    """Without a retry-after, the tokens reset reaches the cooldown through the quota headers."""
+    sent: list[str] = []
+    tokens = {"x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "7.66s"}
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["model"])
+        if len(sent) == 1:
+            return httpx.Response(429, json={"error": {"message": "tokens"}}, headers=tokens)
+        return httpx.Response(200, json=_content("{}"))
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + 7.0
+    await gateway.complete(MESSAGES)
+    clock.now = start + 7.66
     await gateway.complete(MESSAGES)
 
     assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
@@ -687,6 +744,9 @@ async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
         (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=600.0), 600.0),
         (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=86400.0), 900.0),
         (RateLimited(None, "day", "429"), QuotaHeaders(reset_tokens_s=12.5), 30.0),
+        (RateLimited(45.0, "day", "429"), QuotaHeaders(reset_requests_s=600.0), 600.0),
+        (RateLimited(45.0, "day", "429"), QuotaHeaders(), 45.0),
+        (RateLimited(5000.0, "day", "429"), QuotaHeaders(), 900.0),
         (RateLimited(7.0, "unknown", "429"), QuotaHeaders(reset_requests_s=600.0), 30.0),
     ],
     ids=[
@@ -696,6 +756,9 @@ async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
         "day-requests-reset",
         "day-capped",
         "day-no-header",
+        "day-reset-wins-over-retry-after",
+        "day-no-reset-uses-retry-after",
+        "day-retry-after-capped",
         "unknown",
     ],
 )
@@ -716,3 +779,90 @@ async def test_the_primary_cooldown_length_follows_the_rate_limit_scope(
     await gateway.complete(MESSAGES)
 
     assert adapter.calls == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_only_the_groq_api_key_setting_selects_groq(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The environment reaches provider selection only through settings.groq_api_key."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-from-env")
+
+    gateway = build_llm_gateway(settings.model_copy(update={"groq_api_key": None}))
+
+    assert isinstance(gateway.adapter, ScriptedAdapter)
+    assert gateway.label == "Zero-Config SRE Simulation"
+    await gateway.aclose()
+
+
+async def test_the_gateway_label_and_budget_come_from_the_adapter() -> None:
+    """Any ModelAdapter names itself and reports its headers; the gateway has no type checks."""
+
+    class OwnAdapter:
+        def label(self, primary: str) -> str:
+            return f"Own adapter ({primary})"
+
+        def quota_headers(self, model: str) -> QuotaHeaders:
+            return QuotaHeaders(remaining_requests=7 if model == "m" else 0)
+
+        async def call(
+            self, model: str, messages: list[BaseMessage]
+        ) -> Completion | ProviderFailure:
+            return Completion(text="{}", model=model)
+
+        async def aclose(self) -> None:
+            """Nothing to release."""
+
+    gateway = build_llm_gateway(settings.model_copy(update={"groq_model": "m"}), OwnAdapter())
+
+    assert gateway.label == "Own adapter (m)"
+    assert gateway.snapshot().remaining_requests == 7
+
+
+async def test_groq_adapter_sends_the_configured_temperature_and_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "llm_temperature", 0.3)
+    monkeypatch.setattr(settings, "llm_max_tokens", 1234)
+    sent: list[dict[str, Any]] = []
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=_content("{}"))
+
+    await _groq(groq_api).call(PRIMARY, MESSAGES)
+
+    assert (sent[0]["temperature"], sent[0]["max_tokens"]) == (0.3, 1234)
+
+
+async def test_the_groq_http_client_uses_the_configured_pool_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "llm_max_keepalive_connections", 3)
+    monkeypatch.setattr(settings, "llm_max_connections", 9)
+    built: list[dict[str, Any]] = []
+    real_client = httpx.AsyncClient
+
+    def recording_client(**kwargs: Any) -> httpx.AsyncClient:
+        built.append(kwargs)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", recording_client)
+
+    client = new_groq_http_client(5.0)
+    await client.aclose()
+
+    assert built[0]["limits"] == httpx.Limits(max_keepalive_connections=3, max_connections=9)
+    assert built[0]["timeout"] == 5.0
+
+
+def test_the_groq_request_settings_keep_the_previous_hard_coded_defaults() -> None:
+    defaults = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert (defaults.llm_temperature, defaults.llm_max_tokens) == (0.0, 2500)
+    assert (defaults.llm_max_keepalive_connections, defaults.llm_max_connections) == (20, 50)
+
+
+def test_settings_read_the_groq_api_key_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-from-env")
+
+    assert Settings(_env_file=None).groq_api_key == "gsk-from-env"  # type: ignore[call-arg]

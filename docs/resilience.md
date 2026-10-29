@@ -190,7 +190,7 @@ If the fallback fails too, `complete()` returns the fallback's failure. `generat
 | `RateLimited.scope` | Cooldown |
 | :--- | :--- |
 | `minute` | `retry_after_s`, else the tokens bucket's reset (`x-ratelimit-reset-tokens`). |
-| `day` | The requests bucket's reset (`x-ratelimit-reset-requests`). |
+| `day` | The requests bucket's reset (`x-ratelimit-reset-requests`), else `retry_after_s` if that reset is missing or unparseable. |
 | `unknown` | `LLM_DEFAULT_COOLDOWN_S` (default 30s). |
 
 If the chosen value is missing, the cooldown falls back to `LLM_DEFAULT_COOLDOWN_S`. **Every cooldown, whatever its scope, is capped at `LLM_MAX_COOLDOWN_S`** (default 3600s), so a bogus header cannot lock the primary out for a day. `POST /resilience/reset` ends all cooldowns.
@@ -199,8 +199,8 @@ If the chosen value is missing, the cooldown falls back to `LLM_DEFAULT_COOLDOWN
 
 `GroqAdapter` turns a 429 into a `RateLimited` in this order:
 
-1. **`retry-after`**, read as seconds (a float is fine), becomes `retry_after_s`.
-2. **The bucket at 0 sets the scope.** On Groq, `x-ratelimit-*-requests` is the per-day request bucket and `x-ratelimit-*-tokens` the per-minute token bucket. `remaining-requests: 0` gives `day`; otherwise `remaining-tokens: 0` gives `minute`. **If both are at 0, `day` wins**, since its reset is the longer wait. Without a `retry-after`, `retry_after_s` is that bucket's reset.
+1. **`retry-after`**, read as seconds (a float is fine), becomes `retry_after_s`. Nothing else does: without a valid `retry-after`, `retry_after_s` is `None`.
+2. **The bucket at 0 sets the scope.** On Groq, `x-ratelimit-*-requests` is the per-day request bucket and `x-ratelimit-*-tokens` the per-minute token bucket. `remaining-requests: 0` gives `day`; otherwise `remaining-tokens: 0` gives `minute`. **If both are at 0, `day` wins**, since its reset is the longer wait. The bucket resets reach the gateway only through the adapter's `QuotaHeaders` (`reset_requests_s`, `reset_tokens_s`), which the cooldown table above reads.
 3. **No bucket at 0 but a `retry-after`: the scope is `minute`**, so the gateway honours the `retry-after` (it ignores `retry_after_s` for `unknown`). Groq's per-minute request limit has no header, so it is the likely cause.
 4. Otherwise the scope is `unknown`, which gets the default cooldown.
 
@@ -212,6 +212,7 @@ Reset headers are Go-style durations: every `<number><unit>` part counts (`h`, `
 
 `LLMGateway.snapshot()` is the `LLMQuotaSnapshot` behind `GET /llm/quota` and the `llm_quota` field of `/health` and `/resilience/status`:
 - `remaining_*`, `limit_*`, `reset_*` and `last_status` come from the **primary model's** headers only, so a fallback call never overwrites the primary's budget.
+- `last_error`, by contrast, is the error of the latest failed call to **either** model, so it can describe a fallback failure while `last_status` still shows the primary's last HTTP status.
 - `active_model` is the model that served the last completion; `fallback_model` is `GROQ_FALLBACK_MODEL`.
 - `total_calls` (adapter calls, not `complete()` calls), `rate_limit_hits` and `failover_events` cover both models. `failover_events` counts completions answered by the fallback, whether after a live failure or a cooldown skip.
 

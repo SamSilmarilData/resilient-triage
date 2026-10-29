@@ -92,6 +92,30 @@ class Settings(BaseSettings):
         le=120,
         description="Timeout in seconds for one HTTP call to the LLM provider",
     )
+    llm_temperature: float = Field(
+        default=0.0,
+        ge=0,
+        le=2,
+        description="Sampling temperature sent with every LLM call (0 is deterministic)",
+    )
+    llm_max_tokens: int = Field(
+        default=2500,
+        ge=1,
+        le=32768,
+        description="Max completion tokens the LLM may return for one triage report",
+    )
+    llm_max_keepalive_connections: int = Field(
+        default=20,
+        ge=0,
+        le=1000,
+        description="Idle keep-alive connections the LLM HTTP client pool holds open",
+    )
+    llm_max_connections: int = Field(
+        default=50,
+        ge=1,
+        le=1000,
+        description="Max concurrent connections in the LLM HTTP client pool",
+    )
     groq_fallback_model: str = Field(
         default="llama-3.1-8b-instant",
         min_length=1,

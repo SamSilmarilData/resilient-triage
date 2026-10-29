@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol
 
 from langchain_core.messages import BaseMessage
 
@@ -25,12 +25,16 @@ class Completion:
     model: str
 
 
+# Which quota a 429 hit: the per-minute bucket, the per-day bucket, or not known.
+RateLimitScope = Literal["minute", "day", "unknown"]
+
+
 @dataclass(frozen=True)
 class RateLimited:
     """The provider refused the call for quota (HTTP 429)."""
 
     retry_after_s: float | None
-    scope: Literal["minute", "day", "unknown"]
+    scope: RateLimitScope
     detail: str
 
 
@@ -58,18 +62,6 @@ class MalformedResponse:
 ProviderFailure = RateLimited | Unavailable | Rejected | MalformedResponse
 
 
-class ModelAdapter(Protocol):
-    """One call to one model; never retries or fails over (the gateway does that)."""
-
-    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        """Send messages to model once and return its completion or a failure kind."""
-        ...
-
-    async def aclose(self) -> None:
-        """Release whatever the adapter owns."""
-        ...
-
-
 @dataclass(frozen=True)
 class QuotaHeaders:
     """Rate-limit header values and HTTP status from one model's latest responses."""
@@ -86,17 +78,32 @@ class QuotaHeaders:
     reset_tokens_s: float | None = None
 
 
-@runtime_checkable
-class QuotaReporter(Protocol):
-    """An adapter that reads rate-limit headers and reports them to the gateway's snapshot."""
+class ModelAdapter(Protocol):
+    """One call to one model; never retries or fails over (the gateway does that)."""
+
+    def label(self, primary: str) -> str:
+        """Return the /health label for this adapter serving the primary model."""
+        ...
 
     def quota_headers(self, model: str) -> QuotaHeaders:
-        """Return the latest header values seen for model."""
+        """Return the latest rate-limit header values seen for model (empty if none)."""
+        ...
+
+    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
+        """Send messages to model once and return its completion or a failure kind."""
+        ...
+
+    async def aclose(self) -> None:
+        """Release whatever the adapter owns."""
         ...
 
 
-# One adapter call made during a complete(): the model called and what it returned.
-Attempt = tuple[str, Completion | ProviderFailure]
+@dataclass(frozen=True)
+class Attempt:
+    """One adapter call made during a complete(): the model called and what it returned."""
+
+    model: str
+    result: Completion | ProviderFailure
 
 
 class LLMGateway:
@@ -172,7 +179,7 @@ class LLMGateway:
         self, model: str, messages: list[BaseMessage], attempts: list[Attempt]
     ) -> Completion | ProviderFailure:
         result = await self.adapter.call(model, messages)
-        attempts.append((model, result))
+        attempts.append(Attempt(model=model, result=result))
         if not isinstance(result, Completion):
             logger.warning("LLM call to %s failed: %s", model, result)
         return result
@@ -180,7 +187,8 @@ class LLMGateway:
     def _record(self, attempts: list[Attempt], result: Completion | ProviderFailure) -> None:
         """Apply one completed complete() call to the counters and cooldowns."""
         now = self._clock()
-        for model, outcome in attempts:
+        for attempt in attempts:
+            model, outcome = attempt.model, attempt.result
             self._total_calls += 1
             self._last_updated = datetime.now(UTC)
             if isinstance(outcome, Completion):
@@ -190,7 +198,7 @@ class LLMGateway:
             if isinstance(outcome, RateLimited):
                 self._rate_limit_hits += 1
                 self._cooldown_until[model] = now + self._cooldown_s(model, outcome)
-        if isinstance(result, Completion) and attempts and attempts[-1][0] == self.fallback:
+        if isinstance(result, Completion) and attempts and attempts[-1].model == self.fallback:
             self._failover_events += 1
 
     def _cooldown_s(self, model: str, limited: RateLimited) -> float:
@@ -199,21 +207,18 @@ class LLMGateway:
         if limited.scope == "minute":
             seconds = limited.retry_after_s
             if seconds is None:
-                seconds = self._quota(model).reset_tokens_s
+                seconds = self.adapter.quota_headers(model).reset_tokens_s
         elif limited.scope == "day":
-            seconds = self._quota(model).reset_requests_s
+            seconds = self.adapter.quota_headers(model).reset_requests_s
+            if seconds is None:
+                seconds = limited.retry_after_s
         if seconds is None:
             seconds = settings.llm_default_cooldown_s
         return min(seconds, settings.llm_max_cooldown_s)
 
-    def _quota(self, model: str) -> QuotaHeaders:
-        if isinstance(self.adapter, QuotaReporter):
-            return self.adapter.quota_headers(model)
-        return QuotaHeaders()
-
     def snapshot(self) -> LLMQuotaSnapshot:
         """Return the quota, counters and last call of this gateway (the /llm/quota body)."""
-        headers = self._quota(self.primary)
+        headers = self.adapter.quota_headers(self.primary)
         return LLMQuotaSnapshot(
             active_model=self._active_model,
             fallback_model=self.fallback,

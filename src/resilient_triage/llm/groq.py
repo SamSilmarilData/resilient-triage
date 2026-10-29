@@ -2,17 +2,18 @@
 
 import logging
 import re
-from typing import Literal
 
 import httpx
 from langchain_core.messages import BaseMessage
 
+from resilient_triage.config import settings
 from resilient_triage.llm.gateway import (
     Completion,
     MalformedResponse,
     ProviderFailure,
     QuotaHeaders,
     RateLimited,
+    RateLimitScope,
     Rejected,
     Unavailable,
 )
@@ -26,7 +27,10 @@ def new_groq_http_client(timeout: float) -> httpx.AsyncClient:
     """Build a keep-alive pooled httpx.AsyncClient for Groq LPU calls (no I/O until used)."""
     return httpx.AsyncClient(
         timeout=timeout,
-        limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+        limits=httpx.Limits(
+            max_keepalive_connections=settings.llm_max_keepalive_connections,
+            max_connections=settings.llm_max_connections,
+        ),
     )
 
 
@@ -77,28 +81,21 @@ def _seconds_header(headers: httpx.Headers, name: str) -> float | None:
 
 
 def _rate_limit(headers: httpx.Headers, detail: str) -> RateLimited:
-    """Read a 429's wait and scope: retry-after first, else the bucket at 0, else unknown."""
+    """Read a 429's retry-after and scope; bucket resets reach the gateway via QuotaHeaders."""
     retry_after_s = _seconds_header(headers, "retry-after")
-    scope: Literal["minute", "day", "unknown"]
+    scope: RateLimitScope
     # x-ratelimit-*-requests is the per-day bucket, *-tokens the per-minute one (#5).
     # Both at 0: the daily bucket decides, since its reset is the longer wait.
     if headers.get("x-ratelimit-remaining-requests") == "0":
         scope = "day"
-        reset_s = parse_duration_s(headers.get("x-ratelimit-reset-requests"))
     elif headers.get("x-ratelimit-remaining-tokens") == "0":
         scope = "minute"
-        reset_s = parse_duration_s(headers.get("x-ratelimit-reset-tokens"))
     else:
         # No bucket at 0. A retry-after still says how long to wait, and the gateway honours
         # retry_after_s only for scope minute (unknown gets llm_default_cooldown_s), so call
         # it minute. Groq's RPM limit, which has no header, is the likely cause.
         scope = "minute" if retry_after_s is not None else "unknown"
-        reset_s = None
-    return RateLimited(
-        retry_after_s=retry_after_s if retry_after_s is not None else reset_s,
-        scope=scope,
-        detail=detail,
-    )
+    return RateLimited(retry_after_s=retry_after_s, scope=scope, detail=detail)
 
 
 class GroqAdapter:
@@ -115,6 +112,10 @@ class GroqAdapter:
         self._client = http_client if http_client is not None else new_groq_http_client(timeout_s)
         self._headers: dict[str, QuotaHeaders] = {}
 
+    def label(self, primary: str) -> str:
+        """The /health label naming the Groq primary model."""
+        return f"Groq LPU ({primary})"
+
     def quota_headers(self, model: str) -> QuotaHeaders:
         """Return the rate-limit headers and status of model's latest responses."""
         return self._headers.get(model, QuotaHeaders())
@@ -125,8 +126,8 @@ class GroqAdapter:
             "model": model,
             "messages": format_messages(messages),
             "response_format": {"type": "json_object"},
-            "temperature": 0.0,
-            "max_tokens": 2500,
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_tokens,
         }
         try:
             resp = await self._client.post(

@@ -294,7 +294,7 @@ async def test_graph_thread_checkpointing():
     assert messages_after_call2 > messages_after_call1
 
 
-def test_groq_chat_model_formatting_and_factory():
+def test_groq_adapter_formats_messages_and_the_runtime_labels_groq():
     """Verify GroqAdapter message formatting and active model reporting."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -321,7 +321,7 @@ def test_groq_chat_model_formatting_and_factory():
     assert active_name == "Groq LPU (qwen/qwen3.8-27b)"
 
 
-def test_groq_chat_model_rejects_a_misspelled_argument():
+def test_llm_gateway_rejects_a_misspelled_argument():
     """A typo'd keyword fails loudly instead of being dropped for a default."""
     from resilient_triage.llm import LLMGateway, ScriptedAdapter
 
@@ -335,7 +335,7 @@ def test_groq_chat_model_rejects_a_misspelled_argument():
 
 
 @pytest.mark.asyncio
-async def test_groq_chat_model_429_failover():
+async def test_llm_gateway_fails_over_on_a_groq_429():
     """Verify the gateway fails over to the fallback model when Groq returns HTTP 429."""
     from langchain_core.messages import HumanMessage
 
@@ -689,7 +689,7 @@ def _groq_gateway(responses: list[httpx.Response], sent: list[dict]):
     )
 
 
-async def test_groq_models_with_separate_quota_trackers_do_not_share_rate_limit_counters():
+async def test_separate_groq_gateways_do_not_share_rate_limit_counters():
     """A 429 seen by one Groq gateway leaves another gateway's quota counters untouched."""
     from langchain_core.messages import HumanMessage
 
@@ -707,7 +707,7 @@ async def test_groq_models_with_separate_quota_trackers_do_not_share_rate_limit_
     assert sent_b[-1]["model"] == "qwen/qwen3.8-27b"
 
 
-def test_groq_model_requires_its_quota_tracker_and_http_client():
+def test_gateway_requires_an_adapter_and_each_groq_adapter_owns_its_http_client():
     """A gateway can't silently fall back to shared state: it needs its own adapter."""
     from resilient_triage.llm import GroqAdapter, LLMGateway
 

@@ -116,7 +116,7 @@ async def test_deps_telemetry_statuspage_fails_fast_on_this_runtimes_open_breake
     assert [s.status for s in signals] == ["CIRCUIT_OPEN"]
 
 
-async def test_groq_llm_calls_through_this_runtimes_http_client_and_quota_tracker(
+async def test_groq_llm_calls_through_this_runtimes_http_client_and_gateway(
     make_runtime, monkeypatch
 ):
     requests: list[httpx.Request] = []
