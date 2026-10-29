@@ -14,6 +14,7 @@ from langgraph.runtime import Runtime
 
 from resilient_triage.config import settings
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
+from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.schemas.telemetry import SIGNAL_STATUS_UNAVAILABLE, ChaosConfig
 from resilient_triage.telemetry.chaos import ChaosManager
 
@@ -37,7 +38,8 @@ def _slow_chaos() -> ChaosManager:
 
 
 async def test_slow_cluster_sentinel_read_is_cut_off_at_the_source_deadline() -> None:
-    deps = make_triage_deps(chaos=_slow_chaos())
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(chaos=_slow_chaos(), breakers=breakers)
 
     started = time.monotonic()
     result = await asyncio.wait_for(
@@ -50,7 +52,7 @@ async def test_slow_cluster_sentinel_read_is_cut_off_at_the_source_deadline() ->
     degraded = [s for s in result["telemetry_signals"] if s["status"] == SIGNAL_STATUS_UNAVAILABLE]
     assert [s["source"] for s in degraded] == ["postgres_health_probe"]
     assert degraded[0]["error_rate"] == 1.0
-    chaos_breaker = deps.telemetry.breakers.get_all_statuses()["chaos"]
+    chaos_breaker = breakers.get_all_statuses()["chaos"]
     assert chaos_breaker.fail_counter == 1
     assert chaos_breaker.state == "closed"
 
@@ -60,7 +62,10 @@ async def test_slow_statuspage_read_is_cut_off_at_the_source_deadline() -> None:
         await asyncio.sleep(CHAOS_LATENCY_MS / 1000)
         return httpx.Response(200, json={})
 
-    deps = make_triage_deps(statuspage_http=httpx.AsyncClient(transport=httpx.MockTransport(hang)))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(
+        statuspage_http=httpx.AsyncClient(transport=httpx.MockTransport(hang)), breakers=breakers
+    )
 
     started = time.monotonic()
     result = await asyncio.wait_for(
@@ -72,11 +77,12 @@ async def test_slow_statuspage_read_is_cut_off_at_the_source_deadline() -> None:
     assert "statuspage" in result["unavailable_sources"]
     degraded = [s for s in result["telemetry_signals"] if s["status"] == SIGNAL_STATUS_UNAVAILABLE]
     assert [s["source"] for s in degraded] == ["statuspage:global"]
-    assert deps.telemetry.breakers.get_all_statuses()["statuspage"].fail_counter == 1
+    assert breakers.get_all_statuses()["statuspage"].fail_counter == 1
 
 
 async def test_cancelling_a_read_from_outside_records_nothing_on_the_breaker() -> None:
-    deps = make_triage_deps(chaos=_slow_chaos())
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(chaos=_slow_chaos(), breakers=breakers)
 
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(
@@ -84,7 +90,7 @@ async def test_cancelling_a_read_from_outside_records_nothing_on_the_breaker() -
             timeout=SOURCE_DEADLINE_S / 5,
         )
 
-    assert deps.telemetry.breakers.get_all_statuses()["chaos"].fail_counter == 0
+    assert breakers.get_all_statuses()["chaos"].fail_counter == 0
 
 
 async def test_triage_with_slow_cluster_sentinel_returns_within_the_source_deadline(

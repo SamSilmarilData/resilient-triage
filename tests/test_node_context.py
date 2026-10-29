@@ -13,7 +13,7 @@ from resilient_triage.graph.nodes.degraded_fallback import degraded_fallback_nod
 from resilient_triage.graph.nodes.finalize import finalize_node
 from resilient_triage.graph.nodes.generate_report import generate_report_node
 from resilient_triage.llm import ScriptedAdapter
-from resilient_triage.resilience.circuit_breaker import force_open_for_tests
+from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 
 
@@ -29,8 +29,9 @@ def _report() -> IncidentTriageReport:
 
 
 async def test_collect_telemetry_reads_statuspage_and_breakers_from_context():
-    deps = make_triage_deps()
-    force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(breakers=breakers)
+    force_open_for_tests(breakers.get_or_create("chaos"))
 
     result = await collect_telemetry_node(
         {"query": "Service outage", "targeted_sources": ["statuspage", "chaos"]},

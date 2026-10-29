@@ -84,7 +84,6 @@ class AppRuntime:
         chaos: ChaosManager,
         llm: LLMGateway,
         deps: TriageDeps,
-        cluster_sentinel: ClusterSentinelSource,
         settings: Settings,
         http_clients: tuple[httpx.AsyncClient, ...] = (),
     ) -> None:
@@ -93,7 +92,6 @@ class AppRuntime:
         self.chaos = chaos
         self.llm = llm
         self.deps = deps
-        self._cluster_sentinel = cluster_sentinel
         self._http_clients = http_clients
         self.triage_gateway = TriageGateway(cache, self.run_graph, settings)
 
@@ -118,8 +116,9 @@ class AppRuntime:
 
     async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:
         """Probe Cluster Sentinel through its breaker, deadline and retry; raises on failure."""
-        sentinel = self._cluster_sentinel
-        return await self.deps.telemetry.guarded(sentinel.id, sentinel.probe)
+        return await self.deps.telemetry.call_source(
+            ClusterSentinelSource, lambda sentinel: sentinel.probe()
+        )
 
     async def aclose(self) -> None:
         """Close every client this runtime owns."""
@@ -188,9 +187,14 @@ def build_runtime(
         client=statuspage_http,
         cache_ttl_seconds=SUMMARY_CACHE_TTL_SECONDS,
     )
-    cluster_sentinel = ClusterSentinelSource(chaos)
     # Building the probe creates both source breakers, so /health lists them from the start.
-    telemetry = TelemetryProbe([statuspage, cluster_sentinel], breakers=breakers)
+    telemetry = TelemetryProbe(
+        [statuspage, ClusterSentinelSource(chaos)],
+        breakers=breakers,
+        fail_max=settings.circuit_breaker_fail_max,
+        reset_timeout=settings.circuit_breaker_reset_timeout,
+        source_deadline_s=settings.telemetry_source_deadline_s,
+    )
     deps = TriageDeps(llm=llm, telemetry=telemetry, history=cache)
     return AppRuntime(
         cache=cache,
@@ -198,7 +202,6 @@ def build_runtime(
         chaos=chaos,
         llm=llm,
         deps=deps,
-        cluster_sentinel=cluster_sentinel,
         settings=settings,
         http_clients=tuple(http_clients),
     )
