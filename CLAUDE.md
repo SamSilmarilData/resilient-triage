@@ -9,7 +9,7 @@ Statuspage, or the LLM is down — degrade instead.
 - LangGraph (cyclic graph, `BoundedMemorySaver` checkpointer), langchain-core
 - Resilience: pybreaker (circuit breakers), tenacity (retry + jitter), httpx (async)
 - Cache: Redis 8 RediSearch HNSW, with in-memory NumPy fallback; FastEmbed `BAAI/bge-small-en-v1.5` (384-d)
-- LLM: Groq (`qwen/qwen3.8-27b`) via direct async HTTP, JSON response mode
+- LLM: Groq (`qwen/qwen3.8-27b`, fallback `llama-3.1-8b-instant`) via direct async HTTP, JSON response mode
 
 ## Commands (run inside `.venv`)
 - Setup: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[test,lint]"`, then
@@ -29,10 +29,14 @@ Statuspage, or the LLM is down — degrade instead.
 - `graph/nodes/` — one node per file, `<name>_node(state, runtime: Runtime[TriageDeps])` when it needs
   collaborators, else `<name>_node(state)`; returns a partial state update `dict[str, Any]` and reads
   collaborators only from `runtime.context`.
-- `runtime.py` — `AppRuntime` (cache, breakers, chaos, quota, `TriageDeps`), built by `build_runtime()`; one per app.
+- `runtime.py` — `AppRuntime` (cache, breakers, chaos, LLM gateway, `TriageDeps`), built by `build_runtime()`; one per app.
 - `graph/deps.py` — `TriageDeps` (the run context nodes see) and its protocols; no imports of
   `runtime` or the graph, so nodes can import it without a cycle. `runtime.py` re-exports it.
-- `graph/llm.py` — Groq client, `MockTriageChatModel`, `build_triage_llm()`, quota tracker / 429 failover.
+- `llm/` — the LLM gateway: every model call goes through `LLMGateway.complete()`, which returns a
+  `Completion` or a provider failure (`RateLimited`/`Unavailable`/`Rejected`/`MalformedResponse`) and
+  never raises. It owns failover and per-model cooldowns (`gateway.py`). Adapters: `GroqAdapter`
+  (`groq.py`, HTTP + rate-limit headers) and `ScriptedAdapter` (`scripted.py`, test fake and zero-config
+  simulation). `build_llm_gateway()` is the one place a provider is chosen. Nodes reach it as `runtime.context.llm`.
 - `cache/semantic_cache.py` — `SemanticCacheManager` (Redis ↔ in-memory failover). `cache/embeddings.py` — providers.
 - `resilience/` — `CircuitBreakerRegistry`, retry decorators. `telemetry/` — Statuspage probe, `ChaosManager`.
 - `schemas/` — `incident.py` (report contract), `state.py` (`TriageState`), `api.py`, `telemetry.py`.
@@ -48,7 +52,8 @@ field or external call. Commits: Conventional Commits with scope (`fix(resilienc
 ## Testing
 - `tests/conftest.py`'s autouse fixtures shorten retry waits and fail any test that connects beyond loopback
   (`offline_only`). A cold FastEmbed model cache trips it: run any `TextEmbedding` load once outside pytest.
-- The `runtime` fixture builds a fresh `AppRuntime` (mock LLM, canned Statuspage, emptied cache) per test.
+- The `runtime` fixture builds a fresh `AppRuntime` (`ScriptedAdapter` LLM, canned Statuspage, emptied cache) per test.
+  Script LLM outcomes with `build_runtime(..., llm_adapter=ScriptedAdapter([...]))`; no HTTP mocks needed.
   Stateful modules are members of `AppRuntime` (`runtime.py`). Don't add module-level singletons.
 - Use the `client` fixture (httpx `ASGITransport` + app lifespan) for API tests.
 - `asyncio_mode = "auto"` — async tests need no marker.
