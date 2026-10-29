@@ -6,7 +6,7 @@ Statuspage, or the LLM is down — degrade instead.
 
 ## Tech Stack
 - Python 3.12, FastAPI + uvicorn, Pydantic v2 / pydantic-settings
-- LangGraph (cyclic graph, `BoundedMemorySaver` checkpointer), langchain-core
+- LangGraph (cyclic graph, no checkpointer: each run is self-contained, ADR-007), langchain-core
 - Resilience: pybreaker (circuit breakers), tenacity (retry + jitter), httpx (async)
 - Cache: Redis 8 RediSearch HNSW, with in-memory NumPy fallback; FastEmbed `BAAI/bge-small-en-v1.5` (384-d)
 - LLM: Groq (`qwen/qwen3.8-27b`, fallback `llama-3.1-8b-instant`) via direct async HTTP, JSON response mode

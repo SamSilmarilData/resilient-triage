@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unavailable sources degrade a report**: a targeted telemetry source that fails (its fetch raised or returned an `UNAVAILABLE` signal) while its breaker is still closed now makes the report at least `PARTIALLY_DEGRADED`; previously the report could claim `HEALTHY`.
 
 ### Removed
+- **The request-path checkpointer** (ADR-007): `build_triage_graph()` compiles without a checkpointer, and `BoundedMemorySaver` with the `enable_checkpointing` / `max_checkpoint_threads` parameters is deleted. Each run is self-contained, so `POST /triage` no longer leaks one checkpoint thread per request. `X-Thread-ID` is now only a correlation id: the caller's value, or a new UUID4, echoed back as before.
 - **OpenAI and Gemini providers**: `OPENAI_API_KEY`, `GOOGLE_API_KEY` and `GEMINI_API_KEY` no longer select a provider, and the provider branches that needed `langchain_openai` / `langchain_google_genai` (never dependencies) are gone. Only `GROQ_API_KEY` selects a real model; without it the app runs the zero-config simulation.
 - **The LangChain model classes**: `GroqChatModel`, `GroqQuotaTracker`, `MockTriageChatModel` and `build_triage_llm`, with `graph/llm.py` and its re-exports from `resilient_triage.graph`.
 
