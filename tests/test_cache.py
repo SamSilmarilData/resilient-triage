@@ -244,11 +244,11 @@ async def test_degraded_report_reduced_ttl():
     await cache.store("Degraded query", degraded_report)
 
     # Check in-memory document TTLs
-    entries = list(cache._in_memory_docs.values())
+    entries = list(cache._standby._docs.values())
     assert len(entries) == 2
 
-    healthy_entry = next(e for e in entries if "Healthy query" in e.query)
-    degraded_entry = next(e for e in entries if "Degraded query" in e.query)
+    healthy_entry = next(e for e in entries if "Healthy query" in e.entry.query)
+    degraded_entry = next(e for e in entries if "Degraded query" in e.entry.query)
 
     import time
 
