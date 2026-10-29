@@ -216,3 +216,33 @@ async def test_a_synthesis_fallback_is_answered_but_not_stored(cache):
     assert isinstance(again, Analyzed)
     assert len(graph.calls) == 2
     assert gateway.metrics == TriageMetrics(hit=0, miss=2, saturated=0)
+
+
+async def test_a_telemetry_degraded_report_is_stored_with_the_degraded_ttl():
+    now = [1000.0]
+    cache = SemanticCacheManager(
+        redis_url=UNREACHABLE_REDIS,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        default_ttl=300,
+        degraded_ttl=60,
+        clock=lambda: now[0],
+    )
+    await cache.initialize()
+    degraded = _report().model_copy(
+        update={
+            "degradation_status": DegradationStatus.PARTIALLY_DEGRADED,
+            "circuit_breakers_tripped": ["statuspage"],
+        }
+    )
+    graph = ReturningGraph({"final_report": degraded, "tripped_breakers": ["statuspage"]})
+    try:
+        await _gateway(cache, graph).triage(QUERY, None)
+
+        now[0] += 59
+        stored = await cache.lookup(QUERY)
+        assert stored is not None
+        assert stored.report == degraded
+        now[0] += 2
+        assert await cache.lookup(QUERY) is None
+    finally:
+        await cache.close()
