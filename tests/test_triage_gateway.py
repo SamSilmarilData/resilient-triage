@@ -137,10 +137,11 @@ async def test_a_run_without_a_final_report_answers_with_an_unstored_synthesis_f
     assert await cache.lookup(QUERY) is None
 
 
-def _one_slot(timeout_s: float = 0.05) -> Settings:
-    return settings.model_copy(
-        update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": timeout_s}
-    )
+def _one_slot(timeout_s: float = 0.05, *, deadline_s: float | None = None) -> Settings:
+    update: dict[str, Any] = {"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": timeout_s}
+    if deadline_s is not None:
+        update["triage_run_deadline_s"] = deadline_s
+    return settings.model_copy(update=update)
 
 
 async def test_a_request_with_no_free_run_slot_is_shed_after_the_queue_timeout(cache):
@@ -299,28 +300,20 @@ async def test_a_telemetry_degraded_report_is_stored_with_the_degraded_ttl():
 
 
 class SleepingGraph:
-    """A GraphRunner whose runs sleep for `seconds`, then return a report."""
+    """A GraphRunner whose runs set `started`, sleep for `seconds`, then return a report."""
 
     def __init__(self, seconds: float) -> None:
         self.seconds = seconds
+        self.started = asyncio.Event()
 
     async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+        self.started.set()
         await asyncio.sleep(self.seconds)
         return {"final_report": _report(f"Answer for {input['query']}")}
 
 
-def _deadline(deadline_s: float, *, queue_timeout_s: float = 0.05) -> Settings:
-    return settings.model_copy(
-        update={
-            "triage_max_concurrent_runs": 1,
-            "triage_queue_timeout_s": queue_timeout_s,
-            "triage_run_deadline_s": deadline_s,
-        }
-    )
-
-
 async def test_a_run_past_its_deadline_answers_with_an_unstored_synthesis_fallback(cache):
-    gateway = _gateway(cache, SleepingGraph(10.0), _deadline(0.05))
+    gateway = _gateway(cache, SleepingGraph(10.0), _one_slot(deadline_s=0.05))
 
     loop = asyncio.get_running_loop()
     started_at = loop.time()
@@ -338,7 +331,7 @@ async def test_a_run_past_its_deadline_answers_with_an_unstored_synthesis_fallba
 
 async def test_a_run_past_its_deadline_frees_its_run_slot(cache):
     graph = SleepingGraph(10.0)
-    gateway = _gateway(cache, graph, _deadline(0.05))
+    gateway = _gateway(cache, graph, _one_slot(deadline_s=0.05))
     await gateway.triage(QUERY, None)
 
     graph.seconds = 0.0
@@ -349,7 +342,7 @@ async def test_a_run_past_its_deadline_frees_its_run_slot(cache):
 
 
 async def test_a_run_under_its_deadline_is_answered_and_stored(cache):
-    gateway = _gateway(cache, SleepingGraph(0.01), _deadline(1.0))
+    gateway = _gateway(cache, SleepingGraph(0.01), _one_slot(deadline_s=1.0))
 
     outcome = await gateway.triage(QUERY, "billing")
 
@@ -361,12 +354,17 @@ async def test_a_run_under_its_deadline_is_answered_and_stored(cache):
 
 
 async def test_waiting_for_a_run_slot_does_not_count_against_the_deadline(cache):
-    gateway = _gateway(cache, SleepingGraph(0.15), _deadline(0.25, queue_timeout_s=1.0))
-
+    deadline_s = 0.3
+    graph = SleepingGraph(0.2)
+    gateway = _gateway(cache, graph, _one_slot(timeout_s=1.0, deadline_s=deadline_s))
     first = asyncio.create_task(gateway.triage(QUERY, None))
-    await asyncio.sleep(0)
+    await graph.started.wait()
+
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
     second = await gateway.triage("Checkout latency spike in eu-west-1", None)
 
+    assert loop.time() - started_at > deadline_s
     assert isinstance(second, Analyzed)
     assert second.report.summary == "Answer for Checkout latency spike in eu-west-1"
     assert isinstance(await first, Analyzed)
@@ -374,7 +372,7 @@ async def test_waiting_for_a_run_slot_does_not_count_against_the_deadline(cache)
 
 async def test_a_caller_cancelling_a_run_propagates_and_frees_its_run_slot(cache):
     graph = BlockingGraph()
-    gateway = _gateway(cache, graph, _deadline(5.0))
+    gateway = _gateway(cache, graph, _one_slot(deadline_s=5.0))
     task = asyncio.create_task(gateway.triage(QUERY, None))
     await graph.started.wait()
 
@@ -391,7 +389,9 @@ async def test_a_caller_cancelling_a_run_propagates_and_frees_its_run_slot(cache
 
 
 async def test_a_timeout_raised_inside_the_graph_is_a_graph_exception_not_the_deadline(cache):
-    gateway = _gateway(cache, RaisingGraph(TimeoutError("upstream read timed out")), _deadline(5.0))
+    gateway = _gateway(
+        cache, RaisingGraph(TimeoutError("upstream read timed out")), _one_slot(deadline_s=5.0)
+    )
 
     outcome = await gateway.triage(QUERY, None)
 
