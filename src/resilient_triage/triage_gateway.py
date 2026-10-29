@@ -1,11 +1,21 @@
 """Triage gateway: the POST /triage request path, and the only request-path cache writer."""
 
-from dataclasses import dataclass
-from typing import Any, Protocol
+import logging
+from dataclasses import dataclass, replace
+from typing import Any, Protocol, cast
 
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
+from resilient_triage.graph.nodes.fallback_report import (
+    build_fallback_report,
+    fallback_reason,
+    valid_signals,
+)
+from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.schemas.incident import IncidentTriageReport
+from resilient_triage.schemas.state import TriageState
+
+logger = logging.getLogger(__name__)
 
 
 class GraphRunner(Protocol):
@@ -56,4 +66,18 @@ class TriageGateway:
             if match:
                 return CacheHit(report=match.report, similarity=match.similarity)
         state = await self._run_graph({"query": query, "service_filter": scope})
-        return Analyzed(report=state["final_report"])
+        report = state.get("final_report") or _synthesis_fallback(query, state)
+        await self._cache.store(query=query, report=report, service_filter=scope)
+        return Analyzed(report=report)
+
+
+def _synthesis_fallback(query: str, state: dict[str, Any]) -> IncidentTriageReport:
+    """Build and reconcile a synthesis fallback for a run that produced no final report."""
+    logger.warning("Graph produced no final report. Engaging emergency fallback report.")
+    report = build_fallback_report(
+        query,
+        reason=fallback_reason(state.get("provider_failure"), state.get("validation_errors", [])),
+        signals=valid_signals(state.get("telemetry_signals", [])),
+    )
+    evidence = DegradationEvidence.from_state(cast(TriageState, state))
+    return reconcile(report, replace(evidence, synthesis_fell_back=True))
