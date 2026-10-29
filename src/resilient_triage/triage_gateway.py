@@ -117,7 +117,7 @@ class TriageGateway:
         state = await self._run_graph({"query": query, "service_filter": scope})
         final_report: IncidentTriageReport | None = state.get("final_report")
         if final_report is None:
-            return _synthesis_fallback(query, state), False
+            return _synthesis_fallback(query, state), True
         evidence = DegradationEvidence.from_state(cast(TriageState, state))
         return final_report, evidence.synthesis_fell_back
 
