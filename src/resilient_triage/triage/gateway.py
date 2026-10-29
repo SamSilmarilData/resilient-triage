@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class GraphRunner(Protocol):
     """Runs the triage graph on an input state and returns its final state."""
 
-    async def __call__(self, input: TriageState, /) -> dict[str, Any]: ...
+    async def __call__(self, run_input: TriageState, /) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
