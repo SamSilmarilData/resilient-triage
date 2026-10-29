@@ -9,8 +9,7 @@ from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
 from resilient_triage.graph.nodes.fallback_report import (
     build_fallback_report,
-    fallback_reason,
-    valid_signals,
+    fallback_report_from_state,
 )
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.schemas.incident import IncidentTriageReport
@@ -129,12 +128,9 @@ class TriageGateway:
 def _synthesis_fallback(query: str, state: dict[str, Any]) -> IncidentTriageReport:
     """Build and reconcile a synthesis fallback for a run that produced no final report."""
     logger.warning("Graph produced no final report. Engaging emergency fallback report.")
-    report = build_fallback_report(
-        query,
-        reason=fallback_reason(state.get("provider_failure"), state.get("validation_errors", [])),
-        signals=valid_signals(state.get("telemetry_signals", [])),
-    )
-    evidence = DegradationEvidence.from_state(cast(TriageState, state))
+    run_state = cast(TriageState, state)
+    report = fallback_report_from_state(query, run_state)
+    evidence = DegradationEvidence.from_state(run_state)
     return reconcile(report, replace(evidence, synthesis_fell_back=True))
 
 
