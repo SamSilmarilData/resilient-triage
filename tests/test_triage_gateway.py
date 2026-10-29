@@ -1,5 +1,6 @@
 """Tests for the Triage gateway: cache lookup, run slots, the only cache write, and counters."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -9,7 +10,7 @@ from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings, settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
-from resilient_triage.triage_gateway import Analyzed, CacheHit, TriageGateway
+from resilient_triage.triage_gateway import Analyzed, CacheHit, Shed, TriageGateway
 
 UNREACHABLE_REDIS = "redis://127.0.0.1:1/0"
 QUERY = "Payments API returning 503 for card checkouts"
@@ -36,6 +37,19 @@ class ReturningGraph:
     async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(input)
         return self.state
+
+
+class BlockingGraph:
+    """A GraphRunner whose runs wait until `release` is set, then return a report."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+
+    async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+        self.started.set()
+        await self.release.wait()
+        return {"final_report": _report(f"Answer for {input['query']}")}
 
 
 @pytest_asyncio.fixture
@@ -106,3 +120,40 @@ async def test_a_run_without_a_final_report_answers_with_a_stored_synthesis_fall
     stored = await cache.lookup(QUERY)
     assert stored is not None
     assert stored.report == outcome.report
+
+
+def _one_slot(timeout_s: float = 0.05) -> Settings:
+    return settings.model_copy(
+        update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": timeout_s}
+    )
+
+
+async def test_a_request_with_no_free_run_slot_is_shed_after_the_queue_timeout(cache):
+    graph = BlockingGraph()
+    gateway = _gateway(cache, graph, _one_slot(timeout_s=0.05))
+    first = asyncio.create_task(gateway.triage(QUERY, None))
+    await graph.started.wait()
+
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    outcome = await asyncio.wait_for(
+        gateway.triage("Checkout latency spike in eu-west-1", None), timeout=1.0
+    )
+
+    assert outcome == Shed()
+    assert loop.time() - started_at >= 0.05
+    graph.release.set()
+    assert isinstance(await first, Analyzed)
+
+
+async def test_the_run_slot_is_freed_once_the_run_finishes(cache):
+    graph = BlockingGraph()
+    gateway = _gateway(cache, graph, _one_slot())
+    first = asyncio.create_task(gateway.triage(QUERY, None))
+    await graph.started.wait()
+    graph.release.set()
+    await first
+
+    outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
+
+    assert isinstance(outcome, Analyzed)
