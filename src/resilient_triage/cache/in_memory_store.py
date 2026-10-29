@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from resilient_triage.cache.vector_store import VectorEntry, VectorHit
+from resilient_triage.cache.vector_store import ServiceScope, VectorEntry, VectorHit
 
 
 @dataclass
@@ -29,7 +29,9 @@ class InMemoryVectorStore:
         self._clock = clock
         self._docs: dict[str, _Stored] = {}
 
-    async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
+    async def search(
+        self, vector: np.ndarray, scope: ServiceScope, threshold: float
+    ) -> VectorHit | None:
         """Return the most similar live entry in `scope` at or above `threshold`."""
         if not self._fits(vector):
             return None
@@ -46,20 +48,11 @@ class InMemoryVectorStore:
         if best_similarity < threshold:
             return None
 
-        best = candidates[best_idx].entry
-        return VectorHit(
-            doc_id=best.doc_id,
-            query=best.query,
-            service_scope=best.service_scope,
-            report_json=best.report_json,
-            similarity=best_similarity,
-        )
+        return VectorHit(entry=candidates[best_idx].entry, similarity=best_similarity)
 
     async def put(self, entry: VectorEntry, ttl: float) -> None:
-        """Store `entry` for `ttl` seconds, evicting the oldest entry when at capacity.
-
-        Raises ValueError, storing nothing, if the vector's size isn't `dimension`.
-        """
+        """Store `entry` for `ttl` seconds, evicting the oldest entry when at capacity."""
+        # A vector whose size isn't `dimension` raises ValueError and stores nothing.
         if not self._fits(entry.vector):
             raise ValueError(
                 f"vector has {np.size(entry.vector)} dimensions, expected {self.dimension}"

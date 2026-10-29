@@ -8,11 +8,13 @@ from collections.abc import AsyncIterator
 
 import numpy as np
 import pytest
+from fakes import FakeClock
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.cache.vector_store import (
+    ServiceScope,
     StoreQueryError,
     StoreUnavailable,
     VectorEntry,
@@ -21,16 +23,6 @@ from resilient_triage.cache.vector_store import (
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 
 QUERY = "GitHub Actions runner jobs are not picking up"
-
-
-class FakeClock:
-    """A monotonic clock the test moves by hand."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 class ScriptedStore:
@@ -73,7 +65,9 @@ class ScriptedStore:
     async def aclose(self) -> None:
         self.acloses += 1
 
-    async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
+    async def search(
+        self, vector: np.ndarray, scope: ServiceScope, threshold: float
+    ) -> VectorHit | None:
         self.searches += 1
         self._check("search")
         return await self.data.search(vector, scope, threshold)
@@ -367,3 +361,91 @@ async def test_clear_reconnects_inside_cooldown_and_clears_redis(clock):
     assert remote.connects == connects + 1
     assert cache.driver == "redisearch"
     assert remote.count == 0
+
+
+async def test_clear_before_initialize_leaks_no_client_and_connects_once(clock):
+    """A clear() that connects counts as initialization: no second connect, no unclosed client."""
+    created: list[ScriptedStore] = []
+    shared = InMemoryVectorStore()
+
+    def factory() -> ScriptedStore:
+        store = ScriptedStore(searchable=False)
+        store.data = shared  # one Redis, many clients
+        created.append(store)
+        return store
+
+    cache = SemanticCacheManager(
+        embedding_provider=DeterministicEmbeddingProvider(),
+        remote_store_factory=factory,
+        clock=clock,
+    )
+
+    await cache.clear()  # connects while uninitialized
+    await cache.initialize()
+    await cache.lookup(QUERY)
+
+    assert len(created) == 1
+    assert cache.driver == "redis_hash_fallback"
+    await cache.close()
+    assert all(store.acloses == 1 for store in created)
+
+
+async def test_clear_that_loses_redis_midway_stays_pending_until_reconnect(clock):
+    """If Redis drops during the clear itself, the clear runs on reconnect before Redis serves."""
+    remote = ScriptedStore()
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    await cache.store(QUERY, _report())
+    remote.fail["clear"] = StoreUnavailable("connection reset")
+
+    await cache.clear()
+    del remote.fail["clear"]
+    clock.now += cache.reconnect_cooldown_seconds + 1
+    match = await cache.lookup(QUERY)  # reconnects
+
+    assert match is None
+    assert cache.driver == "redisearch"
+    assert remote.count == 0
+
+
+async def test_clear_query_error_is_retried_before_redis_serves(clock):
+    """A clear rejected by Redis stays pending and is retried before Redis serves a read."""
+    remote = ScriptedStore()
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    await cache.store(QUERY, _report())
+    remote.fail["clear"] = StoreQueryError("BUSY")
+
+    await cache.clear()
+    del remote.fail["clear"]
+    match = await cache.lookup(QUERY)
+
+    assert match is None
+    assert cache.driver == "redisearch"
+    assert remote.acloses == 0
+    assert remote.count == 0
+
+
+async def test_hydration_skips_wrong_dimension_vector_and_keeps_the_rest(clock):
+    """A Redis hash whose vector is the wrong size is skipped; every other entry still hydrates."""
+    remote = ScriptedStore(searchable=False)
+    seeder = _cache(remote, clock)
+    await seeder.initialize()
+    await seeder.store(QUERY, _report("Persisted in Redis"))
+    await seeder.close()
+    wrong_size = VectorEntry(
+        doc_id="wrong-dim",
+        query="Some other query",
+        service_scope="",
+        report_json=_report("Wrong dimension").model_dump_json(),
+        vector=np.ones(7, dtype=np.float32),
+    )
+    await remote.data.put(wrong_size, ttl=60)
+
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    match = await cache.lookup(QUERY)
+
+    assert cache.driver == "redis_hash_fallback"
+    assert cache.count == 1
+    assert match is not None and match.report.summary == "Persisted in Redis"

@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 import redis.exceptions
 
 from resilient_triage.cache.vector_store import (
+    ServiceScope,
     StoreQueryError,
     StoreUnavailable,
     VectorEntry,
@@ -58,6 +59,11 @@ def _store_errors(operation: str) -> Iterator[None]:
         raise StoreUnavailable(f"Redis {operation} failed: {err}") from err
     except Exception as err:
         raise StoreQueryError(f"Redis {operation} failed: {err}") from err
+
+
+async def _scan_keys(client: aioredis.Redis) -> list[Any]:
+    """Every `triage:doc:*` key, enumerated with non-blocking SCAN."""
+    return [k async for k in client.scan_iter(match=f"{DOC_PREFIX}*", count=100)]
 
 
 def _to_str(val: Any) -> str:
@@ -128,12 +134,12 @@ class RedisVectorStore:
         except Exception as err:
             logger.debug("Error closing Redis connection: %s", err)
 
-    async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
-        """Return the nearest entry whose scope is exactly `scope`, at or above `threshold`.
-
-        Fetches the top SEARCH_KNN neighbours and takes the best exact-scope one, so an
-        unscoped search never returns a scoped entry (nor a scoped search an unscoped one).
-        """
+    async def search(
+        self, vector: np.ndarray, scope: ServiceScope, threshold: float
+    ) -> VectorHit | None:
+        """Return the nearest entry whose scope is exactly `scope`, at or above `threshold`."""
+        # Fetch the top SEARCH_KNN neighbours and take the best exact-scope one, so an unscoped
+        # search never returns a scoped entry (nor a scoped search an unscoped one).
         if not self._supports_search:
             raise StoreQueryError("Redis search is unsupported without the search module")
         from redis.commands.search.query import Query
@@ -149,6 +155,7 @@ class RedisVectorStore:
             Query(filter_query)
             .sort_by("score")
             .return_fields("query", "service_scope", "report", "score")
+            .return_field("vector", decode_field=False)
             .paging(0, SEARCH_KNN)
             .dialect(2)
         )
@@ -170,13 +177,14 @@ class RedisVectorStore:
             similarity = 1.0 - float(getattr(doc, "score", 1.0))
             if similarity < threshold:
                 return None
-            return VectorHit(
+            entry = VectorEntry(
                 doc_id=_to_str(doc.id).removeprefix(DOC_PREFIX),
                 query=_to_str(getattr(doc, "query", "")),
                 service_scope=scope,
                 report_json=_to_str(doc.report),
-                similarity=similarity,
+                vector=np.frombuffer(getattr(doc, "vector", b""), dtype=np.float32),
             )
+            return VectorHit(entry=entry, similarity=similarity)
 
     async def put(self, entry: VectorEntry, ttl: float) -> None:
         """Write the entry's hash and expire it after `ttl` (rounded up to whole seconds)."""
@@ -203,20 +211,18 @@ class RedisVectorStore:
         """Delete every `triage:doc:*` key with SCAN + batched DEL, so Redis never blocks."""
         with _store_errors("clear"):
             client = self._require_client()
-            keys = [k async for k in client.scan_iter(match=f"{DOC_PREFIX}*", count=100)]
+            keys = await _scan_keys(client)
             for i in range(0, len(keys), _DELETE_BATCH):
                 await client.delete(*keys[i : i + _DELETE_BATCH])
         self._known.clear()
 
     async def entries(self) -> AsyncIterator[tuple[VectorEntry, float]]:
-        """Yield every stored entry with its remaining TTL in seconds, for standby hydration.
-
-        A hash missing its vector or report is skipped. The vector is decoded but not
-        validated here; the standby's `put` is where an inbound vector is checked.
-        """
+        """Yield every stored entry with its remaining TTL in seconds, for standby hydration."""
+        # A hash missing its vector or report is skipped. The vector is decoded but not
+        # validated here; the standby's `put` is where an inbound vector is checked.
         with _store_errors("scan"):
             client = self._require_client()
-            keys = [k async for k in client.scan_iter(match=f"{DOC_PREFIX}*", count=100)]
+            keys = await _scan_keys(client)
         for key in keys:
             with _store_errors("hydrate"):
                 data = await client.hgetall(key)
@@ -241,7 +247,7 @@ class RedisVectorStore:
         return VectorEntry(
             doc_id=key.removeprefix(DOC_PREFIX),
             query=_to_str(_field(data, "query")),
-            service_scope=_to_str(_field(data, "service_scope")),
+            service_scope=ServiceScope(_to_str(_field(data, "service_scope"))),
             report_json=_to_str(report_raw),
             vector=np.frombuffer(vec_bytes, dtype=np.float32),
         )
@@ -255,20 +261,18 @@ class RedisVectorStore:
     async def _detect_search(self, client: aioredis.Redis) -> bool:
         """Whether the server has the search module (MODULE LIST, else a native FT._LIST)."""
         try:
-            modules = await client.module_list()
-            names = [_to_str(_field(m, "name")).lower() for m in modules]
+            with _store_errors("module check"):
+                modules = await client.module_list()
+                names = [_to_str(_field(m, "name")).lower() for m in modules]
             if "search" in names or "ft" in names:
                 return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis module check failed: {err}") from err
-        except Exception as err:
+        except StoreQueryError as err:
             logger.debug("RediSearch module check: %s", err)
         try:
-            await client.execute_command("FT._LIST")
+            with _store_errors("FT._LIST check"):
+                await client.execute_command("FT._LIST")
             return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis FT._LIST check failed: {err}") from err
-        except Exception as err:
+        except StoreQueryError as err:
             logger.debug("Native FT._LIST check: %s", err)
             return False
 
@@ -278,13 +282,12 @@ class RedisVectorStore:
         from redis.commands.search.index_definition import IndexDefinition, IndexType
 
         try:
-            await client.ft(INDEX_NAME).info()
+            with _store_errors("index check"):
+                await client.ft(INDEX_NAME).info()
             logger.debug("RediSearch index '%s' already exists.", INDEX_NAME)
             return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis index check failed: {err}") from err
-        except Exception:
-            pass
+        except StoreQueryError:
+            pass  # no index yet: create it below
         schema = [
             TextField("query"),
             TagField("service_scope"),
@@ -296,11 +299,10 @@ class RedisVectorStore:
         ]
         definition = IndexDefinition(prefix=[DOC_PREFIX], index_type=IndexType.HASH)
         try:
-            await client.ft(INDEX_NAME).create_index(schema, definition=definition)
+            with _store_errors("index creation"):
+                await client.ft(INDEX_NAME).create_index(schema, definition=definition)
             logger.info("Created RediSearch vector index '%s'.", INDEX_NAME)
             return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis index creation failed: {err}") from err
-        except Exception as err:
+        except StoreQueryError as err:
             logger.warning("Failed to create RediSearch index: %s. Using hash mode.", err)
             return False
