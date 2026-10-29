@@ -108,12 +108,18 @@ class TriageGateway:
             report = await self._analyze(query, scope)
         finally:
             self._run_slots.release()
+        if report is None:
+            return Analyzed(report=_graph_exception_fallback(query))
         await self._cache.store(query=query, report=report, service_filter=scope)
         return Analyzed(report=report)
 
-    async def _analyze(self, query: str, scope: str | None) -> IncidentTriageReport:
-        """Run the graph and return its report, or a synthesis fallback if it produced none."""
-        state = await self._run_graph({"query": query, "service_filter": scope})
+    async def _analyze(self, query: str, scope: str | None) -> IncidentTriageReport | None:
+        """Run the graph and return its report or a synthesis fallback; None if the graph raised."""
+        try:
+            state = await self._run_graph({"query": query, "service_filter": scope})
+        except Exception:
+            logger.exception("Triage graph raised; answering with an unstored synthesis fallback.")
+            return None
         final_report: IncidentTriageReport | None = state.get("final_report")
         return final_report or _synthesis_fallback(query, state)
 
@@ -128,3 +134,15 @@ def _synthesis_fallback(query: str, state: dict[str, Any]) -> IncidentTriageRepo
     )
     evidence = DegradationEvidence.from_state(cast(TriageState, state))
     return reconcile(report, replace(evidence, synthesis_fell_back=True))
+
+
+def _graph_exception_fallback(query: str) -> IncidentTriageReport:
+    """Build and reconcile a synthesis fallback for a run whose graph raised."""
+    report = build_fallback_report(
+        query,
+        reason="Triage state machine failed unexpectedly. Safe heuristic fallback engaged.",
+    )
+    evidence = DegradationEvidence(
+        tripped_breakers=frozenset(), unavailable_sources=frozenset(), synthesis_fell_back=True
+    )
+    return reconcile(report, evidence)
