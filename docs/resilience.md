@@ -190,7 +190,7 @@ If the fallback fails too, `complete()` returns the fallback's failure. `generat
 | `RateLimited.scope` | Cooldown |
 | :--- | :--- |
 | `minute` | `retry_after_s`, else the tokens bucket's reset (`x-ratelimit-reset-tokens`). |
-| `day` | The requests bucket's reset (`x-ratelimit-reset-requests`). |
+| `day` | The requests bucket's reset (`x-ratelimit-reset-requests`), else `retry_after_s` if that reset is missing or unparseable. |
 | `unknown` | `LLM_DEFAULT_COOLDOWN_S` (default 30s). |
 
 If the chosen value is missing, the cooldown falls back to `LLM_DEFAULT_COOLDOWN_S`. **Every cooldown, whatever its scope, is capped at `LLM_MAX_COOLDOWN_S`** (default 3600s), so a bogus header cannot lock the primary out for a day. `POST /resilience/reset` ends all cooldowns.

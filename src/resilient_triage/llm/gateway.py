@@ -201,6 +201,8 @@ class LLMGateway:
                 seconds = self.adapter.quota_headers(model).reset_tokens_s
         elif limited.scope == "day":
             seconds = self.adapter.quota_headers(model).reset_requests_s
+            if seconds is None:
+                seconds = limited.retry_after_s
         if seconds is None:
             seconds = settings.llm_default_cooldown_s
         return min(seconds, settings.llm_max_cooldown_s)
