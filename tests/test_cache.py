@@ -467,3 +467,35 @@ async def test_embedding_failure_degrades_lookup_to_miss_and_skips_store(caplog)
     caplog.clear()
     assert await cache.lookup("GitHub Actions runner jobs are not picking up") is None
     assert "bad alloc" in caplog.text
+
+
+def _in_memory_cache(**kwargs) -> SemanticCacheManager:
+    """A manager whose Redis is unreachable, so every read is served by the in-memory standby."""
+    return SemanticCacheManager(
+        redis_url="redis://127.0.0.1:59999/0",
+        embedding_provider=DeterministicEmbeddingProvider(),
+        **kwargs,
+    )
+
+
+async def test_corrupt_cached_report_is_a_miss_and_is_evicted(caplog):
+    """A cached report that no longer validates is a logged MISS and is dropped from the cache."""
+    cache = _in_memory_cache()
+    await cache.initialize()
+    query = "GitHub Actions runner jobs are not picking up"
+    # model_construct skips validation, so this dumps JSON that IncidentTriageReport rejects
+    # (summary is shorter than min_length=5), like a hash written under an older schema.
+    corrupt = IncidentTriageReport.model_construct(**_make_sample_report().model_dump())
+    corrupt.summary = "x"
+    await cache.store(query, corrupt)
+    assert cache.count == 1
+    caplog.set_level("WARNING", logger="resilient_triage.cache.semantic_cache")
+
+    assert await cache.lookup(query) is None
+    assert cache.count == 0
+    assert "summary" in caplog.text
+
+    await cache.store(query, _make_sample_report("Actions runner queue stalled"))
+    match = await cache.lookup(query)
+    assert match is not None
+    assert match.report.summary == "Actions runner queue stalled"
