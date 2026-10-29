@@ -78,7 +78,7 @@
    - Computes dense 384-dimensional query embeddings in ~3.5ms via FastEmbed ONNX runtime (`BAAI/bge-small-en-v1.5`).
    - RediSearch HNSW vector indexing performs KNN similarity searches directly inside Redis in **`7.71ms`**.
    - If Redis crashes or disconnects during live traffic, `SemanticCacheManager` intercepts socket errors and seamlessly fails over to an in-memory NumPy vector matrix with **0 dropped requests and 0 HTTP 500 errors**.
-   - Background non-blocking probes automatically reconnect when Redis recovers.
+   - There is no background probe: once Redis recovers, the next cache lookup or store reconnects, as does `check_connection()` from `/health`, `/resilience/status` and `/metrics`, at most once per 5-second cooldown.
 2. **Pybreaker Circuit Breakers**:
    - Guards external telemetry probes against systemic failures (`fail_max=3`, `reset_timeout=30s`).
    - If an external status page crashes or hangs, the breaker trips `OPEN`, causing the LangGraph state machine to route into `DegradedFallbackNode` instead of stalling requests.

@@ -185,7 +185,7 @@ async def test_aclose_closes_owned_http_clients_and_cache_and_is_idempotent(
 
     assert len(opened) == 2
     assert all(client.is_closed for client in opened)
-    assert runtime.cache.is_redis_connected is False
+    assert runtime.cache.driver == "in_memory"
 
 
 async def test_building_two_runtimes_opens_no_connections(make_runtime, monkeypatch):

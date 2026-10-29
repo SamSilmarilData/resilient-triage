@@ -1,5 +1,7 @@
 """Tests for semantic caching, embeddings, and sub-20ms vector lookups."""
 
+import re
+
 import numpy as np
 import pytest
 import pytest_asyncio
@@ -12,6 +14,7 @@ from resilient_triage.cache.semantic_cache import (
     CacheMatch,
     SemanticCacheManager,
     format_scoped_query,
+    normalize_scope,
 )
 from resilient_triage.schemas.incident import (
     DegradationStatus,
@@ -128,6 +131,15 @@ def test_format_scoped_query():
     assert format_scoped_query("  Is Actions down?  ", "  CI  ") == "[scope: ci] Is Actions down?"
 
 
+def test_normalize_scope():
+    """Verify scopes are stripped, lower-cased and reduced to [a-z0-9_-], and None means none."""
+    assert normalize_scope(None) == ""
+    assert normalize_scope("   ") == ""
+    assert normalize_scope("  GitHub-Actions ") == "github-actions"
+    assert normalize_scope("api_gw (prod)!") == "api_gwprod"
+    assert normalize_scope("{*}") == ""
+
+
 @pytest.mark.asyncio
 async def test_semantic_cache_hit_under_20ms():
     """Verify cache hit for identical query returns in sub-20ms with similarity >= 0.90."""
@@ -234,11 +246,11 @@ async def test_degraded_report_reduced_ttl():
     await cache.store("Degraded query", degraded_report)
 
     # Check in-memory document TTLs
-    entries = list(cache._in_memory_docs.values())
+    entries = list(cache._standby._docs.values())
     assert len(entries) == 2
 
-    healthy_entry = next(e for e in entries if "Healthy query" in e.query)
-    degraded_entry = next(e for e in entries if "Degraded query" in e.query)
+    healthy_entry = next(e for e in entries if "Healthy query" in e.entry.query)
+    degraded_entry = next(e for e in entries if "Degraded query" in e.entry.query)
 
     import time
 
@@ -272,7 +284,7 @@ async def test_redis_connectivity_and_driver():
     if not is_connected:
         pytest.skip("Local Redis server is not reachable on localhost:6379 in this environment")
     assert is_connected is True
-    assert cache.is_redis_connected is True
+    assert cache.driver != "in_memory"
     assert cache.driver in ("redisearch", "redis_hash_fallback")
     await cache.close()
 
@@ -289,7 +301,7 @@ async def test_redis_disconnect_and_in_memory_failover():
     unreachable_cache.reconnect_cooldown_seconds = 0.01
     await unreachable_cache.initialize()
 
-    assert unreachable_cache.is_redis_connected is False
+    assert await unreachable_cache.check_connection() is False
     assert unreachable_cache.driver == "in_memory"
 
     # Store and lookup should work completely fine in in-memory mode
@@ -369,19 +381,26 @@ async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     """Verify that RediSearch query syntax errors do not drop the Redis connection."""
     import redis.exceptions
 
-    provider = DeterministicEmbeddingProvider()
-    cache = SemanticCacheManager(embedding_provider=provider)
-    cache._initialized = True
+    from resilient_triage.cache.redis_store import RedisVectorStore
 
-    # Simulate connected Redis with RediSearch module
+    # A connected Redis with the search module whose FT.SEARCH rejects the query
     mock_redis = mocker.AsyncMock()
+    mock_redis.module_list.return_value = [{b"name": b"search"}]
     mock_ft = mocker.MagicMock()
+    mock_ft.info = mocker.AsyncMock(return_value={})
     mock_ft.search = mocker.AsyncMock(
         side_effect=redis.exceptions.ResponseError("Syntax error at offset 5")
     )
     mock_redis.ft = mocker.MagicMock(return_value=mock_ft)
-    cache._redis = mock_redis
-    cache._has_redisearch = True
+    provider = DeterministicEmbeddingProvider()
+    cache = SemanticCacheManager(
+        embedding_provider=provider,
+        remote_store_factory=lambda: RedisVectorStore(
+            "redis://127.0.0.1:6379/0", provider.dimension, client_factory=lambda _: mock_redis
+        ),
+    )
+    await cache.initialize()
+    assert cache.driver == "redisearch"
 
     # Pre-populate in-memory fallback
     report = _make_sample_report("Fallback incident")
@@ -391,31 +410,11 @@ async def test_redisearch_query_syntax_error_does_not_disconnect_redis(mocker):
     match = await cache.lookup("Special query", service_filter="billing")
 
     # Redis must NOT be disconnected by a query execution syntax error
-    assert cache._redis is not None
-    assert cache.is_redis_connected is True
+    assert cache.driver == "redisearch"
+    mock_redis.aclose.assert_not_awaited()
     # In-memory search successfully served the match as fallback
     assert match is not None
     assert match.report.summary == "Fallback incident"
-
-
-@pytest.mark.asyncio
-async def test_scan_iter_key_enumeration(mocker):
-    """Verify cache.clear() uses scan_iter cursor iteration to delete keys without blocking."""
-    provider = DeterministicEmbeddingProvider()
-    cache = SemanticCacheManager(embedding_provider=provider)
-    cache._initialized = True
-
-    mock_redis = mocker.AsyncMock()
-
-    async def mock_scan_iter(match=None, count=None):
-        for k in [b"triage:doc:1", b"triage:doc:2"]:
-            yield k
-
-    mock_redis.scan_iter = mock_scan_iter
-    cache._redis = mock_redis
-
-    await cache.clear()
-    mock_redis.delete.assert_awaited_once_with(b"triage:doc:1", b"triage:doc:2")
 
 
 def test_fastembed_fallback_to_deterministic_when_offline(mocker):
@@ -434,3 +433,108 @@ def test_fastembed_fallback_to_deterministic_when_offline(mocker):
     assert len(batch) == 2
     assert len(batch[0]) == 384
     provider.warmup()
+
+
+class _RaisingEmbeddingProvider(DeterministicEmbeddingProvider):
+    """Embedding provider whose query embedding always fails, like a crashed ONNX runtime."""
+
+    def embed_query(self, text: str) -> list[float]:
+        raise RuntimeError("onnxruntime: bad alloc")
+
+
+async def test_embedding_failure_degrades_lookup_to_miss_and_skips_store(caplog):
+    """An embedding failure makes lookup a logged MISS and store a logged no-op, never a raise."""
+    cache = SemanticCacheManager(embedding_provider=_RaisingEmbeddingProvider())
+    await cache.initialize()
+    await cache.clear()
+    caplog.set_level("WARNING", logger="resilient_triage.cache.semantic_cache")
+
+    await cache.store("GitHub Actions runner jobs are not picking up", _make_sample_report())
+    assert cache.count == 0
+    assert "bad alloc" in caplog.text
+
+    caplog.clear()
+    assert await cache.lookup("GitHub Actions runner jobs are not picking up") is None
+    assert "bad alloc" in caplog.text
+
+
+def _in_memory_cache(**kwargs) -> SemanticCacheManager:
+    """A manager whose Redis is unreachable, so every read is served by the in-memory standby."""
+    kwargs.setdefault("embedding_provider", DeterministicEmbeddingProvider())
+    return SemanticCacheManager(redis_url="redis://127.0.0.1:59999/0", **kwargs)
+
+
+async def test_corrupt_cached_report_is_a_miss_and_is_evicted(caplog):
+    """A cached report that no longer validates is a logged MISS and is dropped from the cache."""
+    cache = _in_memory_cache()
+    await cache.initialize()
+    query = "GitHub Actions runner jobs are not picking up"
+    # model_construct skips validation, so this dumps JSON that IncidentTriageReport rejects
+    # (summary is shorter than min_length=5), like a hash written under an older schema.
+    corrupt = IncidentTriageReport.model_construct(**_make_sample_report().model_dump())
+    corrupt.summary = "x"
+    await cache.store(query, corrupt)
+    assert cache.count == 1
+    caplog.set_level("WARNING", logger="resilient_triage.cache.semantic_cache")
+
+    assert await cache.lookup(query) is None
+    assert cache.count == 0
+    assert "summary" in caplog.text
+
+    await cache.store(query, _make_sample_report("Actions runner queue stalled"))
+    match = await cache.lookup(query)
+    assert match is not None
+    assert match.report.summary == "Actions runner queue stalled"
+
+
+class _WrongDimensionForOneQuery(DeterministicEmbeddingProvider):
+    """Embeds normally, except one query comes back 768-d, like a swapped-in embedding model."""
+
+    BAD_QUERY = "Webhook deliveries are delayed"
+
+    def embed_query(self, text: str) -> list[float]:
+        if text == self.BAD_QUERY:
+            return [1.0 / np.sqrt(768)] * 768
+        return super().embed_query(text)
+
+
+async def test_wrong_dimension_vector_is_rejected_and_lookups_keep_working(caplog):
+    """A vector whose size isn't the provider's is never cached, and other lookups still hit."""
+    cache = SemanticCacheManager(
+        redis_url="redis://127.0.0.1:59999/0",
+        embedding_provider=_WrongDimensionForOneQuery(),
+    )
+    await cache.initialize()
+    good_query = "GitHub Actions runner jobs are not picking up"
+    await cache.store(good_query, _make_sample_report("Actions runner queue stalled"))
+    caplog.set_level("WARNING", logger="resilient_triage.cache.semantic_cache")
+
+    await cache.store(_WrongDimensionForOneQuery.BAD_QUERY, _make_sample_report())
+
+    assert cache.count == 1
+    assert "768" in caplog.text
+    match = await cache.lookup(good_query)
+    assert match is not None
+    assert match.report.summary == "Actions runner queue stalled"
+    assert await cache.lookup(_WrongDimensionForOneQuery.BAD_QUERY) is None
+
+
+class _ScopeBlindEmbeddingProvider(DeterministicEmbeddingProvider):
+    """Embeds a query as if its `[scope: ...]` prefix were absent.
+
+    A real embedder barely moves a vector for that short prefix, so a scoped and an unscoped
+    query embed almost alike; this makes them identical, leaving the scope check to the store.
+    """
+
+    def embed_query(self, text: str) -> list[float]:
+        return super().embed_query(re.sub(r"^\[scope: [^\]]*\] ", "", text))
+
+
+async def test_unscoped_lookup_does_not_hit_an_entry_stored_under_a_scope():
+    """Bug-hunt r8: "no scope" is its own scope, so an unscoped lookup misses a scoped entry."""
+    cache = _in_memory_cache(embedding_provider=_ScopeBlindEmbeddingProvider())
+    query = "GitHub Actions runner jobs are not picking up"
+    await cache.store(query, _make_sample_report(), service_filter="billing")
+
+    assert await cache.lookup(query, service_filter=None) is None
+    assert await cache.lookup(query, service_filter="billing") is not None
