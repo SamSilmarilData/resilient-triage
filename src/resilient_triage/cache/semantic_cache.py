@@ -17,7 +17,7 @@ from resilient_triage.cache.embeddings import (
     get_embedding_provider,
 )
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
-from resilient_triage.cache.redis_store import DOC_PREFIX, INDEX_NAME, RedisVectorStore
+from resilient_triage.cache.redis_store import RedisVectorStore
 from resilient_triage.cache.vector_store import (
     RemoteVectorStore,
     ServiceScope,
@@ -72,9 +72,6 @@ class SemanticCacheManager:
     when Redis is up and searchable, otherwise the standby. Every Redis drop goes through
     `_mark_down`. `lookup`, `store` and `clear` never raise: a failure is a MISS or a no-op.
     """
-
-    INDEX_NAME = INDEX_NAME
-    DOC_PREFIX = DOC_PREFIX
 
     def __init__(
         self,
