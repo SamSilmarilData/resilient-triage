@@ -11,13 +11,11 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
-from fakes import fake_statuspage_http
+from fakes import AppServer
 from langchain_core.messages import BaseMessage
 
-from resilient_triage.api.app import create_app
 from resilient_triage.config import settings
 from resilient_triage.llm import Completion, ProviderFailure, RateLimited, ScriptedAdapter
-from resilient_triage.runtime import AppRuntime, build_runtime
 
 DEADLINE_S = 0.3
 INTERNAL_QUERY = "Internal payment processing failing with 503 service unavailable"
@@ -25,12 +23,13 @@ INTERNAL_QUERY = "Internal payment processing failing with 503 service unavailab
 
 @pytest.fixture(autouse=True)
 def short_run_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shorten the run deadline so every test here can outrun it."""
     monkeypatch.setattr(settings, "triage_run_deadline_s", DEADLINE_S)
 
 
 async def test_chaos_latency_past_the_deadline_falls_back_and_leaves_the_probe_breaker_closed(
     client: httpx.AsyncClient,
-):
+) -> None:
     await client.post("/chaos/inject", json={"active": True, "latency_ms": 5000})
 
     started = time.monotonic()
@@ -63,27 +62,19 @@ class SlowFallbackAdapter(ScriptedAdapter):
 
 
 @pytest_asyncio.fixture
-async def slow_fallback() -> AsyncIterator[tuple[httpx.AsyncClient, SlowFallbackAdapter]]:
+async def slow_fallback(
+    serve_app: AppServer,
+) -> AsyncIterator[tuple[httpx.AsyncClient, SlowFallbackAdapter]]:
     """A client over a runtime whose primary returns a 429 and whose fallback hangs."""
     limited = RateLimited(retry_after_s=60.0, scope="minute", detail="Rate limit reached")
     adapter = SlowFallbackAdapter([limited], fallback=settings.groq_fallback_model)
-    rt: AppRuntime = build_runtime(
-        settings, llm_adapter=adapter, statuspage_http=fake_statuspage_http()
-    )
-    await rt.start()
-    await rt.cache.clear()
-    app = create_app(lambda: rt)
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as ac:
-            yield ac, adapter
-    await rt.aclose()
+    async with serve_app(adapter) as (_, ac):
+        yield ac, adapter
 
 
 async def test_a_primary_429_before_the_deadline_still_cools_the_primary_down(
     slow_fallback: tuple[httpx.AsyncClient, SlowFallbackAdapter],
-):
+) -> None:
     client, adapter = slow_fallback
     primary, fallback = settings.groq_model, settings.groq_fallback_model
 
