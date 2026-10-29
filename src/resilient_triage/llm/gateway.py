@@ -98,8 +98,12 @@ class ModelAdapter(Protocol):
         ...
 
 
-# One adapter call made during a complete(): the model called and what it returned.
-Attempt = tuple[str, Completion | ProviderFailure]
+@dataclass(frozen=True)
+class Attempt:
+    """One adapter call made during a complete(): the model called and what it returned."""
+
+    model: str
+    result: Completion | ProviderFailure
 
 
 class LLMGateway:
@@ -175,7 +179,7 @@ class LLMGateway:
         self, model: str, messages: list[BaseMessage], attempts: list[Attempt]
     ) -> Completion | ProviderFailure:
         result = await self.adapter.call(model, messages)
-        attempts.append((model, result))
+        attempts.append(Attempt(model=model, result=result))
         if not isinstance(result, Completion):
             logger.warning("LLM call to %s failed: %s", model, result)
         return result
@@ -183,7 +187,8 @@ class LLMGateway:
     def _record(self, attempts: list[Attempt], result: Completion | ProviderFailure) -> None:
         """Apply one completed complete() call to the counters and cooldowns."""
         now = self._clock()
-        for model, outcome in attempts:
+        for attempt in attempts:
+            model, outcome = attempt.model, attempt.result
             self._total_calls += 1
             self._last_updated = datetime.now(UTC)
             if isinstance(outcome, Completion):
@@ -193,7 +198,7 @@ class LLMGateway:
             if isinstance(outcome, RateLimited):
                 self._rate_limit_hits += 1
                 self._cooldown_until[model] = now + self._cooldown_s(model, outcome)
-        if isinstance(result, Completion) and attempts and attempts[-1][0] == self.fallback:
+        if isinstance(result, Completion) and attempts and attempts[-1].model == self.fallback:
             self._failover_events += 1
 
     def _cooldown_s(self, model: str, limited: RateLimited) -> float:
