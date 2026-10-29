@@ -793,6 +793,54 @@ async def test_a_primary_failure_is_returned_while_the_fallback_cools_down(
 
 
 @pytest.mark.parametrize(
+    ("primary_s", "fallback_s", "retry_after_s"),
+    [(5.0, 60.0, 3.0), (60.0, 5.0, 3.0)],
+    ids=["primary-ends-first", "fallback-ends-first"],
+)
+async def test_no_model_is_called_while_both_cool_down(
+    primary_s: float, fallback_s: float, retry_after_s: float
+) -> None:
+    clock = FakeClock()
+    adapter = ScriptedAdapter(
+        [
+            RateLimited(retry_after_s=primary_s, scope="minute", detail="primary 429"),
+            RateLimited(retry_after_s=fallback_s, scope="minute", detail="fallback 429"),
+        ]
+    )
+    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    await gateway.complete(MESSAGES)
+    before = gateway.snapshot()
+    clock.now += 2
+
+    result = await gateway.complete(MESSAGES)
+
+    assert isinstance(result, RateLimited)
+    assert (result.scope, result.retry_after_s) == ("unknown", retry_after_s)
+    assert "cooling down" in result.detail
+    assert adapter.calls == [PRIMARY, FALLBACK]
+    assert gateway.snapshot() == before
+
+
+async def test_each_model_is_called_again_once_its_cooldown_ends() -> None:
+    clock = FakeClock()
+    adapter = ScriptedAdapter(
+        [PRIMARY_LIMITED_5S, FALLBACK_LIMITED_60S, "primary back", LIMITED, "fallback back"]
+    )
+    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + 5
+    primary_back = await gateway.complete(MESSAGES)
+    clock.now = start + 60
+    fallback_back = await gateway.complete(MESSAGES)
+
+    assert primary_back == Completion(text="primary back", model=PRIMARY)
+    assert fallback_back == Completion(text="fallback back", model=FALLBACK)
+    assert adapter.calls == [PRIMARY, FALLBACK, PRIMARY, PRIMARY, FALLBACK]
+
+
+@pytest.mark.parametrize(
     ("limited", "quota", "cooldown_s"),
     [
         (RateLimited(7.0, "minute", "429"), QuotaHeaders(reset_tokens_s=20.0), 7.0),
