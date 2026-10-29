@@ -1,7 +1,5 @@
 """LLM gateway package: every model call goes through LLMGateway.complete()."""
 
-import os
-
 from resilient_triage.config import Settings
 from resilient_triage.llm.gateway import (
     Completion,
@@ -51,9 +49,10 @@ def _label(adapter: ModelAdapter, primary: str) -> str:
 def build_llm_gateway(app_settings: Settings, adapter: ModelAdapter | None = None) -> LLMGateway:
     """Build the gateway; with no adapter, a Groq key selects Groq, else the simulation."""
     if adapter is None:
-        groq_key = app_settings.groq_api_key or os.environ.get("GROQ_API_KEY")
-        if groq_key:
-            adapter = GroqAdapter(groq_key, timeout_s=app_settings.llm_request_timeout_s)
+        if app_settings.groq_api_key:
+            adapter = GroqAdapter(
+                app_settings.groq_api_key, timeout_s=app_settings.llm_request_timeout_s
+            )
         else:
             adapter = ScriptedAdapter()
     primary = app_settings.groq_model
