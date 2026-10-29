@@ -8,13 +8,12 @@ from resilient_triage.llm.gateway import (
     ModelAdapter,
     ProviderFailure,
     QuotaHeaders,
-    QuotaReporter,
     RateLimited,
     Rejected,
     Unavailable,
 )
 from resilient_triage.llm.groq import GroqAdapter
-from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, ScriptedAdapter
+from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, SIMULATION_LABEL, ScriptedAdapter
 
 __all__ = [
     "DEFAULT_REPORT_JSON",
@@ -26,24 +25,12 @@ __all__ = [
     "ModelAdapter",
     "ProviderFailure",
     "QuotaHeaders",
-    "QuotaReporter",
     "RateLimited",
     "Rejected",
     "ScriptedAdapter",
     "Unavailable",
     "build_llm_gateway",
 ]
-
-SIMULATION_LABEL = "Zero-Config SRE Simulation"
-
-
-def _label(adapter: ModelAdapter, primary: str) -> str:
-    """The /health label for an adapter, so the label always names what runs."""
-    if isinstance(adapter, GroqAdapter):
-        return f"Groq LPU ({primary})"
-    if isinstance(adapter, ScriptedAdapter):
-        return SIMULATION_LABEL
-    return f"Test Override ({type(adapter).__name__})"
 
 
 def build_llm_gateway(app_settings: Settings, adapter: ModelAdapter | None = None) -> LLMGateway:
@@ -60,5 +47,5 @@ def build_llm_gateway(app_settings: Settings, adapter: ModelAdapter | None = Non
         adapter,
         primary=primary,
         fallback=app_settings.groq_fallback_model,
-        label=_label(adapter, primary),
+        label=adapter.label(primary),
     )

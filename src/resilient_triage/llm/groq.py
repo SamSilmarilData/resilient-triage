@@ -115,6 +115,10 @@ class GroqAdapter:
         self._client = http_client if http_client is not None else new_groq_http_client(timeout_s)
         self._headers: dict[str, QuotaHeaders] = {}
 
+    def label(self, primary: str) -> str:
+        """The /health label naming the Groq primary model."""
+        return f"Groq LPU ({primary})"
+
     def quota_headers(self, model: str) -> QuotaHeaders:
         """Return the rate-limit headers and status of model's latest responses."""
         return self._headers.get(model, QuotaHeaders())

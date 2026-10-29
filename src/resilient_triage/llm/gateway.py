@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol
 
 from langchain_core.messages import BaseMessage
 
@@ -58,18 +58,6 @@ class MalformedResponse:
 ProviderFailure = RateLimited | Unavailable | Rejected | MalformedResponse
 
 
-class ModelAdapter(Protocol):
-    """One call to one model; never retries or fails over (the gateway does that)."""
-
-    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        """Send messages to model once and return its completion or a failure kind."""
-        ...
-
-    async def aclose(self) -> None:
-        """Release whatever the adapter owns."""
-        ...
-
-
 @dataclass(frozen=True)
 class QuotaHeaders:
     """Rate-limit header values and HTTP status from one model's latest responses."""
@@ -86,12 +74,23 @@ class QuotaHeaders:
     reset_tokens_s: float | None = None
 
 
-@runtime_checkable
-class QuotaReporter(Protocol):
-    """An adapter that reads rate-limit headers and reports them to the gateway's snapshot."""
+class ModelAdapter(Protocol):
+    """One call to one model; never retries or fails over (the gateway does that)."""
+
+    def label(self, primary: str) -> str:
+        """Return the /health label for this adapter serving the primary model."""
+        ...
 
     def quota_headers(self, model: str) -> QuotaHeaders:
-        """Return the latest header values seen for model."""
+        """Return the latest rate-limit header values seen for model (empty if none)."""
+        ...
+
+    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
+        """Send messages to model once and return its completion or a failure kind."""
+        ...
+
+    async def aclose(self) -> None:
+        """Release whatever the adapter owns."""
         ...
 
 
@@ -199,21 +198,16 @@ class LLMGateway:
         if limited.scope == "minute":
             seconds = limited.retry_after_s
             if seconds is None:
-                seconds = self._quota(model).reset_tokens_s
+                seconds = self.adapter.quota_headers(model).reset_tokens_s
         elif limited.scope == "day":
-            seconds = self._quota(model).reset_requests_s
+            seconds = self.adapter.quota_headers(model).reset_requests_s
         if seconds is None:
             seconds = settings.llm_default_cooldown_s
         return min(seconds, settings.llm_max_cooldown_s)
 
-    def _quota(self, model: str) -> QuotaHeaders:
-        if isinstance(self.adapter, QuotaReporter):
-            return self.adapter.quota_headers(model)
-        return QuotaHeaders()
-
     def snapshot(self) -> LLMQuotaSnapshot:
         """Return the quota, counters and last call of this gateway (the /llm/quota body)."""
-        headers = self._quota(self.primary)
+        headers = self.adapter.quota_headers(self.primary)
         return LLMQuotaSnapshot(
             active_model=self._active_model,
             fallback_model=self.fallback,

@@ -7,6 +7,8 @@ from langchain_core.messages import BaseMessage
 
 from resilient_triage.llm.gateway import Completion, ProviderFailure, QuotaHeaders
 
+SIMULATION_LABEL = "Zero-Config SRE Simulation"
+
 # The answer once the script runs out: a valid report, so the simulation triages end to end.
 DEFAULT_REPORT_JSON = json.dumps(
     {
@@ -64,6 +66,10 @@ class ScriptedAdapter:
         self.script: list[str | ProviderFailure] = list(script)
         self.calls: list[str] = []
         self.quota = quota if quota is not None else QuotaHeaders()
+
+    def label(self, primary: str) -> str:
+        """The zero-config simulation's label, whatever the primary model."""
+        return SIMULATION_LABEL
 
     def quota_headers(self, model: str) -> QuotaHeaders:
         """Return the scripted quota headers, the same for every model."""
