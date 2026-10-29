@@ -47,6 +47,10 @@ class VectorStore(Protocol):
         """Store `entry` so it expires after `ttl` seconds."""
         ...
 
+    async def delete(self, doc_id: str) -> None:
+        """Remove the entry stored under `doc_id`; an unknown id is a no-op."""
+        ...
+
     async def clear(self) -> None:
         """Remove every entry."""
         ...

@@ -368,7 +368,12 @@ class SemanticCacheManager:
 
         # 3. Fall back to the in-memory standby
         hit = await self._standby.search(query_vec, target_scope, effective_threshold)
-        return self._to_match(hit, start_time) if hit else None
+        if hit is None:
+            return None
+        match = self._to_match(hit, start_time)
+        if match is None:
+            await self._standby.delete(hit.doc_id)
+        return match
 
     async def _search_redisearch(
         self,
@@ -425,9 +430,17 @@ class SemanticCacheManager:
         return None
 
     @staticmethod
-    def _to_match(hit: VectorHit, start_time: float) -> CacheMatch:
-        """Validate a store hit's report and wrap it as a CacheMatch."""
-        report = IncidentTriageReport.model_validate(json.loads(hit.report_json))
+    def _to_match(hit: VectorHit, start_time: float) -> CacheMatch | None:
+        """Validate a store hit's report and wrap it as a CacheMatch; None if it is invalid."""
+        try:
+            report = IncidentTriageReport.model_validate(json.loads(hit.report_json))
+        except ValueError as invalid:  # JSONDecodeError and ValidationError both subclass it
+            logger.warning(
+                "Cached report %s failed validation: %s. Treating as MISS and evicting.",
+                hit.doc_id,
+                invalid,
+            )
+            return None
         elapsed_ms = (time.monotonic() - start_time) * 1000.0
         return CacheMatch(
             report=report,

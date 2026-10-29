@@ -56,6 +56,10 @@ class InMemoryVectorStore:
             self._docs.pop(next(iter(self._docs)), None)
         self._docs[entry.doc_id] = _Stored(entry=entry, expires_at=self._clock() + ttl)
 
+    async def delete(self, doc_id: str) -> None:
+        """Remove the entry stored under `doc_id`; an unknown id is a no-op."""
+        self._docs.pop(doc_id, None)
+
     async def clear(self) -> None:
         """Remove every entry."""
         self._docs.clear()
