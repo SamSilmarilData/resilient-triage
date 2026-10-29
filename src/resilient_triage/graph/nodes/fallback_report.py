@@ -39,7 +39,7 @@ def _root_cause(failure: ProviderFailure | None, validation_errors: list[str]) -
 
 
 def fallback_report_node(state: TriageState) -> dict[str, Any]:
-    """Emit guaranteed valid IncidentTriageReport when LLM self-repair retries are exhausted."""
+    """Emit a guaranteed valid report after a provider failure or exhausted self-repair."""
     query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
     validation_errors = state.get("validation_errors", [])
 

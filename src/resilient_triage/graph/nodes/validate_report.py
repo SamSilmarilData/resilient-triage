@@ -14,6 +14,11 @@ from resilient_triage.schemas.state import TriageState
 logger = logging.getLogger(__name__)
 
 
+def self_repair_exhausted(repair_attempts: int) -> bool:
+    """Return True once repair_attempts has used up the self-repair budget."""
+    return repair_attempts >= settings.max_self_repair_retries
+
+
 def clean_json_string(raw: str) -> str:
     """Strip markdown codeblock wrappers and extract the outermost JSON object."""
     text = raw.strip()
@@ -75,7 +80,7 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
 
         # A refine round that runs out of self-repair keeps the valid report it started from.
         # It shares the first generation's repair budget, which bounds the longest path.
-        exhausted = repair_attempts + 1 >= settings.max_self_repair_retries
+        exhausted = self_repair_exhausted(repair_attempts + 1)
         return {
             "final_report": state.get("refined_from") if exhausted else None,
             "repair_attempts": repair_attempts + 1,

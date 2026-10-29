@@ -1,4 +1,4 @@
-"""Provider failure kinds the LLM gateway returns as values; no imports, so state can use them."""
+"""Provider failure kinds the LLM gateway returns; no project imports, so state can use them."""
 
 from dataclasses import dataclass
 from typing import Literal

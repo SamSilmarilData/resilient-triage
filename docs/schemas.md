@@ -59,7 +59,8 @@ Typed dictionary carrying execution state across graph nodes:
 - `candidate_report_raw: str | None`: Unparsed raw output from LLM.
 - `repair_attempts: int`: Number of self-repair retries attempted (max 2).
 - `validation_errors: list[str]`: Tracebacks from Pydantic `ValidationError`.
-- `provider_failure: ProviderFailure | None`: The latest generation's typed LLM provider failure (`RateLimited`, `Unavailable`, `Rejected` or `MalformedResponse`), else `None`. Set, it routes `generate_report` straight to `fallback_report`.
+- `provider_failure: ProviderFailure | None`: The latest generation's typed LLM provider failure (`RateLimited`, `Unavailable`, `Rejected` or `MalformedResponse`), else `None`. Set, it routes `generate_report` past `self_repair`: in a refine round to `finalize` with the pre-refine report (`refined_from`), else to `fallback_report`.
+- `refined_from: IncidentTriageReport | None`: The valid report a refine round started from, set by `refine_reflection`. If the round runs out of self-repair or hits a provider failure, the run finalizes this report instead of falling back.
 - `final_report: IncidentTriageReport | None`: Final validated report.
 
 ---

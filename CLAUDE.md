@@ -25,7 +25,7 @@ Statuspage, or the LLM is down — degrade instead.
   `/chaos/*`. Mutating admin routes (`/chaos/inject`, `/resilience/reset`, `/cache/clear`) use `verify_admin_key` (`X-Admin-Key`).
 - `graph/builder.py` — the topology and routers. Flow:
   `analyze_query → collect_telemetry →(route_after_telemetry)→ [compensate_blindspots → degraded_fallback →] synthesize_telemetry → generate_report →(route_after_generation)→ validate_report | finalize | fallback →(route_after_validation)→ refine | repair | fallback | finalize`.
-  A provider failure goes straight to `fallback_report`, skipping self-repair.
+  A provider failure skips self-repair: to `finalize` (pre-refine report) in a refine round, else `fallback_report`.
   `self_repair` and `refine_reflection` loop back to `generate_report`.
 - `graph/nodes/` — one node per file, `<name>_node(state, runtime: Runtime[TriageDeps])` when it needs
   collaborators, else `<name>_node(state)`; returns a partial state update `dict[str, Any]` and reads
