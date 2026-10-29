@@ -40,10 +40,18 @@ Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(
   - Ingress queries are embedded into a dense 384-dimensional vector in ~3.5ms via FastEmbed ONNX runtime (`BAAI/bge-small-en-v1.5`).
   - RediSearch performs KNN similarity search using an HNSW Float32 Cosine distance index (`triage_vector_idx`).
   - If cosine similarity $\ge 0.90$, the cached `IncidentTriageReport` is immediately returned in **`7.71ms`** with header `X-Cache: HIT`.
-  - Cache misses proceed to the LangGraph state machine, and the final validated report is stored in Redis under `triage:doc:*` with scope and TTL management (300s healthy, 60s degraded).
+  - Cache misses proceed to the LangGraph state machine, and the final validated report is stored under `triage:doc:*` with its service scope and a TTL (300s healthy, 60s degraded).
+  - **Service scope is exact**: a lookup reuses only an entry stored under exactly the same normalized scope (`normalize_scope()`), and "no scope" is a scope of its own, not a wildcard. RediSearch fetches the `SEARCH_KNN = 5` nearest neighbours and takes the best one in the exact scope; if none of the 5 is, the lookup is a MISS.
+- **Structure** (`cache/`):
+  - `vector_store.py` — the `VectorStore` seam (`search`, `put`, `delete`, `clear`, `count`), its `RemoteVectorStore` extension (`connect`, `ping`, `aclose`, `supports_search`, `entries`), the `VectorEntry` / `VectorHit` records, and the two failure kinds `StoreUnavailable` and `StoreQueryError`.
+  - `redis_store.py` — `RedisVectorStore`: the client, search-module detection, HNSW index creation, the KNN query, hash writes, `SCAN` + batched `DEL` clear, and the `entries()` scan used for hydration.
+  - `in_memory_store.py` — `InMemoryVectorStore`: NumPy cosine search over L2-normalized vectors, TTL purge, oldest-first eviction at `max_capacity`, and a dimension guard that rejects wrong-size vectors.
+  - `semantic_cache.py` — `SemanticCacheManager`: scope normalization, embedding, TTL choice, write-through to the in-memory standby (and Redis while it is up), read routing, and the single failover path `_mark_down`.
 - **Zero-Downtime Resilience**:
-  - If Redis disconnects or crashes mid-traffic, `SemanticCacheManager` intercepts the socket error, logs a warning, and immediately serves from an in-memory NumPy vector store with **0 dropped requests and 0 HTTP 500 errors**.
-  - Non-blocking background probes automatically restore RediSearch when Redis recovers without requiring a server restart.
+  - `lookup`, `store` and `clear` never raise. A Redis drop, a Redis query error, an embedding failure or a cached report that fails validation becomes a MISS or a logged no-op, so the request runs the graph instead of returning a 500.
+  - On a connection-class failure (`StoreUnavailable`), `_mark_down` closes the Redis client and the manager serves from the in-memory standby. A `StoreQueryError` is logged and Redis stays connected.
+  - There is no background probe. While Redis is down, the next `lookup` or `store`, or a status route (`/health`, `/resilience/status`, `/metrics` call `check_connection()`), tries to reconnect at most once per 5-second cooldown, with no server restart.
+  - See [resilience.md §4](resilience.md#4-zero-downtime-dual-engine-vector-caching) for the failover rules and [ADR-0002](decisions/0002-dual-engine-semantic-caching.md) for the decision.
 
 ---
 

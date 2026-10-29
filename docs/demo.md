@@ -94,5 +94,5 @@ This guide provides the complete narrative, technical depth, and step-by-step pr
 | :--- | :--- |
 | **"What model are you running?"** | `qwen/qwen3.8-27b` on Groq Language Processing Units for sub-1.3s inference, with automated fallback ladders to Ollama, Google Gemini, and OpenAI. |
 | **"How does the semantic cache work?"** | `FastEmbed` ONNX models generate 384-dim dense vectors. Vectors are indexed via Redis 8 RediSearch HNSW Float32 Cosine index (`triage_vector_idx`). Repeat queries are accelerated by an in-memory 512-entry LRU cache. |
-| **"What happens if Redis goes down?"** | `SemanticCacheManager` intercepts connection drops and instantaneously fails over to an in-memory NumPy vector matrix with 0 dropped requests and 0 HTTP 500 errors. Background probes auto-reconnect when Redis returns. |
+| **"What happens if Redis goes down?"** | `SemanticCacheManager` intercepts connection drops and instantaneously fails over to an in-memory NumPy vector matrix with 0 dropped requests and 0 HTTP 500 errors. It reconnects on the next request or health check once a 5-second cooldown has passed. |
 | **"What if the LLM emits invalid JSON?"** | LangGraph executes an automated Pydantic self-repair loop: catching `ValidationError`, extracting the exact invalid field paths, and prompting the LLM with the traceback to iteratively self-correct within 2 retries. |

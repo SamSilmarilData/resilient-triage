@@ -101,23 +101,56 @@ Only genuinely transient exceptions trigger retries:
 
 ## 4. Zero-Downtime Dual-Engine Vector Caching
 
-The `SemanticCacheManager` guarantees zero downtime by abstracting two underlying vector storage backends:
+`SemanticCacheManager` (`cache/semantic_cache.py`) talks to storage only through the `VectorStore` seam (`cache/vector_store.py`), which has two adapters:
+
+- **`RedisVectorStore`** (`cache/redis_store.py`), the primary. It owns the Redis client, `connect` / `ping` / `aclose`, search-module detection, creation of the HNSW index `triage_vector_idx`, the KNN query, hash writes to `triage:doc:*`, the `SCAN` + batched `DEL` clear, and `entries()` for hydration. Without the search module `supports_search` is False and `search` raises `StoreQueryError`; that mode is the `redis_hash_fallback` driver.
+- **`InMemoryVectorStore`** (`cache/in_memory_store.py`), the standby. A NumPy cosine search over a matrix of the entries in the queried scope, with TTL purge on each search and oldest-first eviction at `max_capacity` (10,000). Its dimension guard rejects a wrong-size vector at `put` (from `store` or from hydration), and a wrong-size query vector is a MISS.
+
+Every write lands in the standby and, while Redis is up, in Redis too. Reads are routed by driver:
+
+| `driver` | Redis | Reads served by |
+| :--- | :--- | :--- |
+| `redisearch` | up, with the search module | Redis KNN search; a Redis MISS or query error falls through to the standby |
+| `redis_hash_fallback` | up, no search module | the standby, hydrated from Redis hashes on connect |
+| `in_memory` | down | the standby |
 
 ```mermaid
 flowchart LR
-    Query([Query Vector: 384-dim]) --> DriverCheck{Redis Connected?}
-    DriverCheck -->|Yes| RedisHNSW["Redis 8 RediSearch HNSW Index\nKNN Cosine Search (~1-7ms)"]
-    DriverCheck -->|No / Socket Drop| InMemory["NumPy Vector Matrix\nVectorized dot product (~0.5ms)"]
-    RedisHNSW --> ScoreCheck{Cosine Similarity >= 0.90?}
-    InMemory --> ScoreCheck
-    ScoreCheck -->|Yes| CacheHit[Return X-Cache: HIT]
-    ScoreCheck -->|No| CacheMiss[Proceed to State Machine]
+    Query([Scoped query vector: 384-dim]) --> DriverCheck{Redis up and searchable?}
+    DriverCheck -->|Yes| RedisHNSW["RedisVectorStore.search\nKNN 5, exact scope"]
+    DriverCheck -->|No| InMemory["InMemoryVectorStore.search\nNumPy dot product, exact scope"]
+    RedisHNSW -->|HIT| Validate{Report validates?}
+    RedisHNSW -->|MISS / StoreQueryError| InMemory
+    RedisHNSW -->|StoreUnavailable| MarkDown["_mark_down(reason)"] --> InMemory
+    InMemory -->|HIT| Validate
+    InMemory -->|MISS| CacheMiss[Proceed to State Machine]
+    Validate -->|Yes| CacheHit[Return X-Cache: HIT]
+    Validate -->|No: evict| CacheMiss
 ```
 
+### Failure Kinds
+The Redis adapter translates every Redis failure into one of two exceptions:
+- **`StoreUnavailable`**: connection-class errors (`redis` `ConnectionError` / `TimeoutError`, builtin `ConnectionError`, `TimeoutError`, `OSError`), or any call while not connected. The manager fails over through `_mark_down`.
+- **`StoreQueryError`**: anything else, such as a rejected RediSearch query. The manager logs it and serves from the standby; a query error never disconnects Redis.
+
+### One Failover Path
+Every Redis drop (a failed search, store, delete, clear, health ping or hydration) goes through `_mark_down(reason)`. It sets the manager's store to None, closes the client with `aclose()` so no connection pool leaks, and starts the reconnect cooldown (`reconnect_cooldown_seconds`, 5s). Only `_mark_down` and `close` set `self._redis = None`. A connection attempt that fails also `aclose()`s its own client. Redis is not on the circuit breaker registry.
+
 ### Auto-Reconnection & Recovery
-- When Redis drops, operations fall back to the in-memory store without throwing unhandled exceptions.
-- `SemanticCacheManager.check_connection()` executes periodic non-blocking ping checks.
-- When Redis comes back online, the manager transparently switches the active driver back to `redisearch`.
+- There is no background probe. While Redis is down, `lookup` and `store` try to reconnect at most once per cooldown, measured from the last attempt or drop. `check_connection()`, called by the `/health`, `/resilience/status` and `/metrics` snapshot, pings Redis while it is up (a failed ping goes through `_mark_down`) and reconnects, under the same cooldown, while it is down.
+- On reconnect the driver returns to `redisearch` (or `redis_hash_fallback`). In hash mode the standby is hydrated from `entries()`. In search mode nothing is hydrated, so after a RediSearch failover the standby holds only this process's writes.
+
+### Pending Clear
+`clear()` empties the standby first. If Redis is down, it sets a pending clear and tries to reconnect at once, ignoring the cooldown. The next successful connect runs the Redis clear (`SCAN` + `DEL` on `triage:doc:*`) before Redis serves a search or hydrates the standby. If that clear fails, the client is closed, the manager stays on the standby, and the clear stays pending. `/cache/clear` returns "ok" either way.
+
+### Exact Service Scope
+A cached answer's identity includes its service scope (`normalize_scope()`: stripped, lower-cased, `[a-z0-9_-]` only), and "no scope" (`""`) is a scope of its own, not a wildcard. The in-memory store compares scopes for equality. The Redis store fetches the `SEARCH_KNN = 5` nearest neighbours (tag-filtered when a scope is set) and takes the first whose `service_scope` matches exactly; if none does, it is a MISS. A false MISS is acceptable; a false HIT is not.
+
+### Never-Raise Guarantee
+`lookup`, `store` and `clear` never raise:
+- An embedding failure makes `lookup` a MISS and `store` a skip; both log a warning.
+- A cached report that is not valid JSON or fails `IncidentTriageReport` validation is a MISS and is evicted (from the standby, and from Redis for a Redis hit).
+- A Redis failure is a failover (`StoreUnavailable`) or a logged no-op (`StoreQueryError`).
 
 ---
 
