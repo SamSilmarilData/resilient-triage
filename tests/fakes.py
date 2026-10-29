@@ -10,9 +10,10 @@ from resilient_triage.cache.semantic_cache import CacheMatch
 from resilient_triage.config import settings
 from resilient_triage.llm import ModelAdapter, ScriptedAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
-from resilient_triage.runtime import AppRuntime, TelemetrySources, TriageDeps
-from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
-from resilient_triage.telemetry.statuspage import StatuspageClient
+from resilient_triage.runtime import AppRuntime, TriageDeps
+from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
+from resilient_triage.telemetry.probe import TelemetryProbe
+from resilient_triage.telemetry.statuspage import StatuspageSource
 
 AppServer = Callable[..., AbstractAsyncContextManager[tuple[AppRuntime, httpx.AsyncClient]]]
 """The conftest `serve_app` factory: (llm_adapter, app_settings=settings) -> (runtime, client)."""
@@ -70,17 +71,13 @@ def make_triage_deps(
     """Build TriageDeps from fresh fakes: scripted LLM, canned Statuspage, in-memory history."""
     breakers = breakers if breakers is not None else CircuitBreakerRegistry()
     fake_history = history if history is not None else FakeHistory()
-    statuspage = StatuspageClient(
+    statuspage = StatuspageSource(
         url=FAKE_STATUSPAGE_URL,
         client=statuspage_http if statuspage_http is not None else fake_statuspage_http(),
-        breaker_registry=breakers,
     )
+    sentinel = ClusterSentinelSource(chaos or ChaosManager())
     return TriageDeps(
         llm=build_llm_gateway(settings, llm_adapter or ScriptedAdapter()),
-        telemetry=TelemetrySources(
-            statuspage=statuspage,
-            chaos=ChaosClient(manager=chaos or ChaosManager(), breaker_registry=breakers),
-            breakers=breakers,
-        ),
+        telemetry=TelemetryProbe([statuspage, sentinel], breakers=breakers),
         history=fake_history,
     )

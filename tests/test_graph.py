@@ -576,20 +576,23 @@ async def test_collect_telemetry_dynamic_probe_routing():
     assert signals_gw[0]["source"] == "api_gateway_probe"
 
 
-_UNAVAILABLE_SIGNAL = TelemetrySignal(
-    source="statuspage:global", status="UNAVAILABLE", raw_snippet="Statuspage unavailable"
-)
+def _statuspage_http(handler: Any) -> httpx.AsyncClient:
+    """An httpx client whose Statuspage answers come from handler."""
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _connection_reset(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("connection reset", request=request)
+
+
+def _boom(request: httpx.Request) -> httpx.Response:
+    raise RuntimeError("boom")
 
 
 @pytest.mark.asyncio
-async def test_collect_telemetry_records_source_whose_task_raised(mocker):
-    """A targeted source whose fetch task raised is recorded as unavailable."""
-    deps = make_triage_deps()
-    mocker.patch.object(
-        deps.telemetry.statuspage,
-        "fetch_signals",
-        new=mocker.AsyncMock(side_effect=RuntimeError("boom")),
-    )
+async def test_collect_telemetry_records_source_whose_task_raised():
+    """A targeted source whose read raised is recorded as unavailable."""
+    deps = make_triage_deps(statuspage_http=_statuspage_http(_boom))
 
     result = await collect_telemetry_node(
         {"query": "q", "target_tools": ["statuspage"]}, Runtime(context=deps)
@@ -600,15 +603,10 @@ async def test_collect_telemetry_records_source_whose_task_raised(mocker):
 
 
 @pytest.mark.asyncio
-async def test_collect_telemetry_tripped_breaker_is_not_unavailable(mocker):
+async def test_collect_telemetry_tripped_breaker_is_not_unavailable():
     """A source whose breaker is tripped counts as a tripped breaker, not an unavailable source."""
-    deps = make_triage_deps()
+    deps = make_triage_deps(statuspage_http=_statuspage_http(_connection_reset))
     force_open_for_tests(deps.telemetry.breakers.get_or_create("statuspage"))
-    mocker.patch.object(
-        deps.telemetry.statuspage,
-        "fetch_signals",
-        new=mocker.AsyncMock(return_value=[_UNAVAILABLE_SIGNAL]),
-    )
 
     result = await collect_telemetry_node(
         {"query": "q", "target_tools": ["statuspage"]}, Runtime(context=deps)
@@ -619,21 +617,22 @@ async def test_collect_telemetry_tripped_breaker_is_not_unavailable(mocker):
 
 
 @pytest.mark.asyncio
-async def test_collect_telemetry_never_records_untargeted_source(mocker):
+async def test_collect_telemetry_never_records_untargeted_source():
     """A source the query does not target is never recorded as unavailable."""
-    deps = make_triage_deps()
-    fetch = mocker.patch.object(
-        deps.telemetry.statuspage,
-        "fetch_signals",
-        new=mocker.AsyncMock(side_effect=RuntimeError("x")),
-    )
+    requests: list[httpx.Request] = []
+
+    def fetch(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise RuntimeError("x")
+
+    deps = make_triage_deps(statuspage_http=_statuspage_http(fetch))
 
     result = await collect_telemetry_node(
         {"query": "Database connection pool exhausted", "target_tools": ["chaos"]},
         Runtime(context=deps),
     )
 
-    fetch.assert_not_called()
+    assert requests == []
     assert result["unavailable_sources"] == []
 
 
@@ -779,13 +778,10 @@ async def test_synthesis_fallback_status_is_never_downgraded():
 
 
 @pytest.mark.asyncio
-async def test_only_targeted_breakers_degrade_the_report(mocker):
+async def test_only_targeted_breakers_degrade_the_report():
     """An open breaker the query never targets leaves the report HEALTHY."""
     deps = make_triage_deps()
     force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
-    mocker.patch.object(
-        deps.telemetry.statuspage, "fetch_signals", new=mocker.AsyncMock(return_value=[])
-    )
 
     app = build_triage_graph()
     final_state = await app.ainvoke(
@@ -799,16 +795,13 @@ async def test_only_targeted_breakers_degrade_the_report(mocker):
 
 
 @pytest.mark.asyncio
-async def test_llm_invented_breaker_names_are_dropped(mocker):
+async def test_llm_invented_breaker_names_are_dropped():
     """An LLM report claiming a tripped 'redis' breaker with no evidence gets an empty list."""
     claimed = json.loads(_make_valid_report_json())
     claimed["circuit_breakers_tripped"] = ["redis"]
 
     mock_llm = ScriptedAdapter([json.dumps(claimed)])
     deps = make_triage_deps(llm_adapter=mock_llm)
-    mocker.patch.object(
-        deps.telemetry.statuspage, "fetch_signals", new=mocker.AsyncMock(return_value=[])
-    )
 
     app = build_triage_graph()
     final_state = await app.ainvoke(
@@ -821,22 +814,9 @@ async def test_llm_invented_breaker_names_are_dropped(mocker):
 
 
 @pytest.mark.asyncio
-async def test_unavailable_source_degrades_the_report(mocker):
-    """A targeted source returning UNAVAILABLE with a closed breaker gives PARTIALLY_DEGRADED."""
-    deps = make_triage_deps()
-    mocker.patch.object(
-        deps.telemetry.statuspage,
-        "fetch_signals",
-        new=mocker.AsyncMock(
-            return_value=[
-                TelemetrySignal(
-                    source="statuspage:global",
-                    status="UNAVAILABLE",
-                    raw_snippet="Statuspage unavailable: connection reset",
-                )
-            ]
-        ),
-    )
+async def test_unavailable_source_degrades_the_report():
+    """A targeted source failing its read with a closed breaker gives PARTIALLY_DEGRADED."""
+    deps = make_triage_deps(statuspage_http=_statuspage_http(_connection_reset))
 
     app = build_triage_graph()
     final_state = await app.ainvoke(

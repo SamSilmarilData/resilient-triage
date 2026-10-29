@@ -85,6 +85,11 @@ class TelemetryProbe:
             for source in self._sources
         }
 
+    @property
+    def source_ids(self) -> list[str]:
+        """Every source id, in registration order."""
+        return [source.id for source in self._sources]
+
     async def collect(
         self, targets: frozenset[str], query: str, scope: str | None
     ) -> TelemetryReading:
