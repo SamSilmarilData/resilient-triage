@@ -12,6 +12,7 @@ from resilient_triage.cache.semantic_cache import (
     CacheMatch,
     SemanticCacheManager,
     format_scoped_query,
+    normalize_scope,
 )
 from resilient_triage.schemas.incident import (
     DegradationStatus,
@@ -126,6 +127,15 @@ def test_format_scoped_query():
         == "[scope: github-actions] Is Actions down?"
     )
     assert format_scoped_query("  Is Actions down?  ", "  CI  ") == "[scope: ci] Is Actions down?"
+
+
+def test_normalize_scope():
+    """Verify scopes are stripped, lower-cased and reduced to [a-z0-9_-], and None means none."""
+    assert normalize_scope(None) == ""
+    assert normalize_scope("   ") == ""
+    assert normalize_scope("  GitHub-Actions ") == "github-actions"
+    assert normalize_scope("api_gw (prod)!") == "api_gwprod"
+    assert normalize_scope("{*}") == ""
 
 
 @pytest.mark.asyncio
