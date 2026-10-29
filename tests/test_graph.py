@@ -12,7 +12,7 @@ from resilient_triage.config import settings
 from resilient_triage.graph.builder import build_triage_graph
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
-from resilient_triage.graph.nodes.fallback_report import fallback_report_node
+from resilient_triage.graph.nodes.fallback_report import build_fallback_report, fallback_report_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
 from resilient_triage.llm import (
     MalformedResponse,
@@ -26,6 +26,7 @@ from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.schemas.incident import (
     DegradationStatus,
     IncidentTriageReport,
+    PriorityLevel,
     SeverityLevel,
     TelemetrySignal,
 )
@@ -341,6 +342,51 @@ def test_fallback_report_without_a_provider_failure_reports_exhausted_self_repai
     root_cause = update["final_report"].root_cause_analysis
     assert root_cause.startswith("Self-repair limits reached. Diagnostic context: Field 'severity'")
     assert update["synthesis_fell_back"] is True
+
+
+def test_build_fallback_report_needs_no_state():
+    """Code outside the graph builds a synthesis fallback from a query, a reason and signals."""
+    signal = TelemetrySignal(
+        source="statuspage:global", status="DEGRADED", raw_snippet="Actions: degraded"
+    )
+
+    report = build_fallback_report(
+        "Actions queue failing", reason="Graph raised RuntimeError", signals=[signal]
+    )
+
+    assert report.root_cause_analysis == "Graph raised RuntimeError"
+    assert report.summary == "Automated incident triage degraded for: Actions queue failing"
+    assert report.telemetry_signals == [signal]
+    assert report.severity == SeverityLevel.UNKNOWN
+    assert report.confidence_score == 0.20
+    [action] = report.recommended_actions
+    assert action.priority == PriorityLevel.P0
+    assert action.action_type == "diagnostic"
+    assert action.requires_approval is False
+
+
+def test_build_fallback_report_defaults_to_no_signals():
+    """Without signals the fallback carries none."""
+    report = build_fallback_report("Actions queue failing", reason="no final report")
+
+    assert report.telemetry_signals == []
+
+
+def test_fallback_report_node_keeps_only_the_valid_telemetry_signals():
+    """The node passes the state's valid signals to the report and drops malformed ones."""
+    valid = {"source": "statuspage:global", "status": "OK", "raw_snippet": "All systems go"}
+
+    update = fallback_report_node(
+        {
+            "query": "Actions queue failing",
+            "provider_failure": None,
+            "validation_errors": [],
+            "telemetry_signals": [valid, {"status": "not-a-signal"}],
+        }
+    )
+
+    assert update["final_report"].telemetry_signals == [TelemetrySignal.model_validate(valid)]
+    assert update["is_degraded"] is True
 
 
 @pytest.mark.asyncio
