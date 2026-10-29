@@ -60,6 +60,11 @@ def _store_errors(operation: str) -> Iterator[None]:
         raise StoreQueryError(f"Redis {operation} failed: {err}") from err
 
 
+async def _scan_keys(client: aioredis.Redis) -> list[Any]:
+    """Every `triage:doc:*` key, enumerated with non-blocking SCAN."""
+    return [k async for k in client.scan_iter(match=f"{DOC_PREFIX}*", count=100)]
+
+
 def _to_str(val: Any) -> str:
     """Decode a Redis bytes or str value to str."""
     if val is None:
@@ -201,7 +206,7 @@ class RedisVectorStore:
         """Delete every `triage:doc:*` key with SCAN + batched DEL, so Redis never blocks."""
         with _store_errors("clear"):
             client = self._require_client()
-            keys = [k async for k in client.scan_iter(match=f"{DOC_PREFIX}*", count=100)]
+            keys = await _scan_keys(client)
             for i in range(0, len(keys), _DELETE_BATCH):
                 await client.delete(*keys[i : i + _DELETE_BATCH])
         self._known.clear()
@@ -212,7 +217,7 @@ class RedisVectorStore:
         # validated here; the standby's `put` is where an inbound vector is checked.
         with _store_errors("scan"):
             client = self._require_client()
-            keys = [k async for k in client.scan_iter(match=f"{DOC_PREFIX}*", count=100)]
+            keys = await _scan_keys(client)
         for key in keys:
             with _store_errors("hydrate"):
                 data = await client.hgetall(key)
@@ -251,20 +256,18 @@ class RedisVectorStore:
     async def _detect_search(self, client: aioredis.Redis) -> bool:
         """Whether the server has the search module (MODULE LIST, else a native FT._LIST)."""
         try:
-            modules = await client.module_list()
-            names = [_to_str(_field(m, "name")).lower() for m in modules]
+            with _store_errors("module check"):
+                modules = await client.module_list()
+                names = [_to_str(_field(m, "name")).lower() for m in modules]
             if "search" in names or "ft" in names:
                 return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis module check failed: {err}") from err
-        except Exception as err:
+        except StoreQueryError as err:
             logger.debug("RediSearch module check: %s", err)
         try:
-            await client.execute_command("FT._LIST")
+            with _store_errors("FT._LIST check"):
+                await client.execute_command("FT._LIST")
             return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis FT._LIST check failed: {err}") from err
-        except Exception as err:
+        except StoreQueryError as err:
             logger.debug("Native FT._LIST check: %s", err)
             return False
 
@@ -274,13 +277,12 @@ class RedisVectorStore:
         from redis.commands.search.index_definition import IndexDefinition, IndexType
 
         try:
-            await client.ft(INDEX_NAME).info()
+            with _store_errors("index check"):
+                await client.ft(INDEX_NAME).info()
             logger.debug("RediSearch index '%s' already exists.", INDEX_NAME)
             return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis index check failed: {err}") from err
-        except Exception:
-            pass
+        except StoreQueryError:
+            pass  # no index yet: create it below
         schema = [
             TextField("query"),
             TagField("service_scope"),
@@ -292,11 +294,10 @@ class RedisVectorStore:
         ]
         definition = IndexDefinition(prefix=[DOC_PREFIX], index_type=IndexType.HASH)
         try:
-            await client.ft(INDEX_NAME).create_index(schema, definition=definition)
+            with _store_errors("index creation"):
+                await client.ft(INDEX_NAME).create_index(schema, definition=definition)
             logger.info("Created RediSearch vector index '%s'.", INDEX_NAME)
             return True
-        except _UNAVAILABLE as err:
-            raise StoreUnavailable(f"Redis index creation failed: {err}") from err
-        except Exception as err:
+        except StoreQueryError as err:
             logger.warning("Failed to create RediSearch index: %s. Using hash mode.", err)
             return False
