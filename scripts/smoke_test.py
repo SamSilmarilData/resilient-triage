@@ -19,7 +19,7 @@ RESET = "\033[0m"
 
 # Step 7 must reach Cluster Sentinel, whose breaker step 6 opened: a whole-word internal
 # keyword and no external keyword, even as a substring ("reporting" contains "repo").
-OUTAGE_QUERY = "Kubernetes ingress reporting 502 bad gateway across backend pods"
+OUTAGE_QUERY = "Kubernetes ingress for internal auth service returning 502 bad gateway across pods"
 
 
 def print_step(name: str):
