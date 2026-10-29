@@ -14,7 +14,7 @@ async def collect_telemetry_node(
     """Collect every targeted source in one probe call and record what failed."""
     probe = runtime.context.telemetry
     # No targeting yet means every source.
-    targets = state.get("target_tools", probe.source_ids)
+    targets = state.get("targeted_sources", probe.source_ids)
     reading = await probe.collect(
         frozenset(targets), state.get("query", ""), state.get("service_filter")
     )
