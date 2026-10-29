@@ -1,7 +1,7 @@
 """Tests for LangGraph cyclic state machine, self-repair loops, and resilience routing."""
 
 import json
-import uuid
+from typing import Any
 
 import httpx
 import pytest
@@ -29,6 +29,20 @@ from resilient_triage.schemas.incident import (
     SeverityLevel,
     TelemetrySignal,
 )
+
+
+async def _run_recording_nodes(
+    app: Any, inputs: dict[str, Any], deps: Any
+) -> tuple[list[str], dict[str, Any]]:
+    """Run the graph once; return the nodes it visited, in order, and its final state."""
+    visited: list[str] = []
+    final_state: dict[str, Any] = {}
+    async for mode, chunk in app.astream(inputs, context=deps, stream_mode=["updates", "values"]):
+        if mode == "updates":
+            visited.extend(chunk)
+        else:
+            final_state = chunk
+    return visited, final_state
 
 
 def _make_valid_report_json(severity: str = "HIGH", confidence: float = 0.90) -> str:
@@ -142,13 +156,11 @@ def test_tool_targeting_service_filter_matches_whole_words(service_filter, expec
 @pytest.mark.asyncio
 async def test_graph_happy_path():
     """Verify end-to-end execution of LangGraph on happy path."""
-    app = build_triage_graph(enable_checkpointing=True)
-    thread_id = str(uuid.uuid4())
+    app = build_triage_graph()
 
     inputs = {"query": "GitHub Actions jobs are queued indefinitely"}
-    config = {"configurable": {"thread_id": thread_id}}
 
-    final_state = await app.ainvoke(inputs, config=config, context=make_triage_deps())
+    final_state = await app.ainvoke(inputs, context=make_triage_deps())
 
     assert "final_report" in final_state
     report = final_state["final_report"]
@@ -176,7 +188,7 @@ async def test_graph_degraded_and_compensatory_routing():
     force_open_for_tests(chaos_cb)
     assert chaos_cb.info().is_open is True
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     inputs = {
         "query": "Internal database chaos probe failing",
         "service_filter": "auth-service",
@@ -208,7 +220,7 @@ async def test_graph_self_repair_on_bad_enum():
     mock_llm = ScriptedAdapter([bad_enum_json, valid_json])
     deps = make_triage_deps(llm_adapter=mock_llm)
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke(
         {"query": "Critical production outage on Actions"}, context=deps
     )
@@ -229,7 +241,7 @@ async def test_graph_self_repair_on_malformed_json():
     mock_llm = ScriptedAdapter([malformed_raw, valid_json])
     deps = make_triage_deps(llm_adapter=mock_llm)
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke({"query": "Actions queue failing"}, context=deps)
 
     assert final_state["repair_attempts"] == 1
@@ -246,7 +258,7 @@ async def test_graph_self_repair_cap_routes_to_fallback():
     mock_llm = ScriptedAdapter([always_bad_json, always_bad_json, always_bad_json])
     deps = make_triage_deps(llm_adapter=mock_llm)
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke({"query": "Permanent parser failure scenario"}, context=deps)
 
     # Should have attempted 2 repairs
@@ -272,24 +284,16 @@ async def test_graph_self_repair_cap_routes_to_fallback():
 async def test_provider_failure_on_first_generation_skips_self_repair(failure: ProviderFailure):
     """A provider failure goes straight to fallback_report: re-prompting cannot fix an outage."""
     deps = make_triage_deps(llm_adapter=ScriptedAdapter([failure] * 3))
-    app = build_triage_graph(enable_checkpointing=True)
-    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    app = build_triage_graph()
 
-    visited = [
-        node
-        async for update in app.astream(
-            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
-        )
-        for node in update
-    ]
+    visited, final_state = await _run_recording_nodes(app, {"query": "Actions queue failing"}, deps)
 
     assert visited[-3:] == ["generate_report", "fallback_report", "finalize_report"]
     assert "self_repair" not in visited
     assert "validate_report" not in visited
-    # The failure survives the BoundedMemorySaver checkpoint, typed.
-    checkpointed = (await app.aget_state(config)).values
-    assert checkpointed["provider_failure"] == failure
-    report = checkpointed["final_report"]
+    # The failure survives into the run's final state, typed.
+    assert final_state["provider_failure"] == failure
+    report = final_state["final_report"]
     assert report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
     assert report.confidence_score == 0.20
 
@@ -352,7 +356,7 @@ async def test_graph_confidence_refinement_cycle():
     mock_llm = ScriptedAdapter([low_conf_json, refined_conf_json])
     deps = make_triage_deps(llm_adapter=mock_llm)
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke({"query": "Uncertain intermittent latency spike"}, context=deps)
 
     assert final_state["refinement_attempts"] == 1
@@ -367,22 +371,14 @@ async def test_refine_round_that_exhausts_self_repair_keeps_the_pre_refine_repor
     pre_refine_json = _make_valid_report_json(severity="MEDIUM", confidence=0.50)
     mock_llm = ScriptedAdapter([pre_refine_json, "not json", "still not json"])
     deps = make_triage_deps(llm_adapter=mock_llm)
-    app = build_triage_graph(enable_checkpointing=True)
-    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    app = build_triage_graph()
 
-    visited = [
-        node
-        async for update in app.astream(
-            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
-        )
-        for node in update
-    ]
+    visited, final_state = await _run_recording_nodes(app, {"query": "Actions queue failing"}, deps)
 
     assert "refine_reflection" in visited
     assert "fallback_report" not in visited
     assert visited[-2:] == ["validate_report", "finalize_report"]
     assert len(mock_llm.calls) == 3  # the refine round shares the 2-repair budget
-    final_state = (await app.aget_state(config)).values
     assert final_state["synthesis_fell_back"] is False
     report = final_state["final_report"]
     assert report.confidence_score == 0.50
@@ -397,22 +393,14 @@ async def test_provider_failure_during_a_refine_round_keeps_the_pre_refine_repor
     outage = Unavailable(detail="HTTP 503: upstream overloaded")
     mock_llm = ScriptedAdapter([pre_refine_json, outage, outage, outage])
     deps = make_triage_deps(llm_adapter=mock_llm)
-    app = build_triage_graph(enable_checkpointing=True)
-    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    app = build_triage_graph()
 
-    visited = [
-        node
-        async for update in app.astream(
-            {"query": "Actions queue failing"}, config=config, context=deps, stream_mode="updates"
-        )
-        for node in update
-    ]
+    visited, final_state = await _run_recording_nodes(app, {"query": "Actions queue failing"}, deps)
 
     assert "refine_reflection" in visited
     assert "self_repair" not in visited
     assert "fallback_report" not in visited
     assert visited[-2:] == ["generate_report", "finalize_report"]
-    final_state = (await app.aget_state(config)).values
     assert final_state["synthesis_fell_back"] is False
     report = final_state["final_report"]
     assert report.confidence_score == 0.50
@@ -427,7 +415,7 @@ async def test_longest_path_stays_within_the_recursion_limit(monkeypatch):
     mock_llm = ScriptedAdapter([pre_refine_json] + ["not json"] * 5)
     deps = make_triage_deps(llm_adapter=mock_llm)
     force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
 
     visited = [
         node
@@ -644,7 +632,7 @@ async def test_graph_enforces_remediation_approval_safety():
     mock_llm = ScriptedAdapter([candidate_with_unapproved_remediation])
     deps = make_triage_deps(llm_adapter=mock_llm)
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke(
         {"query": "Kubernetes worker node pool CPU saturation"}, context=deps
     )
@@ -656,22 +644,6 @@ async def test_graph_enforces_remediation_approval_safety():
     # Diagnostic action remains requires_approval=False
     assert report.recommended_actions[1].action_type == "diagnostic"
     assert report.recommended_actions[1].requires_approval is False
-
-
-def test_bounded_memory_saver_eviction():
-    """Verify BoundedMemorySaver evicts oldest thread checkpoints when capacity is reached."""
-    from resilient_triage.graph.builder import BoundedMemorySaver
-
-    saver = BoundedMemorySaver(max_threads=2)
-    # Add checkpoints for 4 distinct thread IDs
-    for i in range(4):
-        cfg = {"configurable": {"thread_id": f"thread_{i}", "checkpoint_ns": ""}}
-        saver.put(cfg, {"id": f"chk_{i}", "v": 1, "ts": i, "channel_values": {}}, {}, {})
-
-    # Capacity must not exceed 2
-    assert len(saver.storage) == 2
-    # Only thread_2 and thread_3 should remain
-    assert set(saver.storage.keys()) == {"thread_2", "thread_3"}
 
 
 def test_reconcile_overrides_hallucinated_healthy_when_circuit_tripped():
@@ -748,7 +720,7 @@ async def test_synthesis_fallback_status_is_never_downgraded():
     deps = make_triage_deps(llm_adapter=mock_llm)
     force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke(
         {"query": "Internal chaos probe failing on auth-service"}, context=deps
     )
@@ -769,7 +741,7 @@ async def test_only_targeted_breakers_degrade_the_report(mocker):
         deps.telemetry.statuspage, "fetch_signals", new=mocker.AsyncMock(return_value=[])
     )
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke(
         {"query": "GitHub Actions webhook delivery failing"}, context=deps
     )
@@ -792,7 +764,7 @@ async def test_llm_invented_breaker_names_are_dropped(mocker):
         deps.telemetry.statuspage, "fetch_signals", new=mocker.AsyncMock(return_value=[])
     )
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke(
         {"query": "GitHub Actions webhook delivery failing"}, context=deps
     )
@@ -820,7 +792,7 @@ async def test_unavailable_source_degrades_the_report(mocker):
         ),
     )
 
-    app = build_triage_graph(enable_checkpointing=False)
+    app = build_triage_graph()
     final_state = await app.ainvoke(
         {"query": "GitHub Actions webhook delivery failing"}, context=deps
     )
