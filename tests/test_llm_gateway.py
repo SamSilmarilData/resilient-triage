@@ -23,6 +23,7 @@ from resilient_triage.llm import (
     MalformedResponse,
     ModelAdapter,
     ProviderFailure,
+    QuotaHeaders,
     RateLimited,
     Rejected,
     ScriptedAdapter,
@@ -178,6 +179,18 @@ async def test_a_groq_key_selects_groq_with_the_configured_request_timeout(
     await gateway.aclose()
 
 
+async def test_the_fallback_model_comes_from_settings() -> None:
+    adapter = ScriptedAdapter([RateLimited(retry_after_s=None, scope="unknown", detail="429")])
+    gateway = build_llm_gateway(
+        settings.model_copy(update={"groq_fallback_model": "fb-model"}), adapter
+    )
+
+    await gateway.complete(MESSAGES)
+
+    assert gateway.snapshot().fallback_model == "fb-model"
+    assert adapter.calls[-1] == "fb-model"
+
+
 async def test_complete_returns_unavailable_when_the_adapter_raises() -> None:
     class ExplodingAdapter(ScriptedAdapter):
         async def call(
@@ -248,3 +261,224 @@ async def test_generate_report_turns_a_provider_failure_into_todays_state_shape(
         "LLM Provider Failure: Unavailable: HTTP 503: upstream overloaded"
     ]
     assert result["repair_attempts"] == settings.max_self_repair_retries
+
+
+class FakeClock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def test_a_429_is_never_retried_against_the_primary() -> None:
+    """Regression (bug-hunt r4): every call 429s, so exactly primary then fallback is sent."""
+    limited = RateLimited(retry_after_s=None, scope="unknown", detail="Rate limit")
+    adapter = ScriptedAdapter([limited] * 5)
+    gateway = _gateway(adapter)
+
+    result = await gateway.complete(MESSAGES)
+
+    assert isinstance(result, RateLimited)
+    assert adapter.calls == [PRIMARY, FALLBACK]
+    assert gateway.snapshot().rate_limit_hits == 2
+
+
+async def test_a_fallback_429_does_not_cool_down_the_primary() -> None:
+    """Regression (bug-hunt r5): the fallback's 429 leaves the primary's window and budget."""
+    sent: list[str] = []
+    primary_budget = {"x-ratelimit-remaining-requests": "0", "x-ratelimit-limit-requests": "1000"}
+    replies = {
+        PRIMARY: [
+            httpx.Response(
+                429,
+                json={"error": {"message": "primary limited"}},
+                headers={**primary_budget, "x-ratelimit-reset-requests": "10s"},
+            ),
+            httpx.Response(200, json=_content("{}"), headers=primary_budget),
+        ],
+        FALLBACK: [
+            httpx.Response(200, json=_content("{}")),
+            httpx.Response(
+                429,
+                json={"error": {"message": "fallback limited"}},
+                headers={
+                    "x-ratelimit-remaining-requests": "0",
+                    "x-ratelimit-limit-requests": "14400",
+                    "x-ratelimit-reset-requests": "600s",
+                },
+            ),
+        ],
+    }
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        sent.append(model)
+        return replies[model].pop(0)
+
+    clock = FakeClock()
+    gateway = LLMGateway(
+        _groq(groq_api), primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock
+    )
+    await gateway.complete(MESSAGES)  # the primary's 429 starts its cooldown; the fallback answers
+    clock.now += 5
+    assert isinstance(await gateway.complete(MESSAGES), RateLimited)  # the fallback 429s
+    assert gateway.snapshot().limit_requests == 1000
+
+    clock.now += settings.llm_default_cooldown_s  # past the primary's own window
+    result = await gateway.complete(MESSAGES)
+
+    assert sent == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
+    assert result == Completion(text="{}", model=PRIMARY)
+    assert (gateway.snapshot().remaining_requests, gateway.snapshot().limit_requests) == (0, 1000)
+
+
+LIMITED = RateLimited(retry_after_s=None, scope="unknown", detail="429")
+DOWN = Unavailable(detail="HTTP 503")
+GARBLED = MalformedResponse(detail="HTTP 200 without message content")
+
+
+@pytest.mark.parametrize(
+    ("script", "calls", "failovers"),
+    [
+        ([LIMITED, "from fallback"], [PRIMARY, FALLBACK], 1),
+        ([DOWN, "from primary"], [PRIMARY, PRIMARY], 0),
+        ([DOWN, DOWN, "from fallback"], [PRIMARY, PRIMARY, FALLBACK], 1),
+        ([GARBLED, "from fallback"], [PRIMARY, FALLBACK], 1),
+    ],
+    ids=["rate-limited", "unavailable-once", "unavailable-twice", "malformed"],
+)
+async def test_the_primary_result_decides_retry_and_failover(
+    script: list[str | ProviderFailure], calls: list[str], failovers: int
+) -> None:
+    adapter = ScriptedAdapter(script)
+    gateway = _gateway(adapter)
+
+    result = await gateway.complete(MESSAGES)
+
+    assert isinstance(result, Completion)
+    assert result.text == script[-1]
+    assert adapter.calls == calls
+    snapshot = gateway.snapshot()
+    assert snapshot.active_model == calls[-1]
+    assert (snapshot.total_calls, snapshot.failover_events) == (len(calls), failovers)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        [DOWN, DOWN, DOWN, "never sent"],
+        [DOWN, LIMITED, DOWN, "never sent"],
+        [DOWN, GARBLED, GARBLED, "never sent"],
+        [DOWN, DOWN, LIMITED, "never sent"],
+    ],
+    ids=["down-down-down", "down-limited-down", "down-garbled-garbled", "down-down-limited"],
+)
+async def test_complete_makes_at_most_three_calls_and_returns_the_fallback_failure(
+    script: list[str | ProviderFailure],
+) -> None:
+    adapter = ScriptedAdapter(script)
+
+    result = await _gateway(adapter).complete(MESSAGES)
+
+    assert adapter.calls == [PRIMARY, PRIMARY, FALLBACK]
+    assert result == script[2]
+
+
+async def test_a_rejected_retry_of_the_primary_is_returned_without_failover() -> None:
+    rejected = Rejected(detail="HTTP 400: bad model")
+    adapter = ScriptedAdapter([DOWN, rejected])
+
+    result = await _gateway(adapter).complete(MESSAGES)
+
+    assert result == rejected
+    assert adapter.calls == [PRIMARY, PRIMARY]
+
+
+async def test_a_cooling_primary_is_skipped_until_its_window_ends() -> None:
+    clock = FakeClock()
+    adapter = ScriptedAdapter([LIMITED, "failover", "skip", DOWN])
+    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    await gateway.complete(MESSAGES)
+
+    skipped = await gateway.complete(MESSAGES)
+    fallback_down = await gateway.complete(MESSAGES)
+    clock.now += settings.llm_default_cooldown_s
+    after_window = await gateway.complete(MESSAGES)
+
+    assert skipped == Completion(text="skip", model=FALLBACK)
+    assert fallback_down == DOWN
+    assert isinstance(after_window, Completion)
+    assert after_window.model == PRIMARY
+    assert adapter.calls == [PRIMARY, FALLBACK, FALLBACK, FALLBACK, PRIMARY]
+    snapshot = gateway.snapshot()
+    assert (snapshot.failover_events, snapshot.rate_limit_hits) == (2, 1)
+    assert snapshot.active_model == PRIMARY
+
+
+async def test_a_call_cancelled_after_a_429_records_nothing() -> None:
+    class HangsOnFallback(ScriptedAdapter):
+        async def call(
+            self, model: str, messages: list[BaseMessage]
+        ) -> Completion | ProviderFailure:
+            if model == FALLBACK:
+                await asyncio.Event().wait()
+            return await super().call(model, messages)
+
+    adapter = HangsOnFallback([LIMITED])
+    gateway = _gateway(adapter)
+    task = asyncio.create_task(gateway.complete(MESSAGES))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert adapter.calls == [PRIMARY]
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    snapshot = gateway.snapshot()
+    assert (snapshot.total_calls, snapshot.rate_limit_hits, snapshot.failover_events) == (0, 0, 0)
+    assert snapshot.last_error is None
+    assert isinstance(await gateway.complete(MESSAGES), Completion)
+    assert adapter.calls[-1] == PRIMARY  # no cooldown was started
+
+
+@pytest.mark.parametrize(
+    ("limited", "quota", "cooldown_s"),
+    [
+        (RateLimited(7.0, "minute", "429"), QuotaHeaders(reset_tokens_s=20.0), 7.0),
+        (RateLimited(None, "minute", "429"), QuotaHeaders(reset_tokens_s=12.5), 12.5),
+        (RateLimited(None, "minute", "429"), QuotaHeaders(reset_requests_s=600.0), 30.0),
+        (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=600.0), 600.0),
+        (RateLimited(None, "day", "429"), QuotaHeaders(reset_requests_s=86400.0), 900.0),
+        (RateLimited(None, "day", "429"), QuotaHeaders(reset_tokens_s=12.5), 30.0),
+        (RateLimited(7.0, "unknown", "429"), QuotaHeaders(reset_requests_s=600.0), 30.0),
+    ],
+    ids=[
+        "minute-retry-after",
+        "minute-tokens-reset",
+        "minute-no-header",
+        "day-requests-reset",
+        "day-capped",
+        "day-no-header",
+        "unknown",
+    ],
+)
+async def test_the_primary_cooldown_length_follows_the_rate_limit_scope(
+    monkeypatch: pytest.MonkeyPatch, limited: RateLimited, quota: QuotaHeaders, cooldown_s: float
+) -> None:
+    monkeypatch.setattr(settings, "llm_default_cooldown_s", 30.0)
+    monkeypatch.setattr(settings, "llm_max_cooldown_s", 900.0)
+    clock = FakeClock()
+    adapter = ScriptedAdapter([limited], quota=quota)
+    gateway = LLMGateway(adapter, primary=PRIMARY, fallback=FALLBACK, label="test", clock=clock)
+    await gateway.complete(MESSAGES)
+    start = clock.now
+
+    clock.now = start + cooldown_s - 0.5
+    await gateway.complete(MESSAGES)
+    clock.now = start + cooldown_s
+    await gateway.complete(MESSAGES)
+
+    assert adapter.calls == [PRIMARY, FALLBACK, FALLBACK, PRIMARY]
