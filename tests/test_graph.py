@@ -1,7 +1,6 @@
 """Tests for LangGraph cyclic state machine, self-repair loops, and resilience routing."""
 
 import json
-import time
 import uuid
 
 import httpx
@@ -10,10 +9,10 @@ from fakes import make_triage_deps
 from langgraph.runtime import Runtime
 
 from resilient_triage.graph.builder import build_triage_graph
-from resilient_triage.graph.llm import MockTriageChatModel
 from resilient_triage.graph.nodes.analyze_query import analyze_query_node
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.validate_report import clean_json_string
+from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.schemas.incident import (
     DegradationStatus,
@@ -197,9 +196,8 @@ async def test_graph_self_repair_on_bad_enum():
     )
     valid_json = _make_valid_report_json(severity="CRITICAL")
 
-    mock_llm = MockTriageChatModel()
-    mock_llm.responses = [bad_enum_json, valid_json]
-    deps = make_triage_deps(llm=mock_llm)
+    mock_llm = ScriptedAdapter([bad_enum_json, valid_json])
+    deps = make_triage_deps(llm_adapter=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
     final_state = await app.ainvoke(
@@ -210,7 +208,7 @@ async def test_graph_self_repair_on_bad_enum():
     report = final_state["final_report"]
     assert isinstance(report, IncidentTriageReport)
     assert report.severity == SeverityLevel.CRITICAL
-    assert mock_llm.call_count == 2
+    assert len(mock_llm.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -219,9 +217,8 @@ async def test_graph_self_repair_on_malformed_json():
     malformed_raw = "Error: System is malfunctioning, cannot output JSON!"
     valid_json = _make_valid_report_json(severity="HIGH")
 
-    mock_llm = MockTriageChatModel()
-    mock_llm.responses = [malformed_raw, valid_json]
-    deps = make_triage_deps(llm=mock_llm)
+    mock_llm = ScriptedAdapter([malformed_raw, valid_json])
+    deps = make_triage_deps(llm_adapter=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
     final_state = await app.ainvoke({"query": "Actions queue failing"}, context=deps)
@@ -229,7 +226,7 @@ async def test_graph_self_repair_on_malformed_json():
     assert final_state["repair_attempts"] == 1
     report = final_state["final_report"]
     assert isinstance(report, IncidentTriageReport)
-    assert mock_llm.call_count == 2
+    assert len(mock_llm.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -237,9 +234,8 @@ async def test_graph_self_repair_cap_routes_to_fallback():
     """Verify that after 2 exhausted self-repair retries the graph routes to the fallback report."""
     always_bad_json = "```Not json at all```"
 
-    mock_llm = MockTriageChatModel()
-    mock_llm.responses = [always_bad_json, always_bad_json, always_bad_json]
-    deps = make_triage_deps(llm=mock_llm)
+    mock_llm = ScriptedAdapter([always_bad_json, always_bad_json, always_bad_json])
+    deps = make_triage_deps(llm_adapter=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
     final_state = await app.ainvoke({"query": "Permanent parser failure scenario"}, context=deps)
@@ -261,9 +257,8 @@ async def test_graph_confidence_refinement_cycle():
     low_conf_json = _make_valid_report_json(severity="MEDIUM", confidence=0.45)
     refined_conf_json = _make_valid_report_json(severity="MEDIUM", confidence=0.85)
 
-    mock_llm = MockTriageChatModel()
-    mock_llm.responses = [low_conf_json, refined_conf_json]
-    deps = make_triage_deps(llm=mock_llm)
+    mock_llm = ScriptedAdapter([low_conf_json, refined_conf_json])
+    deps = make_triage_deps(llm_adapter=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
     final_state = await app.ainvoke({"query": "Uncertain intermittent latency spike"}, context=deps)
@@ -272,7 +267,7 @@ async def test_graph_confidence_refinement_cycle():
     report = final_state["final_report"]
     assert isinstance(report, IncidentTriageReport)
     assert report.confidence_score == 0.85
-    assert mock_llm.call_count == 2
+    assert len(mock_llm.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -299,24 +294,20 @@ async def test_graph_thread_checkpointing():
     assert messages_after_call2 > messages_after_call1
 
 
-def test_groq_chat_model_formatting_and_factory():
-    """Verify GroqChatModel message formatting and active model reporting."""
+def test_groq_adapter_formats_messages_and_the_runtime_labels_groq():
+    """Verify GroqAdapter message formatting and active model reporting."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from resilient_triage.config import Settings
-    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
+    from resilient_triage.llm import GroqAdapter, ModelAdapter
+    from resilient_triage.llm.groq import format_messages
     from resilient_triage.runtime import build_runtime
 
-    model = GroqChatModel(
-        api_key="mock_key",
-        model_name="qwen/qwen3.8-27b",
-        quota_tracker=GroqQuotaTracker(),
-        http_client=httpx.AsyncClient(),
-    )
-    assert model._llm_type == "groq-lpu-chat-model"
+    adapter: ModelAdapter = GroqAdapter("mock_key", timeout_s=5.0)
+    assert isinstance(adapter, GroqAdapter)
 
     msgs = [SystemMessage(content="You are SRE."), HumanMessage(content="Is Actions down?")]
-    formatted = model._format_messages(msgs)
+    formatted = format_messages(msgs)
     assert formatted == [
         {"role": "system", "content": "You are SRE."},
         {"role": "user", "content": "Is Actions down?"},
@@ -324,55 +315,37 @@ def test_groq_chat_model_formatting_and_factory():
 
     # Verify active model name reporting
     runtime = build_runtime(Settings(groq_api_key="mock_key", groq_model="qwen/qwen3.8-27b"))
-    active_name = runtime.active_model
+    active_name = runtime.llm.label
     assert isinstance(active_name, str)
     assert len(active_name) > 0
     assert active_name == "Groq LPU (qwen/qwen3.8-27b)"
 
 
-def test_groq_chat_model_rejects_a_misspelled_argument():
+def test_llm_gateway_rejects_a_misspelled_argument():
     """A typo'd keyword fails loudly instead of being dropped for a default."""
-    from pydantic import ValidationError
+    from resilient_triage.llm import LLMGateway, ScriptedAdapter
 
-    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
-
-    with pytest.raises(ValidationError, match="fallback_modle"):
-        GroqChatModel(
-            api_key="mock_key",
-            quota_tracker=GroqQuotaTracker(),
-            http_client=httpx.AsyncClient(),
+    with pytest.raises(TypeError, match="fallback_modle"):
+        LLMGateway(  # type: ignore[call-arg]
+            ScriptedAdapter(),
+            primary="qwen/qwen3.8-27b",
+            label="test",
             fallback_modle="llama-3.1-8b-instant",
         )
 
 
 @pytest.mark.asyncio
-async def test_groq_chat_model_429_failover(mocker):
-    """Verify GroqChatModel automatically fails over to fallback_model on HTTP 429."""
+async def test_llm_gateway_fails_over_on_a_groq_429():
+    """Verify the gateway fails over to the fallback model when Groq returns HTTP 429."""
     from langchain_core.messages import HumanMessage
 
-    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
-
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
-    resp_429 = mocker.MagicMock(status_code=429, text="Rate limit exceeded")
-    resp_429.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "429", request=mocker.MagicMock(), response=resp_429
+    sent: list[dict] = []
+    gateway = _groq_gateway(
+        [_groq_response(429), _groq_response(200, '{"summary": "Fallback OK"}')], sent
     )
-    resp_200 = mocker.MagicMock(
-        status_code=200,
-        json=lambda: {"choices": [{"message": {"content": '{"summary": "Fallback OK"}'}}]},
-    )
-    mock_client.post.side_effect = [resp_429, resp_200]
-
-    model = GroqChatModel(
-        api_key="test_key",
-        model_name="qwen/qwen3.8-27b",
-        fallback_model="llama-3.1-8b-instant",
-        quota_tracker=GroqQuotaTracker(),
-        http_client=mock_client,
-    )
-    res = await model.ainvoke([HumanMessage(content="test")])
-    assert res.content == '{"summary": "Fallback OK"}'
-    assert mock_client.post.call_count == 2
+    res = await gateway.complete([HumanMessage(content="test")])
+    assert res.text == '{"summary": "Fallback OK"}'
+    assert len(sent) == 2
 
 
 @pytest.mark.asyncio
@@ -500,9 +473,8 @@ async def test_graph_enforces_remediation_approval_safety():
         }
     )
 
-    mock_llm = MockTriageChatModel()
-    mock_llm.responses = [candidate_with_unapproved_remediation]
-    deps = make_triage_deps(llm=mock_llm)
+    mock_llm = ScriptedAdapter([candidate_with_unapproved_remediation])
+    deps = make_triage_deps(llm_adapter=mock_llm)
 
     app = build_triage_graph(enable_checkpointing=False)
     final_state = await app.ainvoke(
@@ -575,46 +547,37 @@ def test_reconcile_overrides_hallucinated_healthy_when_circuit_tripped():
 
 
 @pytest.mark.asyncio
-async def test_groq_proactive_cooldown_routing(mocker):
-    """Verify GroqChatModel routes to fallback_model during an active rate-limit cooldown."""
+async def test_groq_proactive_cooldown_routing():
+    """Verify the gateway routes to the fallback model during an active rate-limit cooldown."""
     from langchain_core.messages import HumanMessage
 
-    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
-
-    # Set active cooldown window
-    quota_tracker = GroqQuotaTracker()
-    quota_tracker.rate_limit_cooldown_until = time.monotonic() + 10.0
-
-    mock_client = mocker.AsyncMock(spec=httpx.AsyncClient)
-    mock_resp = mocker.MagicMock(
-        status_code=200,
-        json=lambda: {"choices": [{"message": {"content": '{"summary": "Fallback Cooldown OK"}'}}]},
+    sent: list[dict] = []
+    gateway = _groq_gateway(
+        [
+            _groq_response(429),
+            _groq_response(200, '{"summary": "Failover OK"}'),
+            _groq_response(200, '{"summary": "Fallback Cooldown OK"}'),
+        ],
+        sent,
     )
-    mock_client.post.return_value = mock_resp
+    # A 429 on the primary starts its cooldown window.
+    await gateway.complete([HumanMessage(content="first query")])
+    sent.clear()
 
-    model = GroqChatModel(
-        api_key="test_key",
-        model_name="qwen/qwen3.8-27b",
-        fallback_model="llama-3.1-8b-instant",
-        quota_tracker=quota_tracker,
-        http_client=mock_client,
-    )
-
-    res = await model.ainvoke([HumanMessage(content="test query")])
-    assert res.content == '{"summary": "Fallback Cooldown OK"}'
+    res = await gateway.complete([HumanMessage(content="test query")])
+    assert res.text == '{"summary": "Fallback Cooldown OK"}'
 
     # Must only make 1 call directly to fallback model without touching primary
-    assert mock_client.post.call_count == 1
-    call_payload = mock_client.post.call_args[1]["json"]
+    assert len(sent) == 1
+    call_payload = sent[0]
     assert call_payload["model"] == "llama-3.1-8b-instant"
 
 
 @pytest.mark.asyncio
 async def test_synthesis_fallback_status_is_never_downgraded():
     """Synthesis fallback with one tripped breaker gives SEVERELY_DEGRADED, not PARTIALLY."""
-    mock_llm = MockTriageChatModel()
-    mock_llm.responses = ["not json"] * 5
-    deps = make_triage_deps(llm=mock_llm)
+    mock_llm = ScriptedAdapter(["not json"] * 5)
+    deps = make_triage_deps(llm_adapter=mock_llm)
     force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
 
     app = build_triage_graph(enable_checkpointing=False)
@@ -655,9 +618,8 @@ async def test_llm_invented_breaker_names_are_dropped(mocker):
     claimed = json.loads(_make_valid_report_json())
     claimed["circuit_breakers_tripped"] = ["redis"]
 
-    mock_llm = MockTriageChatModel()
-    mock_llm.responses = [json.dumps(claimed)]
-    deps = make_triage_deps(llm=mock_llm)
+    mock_llm = ScriptedAdapter([json.dumps(claimed)])
+    deps = make_triage_deps(llm_adapter=mock_llm)
     mocker.patch.object(
         deps.telemetry.statuspage, "fetch_signals", new=mocker.AsyncMock(return_value=[])
     )
@@ -704,45 +666,54 @@ async def test_unavailable_source_degrades_the_report(mocker):
 
 def _groq_response(status_code: int, content: str = "{}") -> httpx.Response:
     """Build a Groq chat-completions response with the given status code."""
-    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
     if status_code == 429:
-        return httpx.Response(429, request=request, json={"error": {"message": "Rate limit"}})
-    return httpx.Response(
-        status_code, request=request, json={"choices": [{"message": {"content": content}}]}
+        return httpx.Response(429, json={"error": {"message": "Rate limit"}})
+    return httpx.Response(status_code, json={"choices": [{"message": {"content": content}}]})
+
+
+def _groq_gateway(responses: list[httpx.Response], sent: list[dict]):
+    """An LLM gateway over a GroqAdapter whose HTTP calls get the given responses in order."""
+    from resilient_triage.config import settings
+    from resilient_triage.llm import GroqAdapter, build_llm_gateway
+
+    replies = iter(responses)
+
+    def groq_api(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return next(replies)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(groq_api))
+    adapter = GroqAdapter("test_key", timeout_s=5.0, http_client=http)
+    return build_llm_gateway(
+        settings.model_copy(update={"groq_model": "qwen/qwen3.8-27b"}), adapter
     )
 
 
-async def test_groq_models_with_separate_quota_trackers_do_not_share_rate_limit_counters(mocker):
-    """A 429 seen by one Groq model leaves another model's quota tracker untouched."""
+async def test_separate_groq_gateways_do_not_share_rate_limit_counters():
+    """A 429 seen by one Groq gateway leaves another gateway's quota counters untouched."""
     from langchain_core.messages import HumanMessage
 
-    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
+    sent_a: list[dict] = []
+    sent_b: list[dict] = []
+    gateway_a = _groq_gateway([_groq_response(429), _groq_response(200, "fallback")], sent_a)
+    gateway_b = _groq_gateway([_groq_response(200, "primary")], sent_b)
 
-    client_a = mocker.AsyncMock(spec=httpx.AsyncClient)
-    client_a.post.side_effect = [_groq_response(429), _groq_response(200, "fallback")]
-    client_b = mocker.AsyncMock(spec=httpx.AsyncClient)
-    client_b.post.return_value = _groq_response(200, "primary")
-    tracker_a = GroqQuotaTracker()
-    tracker_b = GroqQuotaTracker()
-    model_a = GroqChatModel(api_key="k", quota_tracker=tracker_a, http_client=client_a)
-    model_b = GroqChatModel(api_key="k", quota_tracker=tracker_b, http_client=client_b)
+    assert (await gateway_a.complete([HumanMessage(content="q")])).text == "fallback"
+    assert (await gateway_b.complete([HumanMessage(content="q")])).text == "primary"
 
-    assert (await model_a.ainvoke([HumanMessage(content="q")])).content == "fallback"
-    assert (await model_b.ainvoke([HumanMessage(content="q")])).content == "primary"
-
-    assert tracker_a.get_snapshot().rate_limit_hits == 1
-    assert tracker_b.get_snapshot().rate_limit_hits == 0
-    assert tracker_b.get_snapshot().total_calls == 1
-    assert client_b.post.call_args[1]["json"]["model"] == "qwen/qwen3.8-27b"
+    assert gateway_a.snapshot().rate_limit_hits == 1
+    assert gateway_b.snapshot().rate_limit_hits == 0
+    assert gateway_b.snapshot().total_calls == 1
+    assert sent_b[-1]["model"] == "qwen/qwen3.8-27b"
 
 
-def test_groq_model_requires_its_quota_tracker_and_http_client():
-    """A Groq model can't silently fall back to shared state: both collaborators are required."""
-    from pydantic import ValidationError
+def test_gateway_requires_an_adapter_and_each_groq_adapter_owns_its_http_client():
+    """A gateway can't silently fall back to shared state: it needs its own adapter."""
+    from resilient_triage.llm import GroqAdapter, LLMGateway
 
-    from resilient_triage.graph.llm import GroqChatModel, GroqQuotaTracker
-
-    with pytest.raises(ValidationError, match="http_client"):
-        GroqChatModel(api_key="k", quota_tracker=GroqQuotaTracker())
-    with pytest.raises(ValidationError, match="quota_tracker"):
-        GroqChatModel(api_key="k", http_client=httpx.AsyncClient())
+    with pytest.raises(TypeError, match="adapter"):
+        LLMGateway(primary="p", fallback="f", label="l")  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="api_key"):
+        GroqAdapter(timeout_s=5.0)  # type: ignore[call-arg]
+    first, second = GroqAdapter("k", timeout_s=5.0), GroqAdapter("k", timeout_s=5.0)
+    assert first._client is not second._client

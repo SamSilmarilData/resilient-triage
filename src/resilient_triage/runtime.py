@@ -8,13 +8,12 @@ from functools import partial
 from typing import TypeVar
 
 import httpx
-from langchain_core.language_models.chat_models import BaseChatModel
 
 from resilient_triage.cache.embeddings import BaseEmbeddingProvider
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
 from resilient_triage.graph.deps import CacheReader, CacheWriter, TelemetrySources, TriageDeps
-from resilient_triage.graph.llm import GroqQuotaTracker, build_triage_llm, new_groq_http_client
+from resilient_triage.llm import LLMGateway, ModelAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
 from resilient_triage.schemas.api import LLMQuotaSnapshot
 from resilient_triage.schemas.telemetry import ChaosTelemetryResponse
@@ -95,20 +94,16 @@ class AppRuntime:
         cache: SemanticCacheManager,
         breakers: CircuitBreakerRegistry,
         chaos: ChaosManager,
-        quota: GroqQuotaTracker,
+        llm: LLMGateway,
         deps: TriageDeps,
-        active_model: str,
         http_clients: tuple[httpx.AsyncClient, ...] = (),
     ) -> None:
         self.cache = cache
         self.breakers = breakers
         self.chaos = chaos
-        self.quota = quota
+        self.llm = llm
         self.deps = deps
-        self.active_model = active_model
         self._http_clients = http_clients
-        # Captured up front so a degraded snapshot can still name the configured model.
-        self._configured_quota_model = quota.active_model
         self.graph_semaphore = asyncio.Semaphore(GRAPH_CONCURRENCY_LIMIT)
         self.requests = RequestCounters()
 
@@ -141,6 +136,7 @@ class AppRuntime:
             await self.cache.close()
         except Exception as exc:
             logger.warning("Semantic cache close failed: %s", exc)
+        await self.llm.aclose()
         for client in self._http_clients:
             try:
                 await client.aclose()
@@ -163,11 +159,11 @@ class AppRuntime:
             chaos_active=_guarded(
                 "Reading the chaos config", lambda: self.chaos.get_config().active, False
             ),
-            active_model=self.active_model,
+            active_model=self.llm.label,
             llm_quota=_guarded(
                 "Reading the LLM quota",
-                self.quota.get_snapshot,
-                LLMQuotaSnapshot(active_model=self._configured_quota_model),
+                self.llm.snapshot,
+                LLMQuotaSnapshot(active_model=self.llm.primary),
             ),
         )
 
@@ -184,7 +180,7 @@ def _guarded(what: str, read: Callable[[], T], default: T) -> T:
 def build_runtime(
     settings: Settings,
     *,
-    llm_adapter: BaseChatModel | None = None,
+    llm_adapter: ModelAdapter | None = None,
     embedder: BaseEmbeddingProvider | None = None,
     statuspage_http: httpx.AsyncClient | None = None,
 ) -> AppRuntime:
@@ -192,7 +188,7 @@ def build_runtime(
     cache = SemanticCacheManager(redis_url=settings.redis_url, embedding_provider=embedder)
     breakers = CircuitBreakerRegistry()
     chaos = ChaosManager()
-    quota = GroqQuotaTracker(active_model=settings.groq_model)
+    llm = build_llm_gateway(settings, llm_adapter)
     if statuspage_http is None:
         statuspage_http = new_statuspage_http_client()
     http_clients: list[httpx.AsyncClient] = [statuspage_http]
@@ -202,17 +198,6 @@ def build_runtime(
         cache_ttl_seconds=SUMMARY_CACHE_TTL_SECONDS,
         breaker_registry=breakers,
     )
-    if llm_adapter is not None:
-        llm = llm_adapter
-        # BaseChatModel has no public type label across the supported langchain-core range
-        # (asdict() only exists from 1.4.2, dict() is deprecated), so read LangChain's own
-        # _llm_type hook to keep this label stable.
-        active_model = f"Test Override ({llm_adapter._llm_type})"
-    else:
-        groq_http = new_groq_http_client()
-        http_clients.append(groq_http)
-        triage_llm = build_triage_llm(settings, quota_tracker=quota, http_client=groq_http)
-        llm, active_model = triage_llm.model, triage_llm.label
     deps = TriageDeps(
         llm=llm,
         telemetry=TelemetrySources(
@@ -227,8 +212,7 @@ def build_runtime(
         cache=cache,
         breakers=breakers,
         chaos=chaos,
-        quota=quota,
+        llm=llm,
         deps=deps,
-        active_model=active_model,
         http_clients=tuple(http_clients),
     )

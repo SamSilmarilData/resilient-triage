@@ -17,7 +17,7 @@ from fakes import fake_statuspage_http
 
 from resilient_triage.api.app import create_app
 from resilient_triage.config import settings
-from resilient_triage.graph.llm import MockTriageChatModel
+from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.runtime import AppRuntime, build_runtime
 
 
@@ -80,9 +80,9 @@ def offline_only(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest_asyncio.fixture
 async def runtime() -> AsyncIterator[AppRuntime]:
-    """A started runtime with the mock LLM and a canned Statuspage, its cache emptied."""
+    """A started runtime with a scripted LLM and a canned Statuspage, its cache emptied."""
     rt = build_runtime(
-        settings, llm_adapter=MockTriageChatModel(), statuspage_http=fake_statuspage_http()
+        settings, llm_adapter=ScriptedAdapter(), statuspage_http=fake_statuspage_http()
     )
     await rt.start()
     # The cache may sit on a live Redis shared across runtimes: start every test empty.

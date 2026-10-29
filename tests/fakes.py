@@ -3,10 +3,10 @@
 from typing import Any
 
 import httpx
-from langchain_core.language_models.chat_models import BaseChatModel
 
 from resilient_triage.cache.semantic_cache import CacheMatch
-from resilient_triage.graph.llm import MockTriageChatModel
+from resilient_triage.config import settings
+from resilient_triage.llm import ModelAdapter, ScriptedAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.runtime import TelemetrySources, TriageDeps
 from resilient_triage.schemas.incident import IncidentTriageReport
@@ -63,13 +63,13 @@ def fake_statuspage_http(payload: dict[str, Any] | None = None) -> httpx.AsyncCl
 
 def make_triage_deps(
     *,
-    llm: BaseChatModel | None = None,
+    llm_adapter: ModelAdapter | None = None,
     history: FakeHistory | None = None,
     statuspage_http: httpx.AsyncClient | None = None,
     breakers: CircuitBreakerRegistry | None = None,
     chaos: ChaosManager | None = None,
 ) -> TriageDeps:
-    """Build TriageDeps from fresh fakes: mock LLM, canned Statuspage, in-memory history."""
+    """Build TriageDeps from fresh fakes: scripted LLM, canned Statuspage, in-memory history."""
     breakers = breakers if breakers is not None else CircuitBreakerRegistry()
     fake_history = history if history is not None else FakeHistory()
     statuspage = StatuspageClient(
@@ -78,7 +78,7 @@ def make_triage_deps(
         breaker_registry=breakers,
     )
     return TriageDeps(
-        llm=llm if llm is not None else MockTriageChatModel(),
+        llm=build_llm_gateway(settings, llm_adapter or ScriptedAdapter()),
         telemetry=TelemetrySources(
             statuspage=statuspage,
             chaos=ChaosClient(manager=chaos or ChaosManager(), breaker_registry=breakers),
