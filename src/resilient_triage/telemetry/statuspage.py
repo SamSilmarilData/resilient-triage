@@ -1,5 +1,6 @@
 """Atlassian Statuspage consumer guarded by circuit breaker and Tenacity retries."""
 
+import asyncio
 import logging
 import time
 
@@ -80,9 +81,16 @@ class StatuspageClient:
         Raises:
             BreakerOpen: If the statuspage circuit breaker is OPEN.
             httpx.HTTPStatusError: If upstream returns 5xx or transient errors after retries.
+            TimeoutError: If the fetch, retries included, outruns the source deadline.
         """
+        # breaker -> source deadline -> retry -> read; httpx timeouts stay the inner limit.
         retry_fn = with_retry()(self._fetch_raw)
-        return await self.circuit_breaker.call(retry_fn)
+
+        async def within_deadline() -> StatuspageSummary:
+            async with asyncio.timeout(settings.telemetry_source_deadline_s):
+                return await retry_fn()
+
+        return await self.circuit_breaker.call(within_deadline)
 
     async def fetch_signals(self) -> list[TelemetrySignal]:
         """Fetch status signals with graceful degraded fallback on failure or tripped breaker.

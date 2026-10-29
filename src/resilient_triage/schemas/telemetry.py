@@ -71,7 +71,9 @@ class ChaosConfig(BaseModel):
     failure_rate: Annotated[
         float, Field(default=0.0, ge=0.0, le=1.0, description="Random failure rate (0.0 to 1.0)")
     ] = 0.0
-    latency_ms: int = Field(default=0, ge=0, description="Artificial latency delay in milliseconds")
+    latency_ms: int = Field(
+        default=0, ge=0, le=30_000, description="Artificial latency delay in milliseconds"
+    )
 
 
 class ChaosTelemetryResponse(BaseModel):
