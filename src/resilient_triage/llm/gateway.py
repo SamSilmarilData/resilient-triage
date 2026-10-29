@@ -128,7 +128,8 @@ class LLMGateway:
         except Exception as exc:
             logger.error("LLM gateway call failed unexpectedly: %s", exc)
             result = Unavailable(detail=f"LLM gateway error: {exc}")
-        # Reached only when not cancelled: a cancelled call records nothing.
+        # Reached only when not cancelled: a cancelled call records no counters (a 429 it got
+        # has already started its cooldown in _call).
         self._record(attempts, result)
         return result
 
