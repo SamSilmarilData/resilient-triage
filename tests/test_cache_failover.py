@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 
 import numpy as np
 import pytest
+from fakes import FakeClock
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
@@ -21,16 +22,6 @@ from resilient_triage.cache.vector_store import (
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 
 QUERY = "GitHub Actions runner jobs are not picking up"
-
-
-class FakeClock:
-    """A monotonic clock the test moves by hand."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 class ScriptedStore:

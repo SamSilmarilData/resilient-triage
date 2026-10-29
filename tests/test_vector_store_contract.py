@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 import pytest_asyncio
+from fakes import FakeClock
 
 from resilient_triage.cache.in_memory_store import InMemoryVectorStore
 from resilient_triage.cache.redis_store import RedisVectorStore
@@ -47,16 +48,8 @@ class Harness:
     bounded: bool = True  # Whether the adapter enforces max_capacity itself.
 
 
-class _FakeClock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
 def _in_memory_harness(max_capacity: int) -> Harness:
-    clock = _FakeClock()
+    clock = FakeClock()
 
     async def advance(seconds: float) -> None:
         clock.now += seconds

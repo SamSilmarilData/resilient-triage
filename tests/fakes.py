@@ -23,6 +23,16 @@ OPERATIONAL_SUMMARY: dict[str, Any] = {
 }
 
 
+class FakeClock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 class FakeHistory:
     """In-memory CacheReader/CacheWriter: records stores, returns a preset lookup match."""
 
