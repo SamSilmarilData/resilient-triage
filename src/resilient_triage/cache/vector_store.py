@@ -60,7 +60,7 @@ class VectorStore(Protocol):
 
     @property
     def count(self) -> int:
-        """Number of entries currently held."""
+        """Entries written or loaded by this process and not since removed, ignoring expiry."""
         ...
 
 
