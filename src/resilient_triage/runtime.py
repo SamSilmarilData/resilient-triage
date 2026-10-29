@@ -24,7 +24,7 @@ from resilient_triage.telemetry.statuspage import (
     StatuspageClient,
     new_statuspage_http_client,
 )
-from resilient_triage.triage_gateway import TriageGateway
+from resilient_triage.triage.gateway import TriageGateway
 
 # Re-exported: the run-context contract lives in graph.deps so nodes avoid an import cycle.
 __all__ = [
@@ -115,9 +115,9 @@ class AppRuntime:
                 f"Registering the {name} breaker", partial(self.breakers.get_or_create, name), None
             )
 
-    async def run_graph(self, inp: TriageState) -> dict[str, Any]:
+    async def run_graph(self, run_input: TriageState) -> dict[str, Any]:
         """Run the triage graph with this runtime's deps as its context (the gateway's runner)."""
-        return await triage_graph.ainvoke(inp, context=self.deps)
+        return await triage_graph.ainvoke(run_input, context=self.deps)
 
     async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:
         """Probe Cluster Sentinel through this runtime's retries and breaker; raises on failure."""

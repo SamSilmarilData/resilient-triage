@@ -20,7 +20,7 @@ from resilient_triage.schemas.incident import (
 from resilient_triage.schemas.state import TriageState
 
 
-def fallback_reason(failure: ProviderFailure | None, validation_errors: list[str]) -> str:
+def _fallback_reason(failure: ProviderFailure | None, validation_errors: list[str]) -> str:
     """Explain the fallback by the provider failure kind, or by exhausted self-repair."""
     match failure:
         case RateLimited():
@@ -61,7 +61,7 @@ def build_fallback_report(
     )
 
 
-def valid_signals(raw_signals: Sequence[Any]) -> list[TelemetrySignal]:
+def _valid_signals(raw_signals: Sequence[Any]) -> list[TelemetrySignal]:
     """Keep the telemetry signals that validate, dropping malformed ones."""
     signals = []
     for s in raw_signals:
@@ -72,14 +72,21 @@ def valid_signals(raw_signals: Sequence[Any]) -> list[TelemetrySignal]:
     return signals
 
 
+def fallback_report_from_state(query: str, state: TriageState) -> IncidentTriageReport:
+    """Build the unreconciled fallback report a run's state explains, keeping its valid signals."""
+    return build_fallback_report(
+        query,
+        reason=_fallback_reason(state.get("provider_failure"), state.get("validation_errors", [])),
+        signals=_valid_signals(state.get("telemetry_signals", [])),
+    )
+
+
 def fallback_report_node(state: TriageState) -> dict[str, Any]:
     """Emit a guaranteed valid report after a provider failure or exhausted self-repair."""
     query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
-    reason = fallback_reason(state.get("provider_failure"), state.get("validation_errors", []))
-    signals = valid_signals(state.get("telemetry_signals", []))
 
     return {
-        "final_report": build_fallback_report(query, reason=reason, signals=signals),
+        "final_report": fallback_report_from_state(query, state),
         "is_degraded": True,
         "synthesis_fell_back": True,
     }

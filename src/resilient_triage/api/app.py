@@ -26,7 +26,7 @@ from resilient_triage.schemas.api import (
     TriageResponse,
 )
 from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
-from resilient_triage.triage_gateway import Analyzed, CacheHit, Shed
+from resilient_triage.triage.gateway import Analyzed, CacheHit, Shed
 
 logger = logging.getLogger(__name__)
 

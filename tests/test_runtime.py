@@ -15,7 +15,7 @@ from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 from resilient_triage.schemas.telemetry import SIGNAL_STATUS_UNAVAILABLE, ChaosConfig
-from resilient_triage.triage_gateway import Analyzed
+from resilient_triage.triage.gateway import Analyzed
 
 UNREACHABLE_REDIS = "redis://127.0.0.1:1/0"
 

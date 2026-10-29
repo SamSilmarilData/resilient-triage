@@ -9,8 +9,7 @@ from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
 from resilient_triage.graph.nodes.fallback_report import (
     build_fallback_report,
-    fallback_reason,
-    valid_signals,
+    fallback_report_from_state,
 )
 from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
 from resilient_triage.schemas.incident import IncidentTriageReport
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 class GraphRunner(Protocol):
     """Runs the triage graph on an input state and returns its final state."""
 
-    async def __call__(self, input: TriageState, /) -> dict[str, Any]: ...
+    async def __call__(self, run_input: TriageState, /) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -46,6 +45,14 @@ class Shed:
 
 
 TriageOutcome = CacheHit | Analyzed | Shed
+
+
+@dataclass(frozen=True)
+class _Analysis:
+    """A run's report, and whether it is a synthesis fallback that must not be cached."""
+
+    report: IncidentTriageReport
+    fell_back: bool
 
 
 @dataclass(frozen=True)
@@ -105,36 +112,33 @@ class TriageGateway:
             logger.warning("No run slot freed up in time; shed request.")
             return Shed()
         try:
-            report, fell_back = await self._analyze(query, scope)
+            analysis = await self._analyze(query, scope)
         finally:
             self._run_slots.release()
-        if not fell_back:
-            await self._cache.store(query=query, report=report, service_filter=scope)
-        return Analyzed(report=report)
+        if not analysis.fell_back:
+            await self._cache.store(query=query, report=analysis.report, service_filter=scope)
+        return Analyzed(report=analysis.report)
 
-    async def _analyze(self, query: str, scope: str | None) -> tuple[IncidentTriageReport, bool]:
+    async def _analyze(self, query: str, scope: str | None) -> _Analysis:
         """Run the graph; return its report, or a synthesis fallback, and whether it fell back."""
         try:
             state = await self._run_graph({"query": query, "service_filter": scope})
         except Exception:
             logger.exception("Triage graph raised; answering with a synthesis fallback.")
-            return _graph_exception_fallback(query), True
+            return _Analysis(_graph_exception_fallback(query), fell_back=True)
         final_report: IncidentTriageReport | None = state.get("final_report")
         if final_report is None:
-            return _synthesis_fallback(query, state), True
+            return _Analysis(_synthesis_fallback(query, state), fell_back=True)
         evidence = DegradationEvidence.from_state(cast(TriageState, state))
-        return final_report, evidence.synthesis_fell_back
+        return _Analysis(final_report, fell_back=evidence.synthesis_fell_back)
 
 
 def _synthesis_fallback(query: str, state: dict[str, Any]) -> IncidentTriageReport:
     """Build and reconcile a synthesis fallback for a run that produced no final report."""
     logger.warning("Graph produced no final report. Engaging emergency fallback report.")
-    report = build_fallback_report(
-        query,
-        reason=fallback_reason(state.get("provider_failure"), state.get("validation_errors", [])),
-        signals=valid_signals(state.get("telemetry_signals", [])),
-    )
-    evidence = DegradationEvidence.from_state(cast(TriageState, state))
+    run_state = cast(TriageState, state)
+    report = fallback_report_from_state(query, run_state)
+    evidence = DegradationEvidence.from_state(run_state)
     return reconcile(report, replace(evidence, synthesis_fell_back=True))
 
 
