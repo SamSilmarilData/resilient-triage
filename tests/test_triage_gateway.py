@@ -189,3 +189,32 @@ async def test_metrics_are_a_snapshot(cache):
 
     assert before == TriageMetrics(hit=0, miss=0, saturated=0)
     assert gateway.metrics.miss == 1
+
+
+def _fallback_report() -> IncidentTriageReport:
+    return IncidentTriageReport(
+        summary="Automated incident triage degraded",
+        severity=SeverityLevel.UNKNOWN,
+        root_cause_analysis="Self-repair limits reached. Diagnostic context: LLM synthesis error",
+        degradation_status=DegradationStatus.SEVERELY_DEGRADED,
+        circuit_breakers_tripped=[],
+        confidence_score=0.2,
+    )
+
+
+async def test_a_synthesis_fallback_is_answered_but_not_stored(cache):
+    fallback = _fallback_report()
+    graph = ReturningGraph({"final_report": fallback, "synthesis_fell_back": True})
+    gateway = _gateway(cache, graph)
+
+    outcome = await gateway.triage(QUERY, None)
+
+    assert outcome == Analyzed(report=fallback)
+    assert await cache.lookup(QUERY) is None
+    assert gateway.metrics == TriageMetrics(hit=0, miss=1, saturated=0)
+
+    again = await gateway.triage(QUERY, None)
+
+    assert isinstance(again, Analyzed)
+    assert len(graph.calls) == 2
+    assert gateway.metrics == TriageMetrics(hit=0, miss=2, saturated=0)
