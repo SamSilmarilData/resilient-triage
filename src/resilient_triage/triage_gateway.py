@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, assert_never, cast
 
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings
@@ -67,16 +67,32 @@ class TriageGateway:
         self._run_graph = run_graph
         self._settings = settings
         self._run_slots = asyncio.Semaphore(settings.triage_max_concurrent_runs)
+        self._metrics = TriageMetrics()
 
     @property
     def metrics(self) -> TriageMetrics:
         """A snapshot of this gateway's outcome counts."""
-        return TriageMetrics()
+        return self._metrics
 
     async def triage(
         self, query: str, scope: str | None, *, force_refresh: bool = False
     ) -> TriageOutcome:
-        """Return how this triage request ended."""
+        """Return how this triage request ended, counting the outcome."""
+        outcome = await self._triage(query, scope, force_refresh=force_refresh)
+        m = self._metrics
+        match outcome:
+            case CacheHit():
+                self._metrics = replace(m, hit=m.hit + 1)
+            case Analyzed():
+                self._metrics = replace(m, miss=m.miss + 1)
+            case Shed():
+                self._metrics = replace(m, saturated=m.saturated + 1)
+            case _:
+                assert_never(outcome)
+        return outcome
+
+    async def _triage(self, query: str, scope: str | None, *, force_refresh: bool) -> TriageOutcome:
+        """Answer from the cache, else run the graph in a slot and store its report, else shed."""
         if not force_refresh:
             match = await self._cache.lookup(query=query, service_filter=scope)
             if match:
@@ -89,12 +105,17 @@ class TriageGateway:
             logger.warning("No run slot freed up in time; shed request.")
             return Shed()
         try:
-            state = await self._run_graph({"query": query, "service_filter": scope})
+            report = await self._analyze(query, scope)
         finally:
             self._run_slots.release()
-        report = state.get("final_report") or _synthesis_fallback(query, state)
         await self._cache.store(query=query, report=report, service_filter=scope)
         return Analyzed(report=report)
+
+    async def _analyze(self, query: str, scope: str | None) -> IncidentTriageReport:
+        """Run the graph and return its report, or a synthesis fallback if it produced none."""
+        state = await self._run_graph({"query": query, "service_filter": scope})
+        final_report: IncidentTriageReport | None = state.get("final_report")
+        return final_report or _synthesis_fallback(query, state)
 
 
 def _synthesis_fallback(query: str, state: dict[str, Any]) -> IncidentTriageReport:
