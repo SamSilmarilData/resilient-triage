@@ -7,9 +7,8 @@ Kept free of the runtime and graph modules so nodes can import it without an imp
 from dataclasses import dataclass
 from typing import Protocol
 
-from langchain_core.language_models.chat_models import BaseChatModel
-
 from resilient_triage.cache.semantic_cache import CacheMatch
+from resilient_triage.llm import LLMGateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.telemetry.chaos import ChaosClient
@@ -45,7 +44,7 @@ class TelemetrySources:
 class TriageDeps:
     """Everything a graph node can see (LangGraph context_schema)."""
 
-    llm: BaseChatModel
+    llm: LLMGateway
     telemetry: TelemetrySources
     history: CacheReader
     cache_writer: CacheWriter

@@ -83,7 +83,7 @@
    - Guards external telemetry probes against systemic failures (`fail_max=3`, `reset_timeout=30s`).
    - If an external status page crashes or hangs, the breaker trips `OPEN`, causing the LangGraph state machine to route into `DegradedFallbackNode` instead of stalling requests.
 3. **Tenacity Exponential Backoff & Jitter**:
-   - Telemetry clients and LLM invocation wrappers absorb transient network drops and HTTP 429 rate limits via exponential backoff with full randomized jitter.
+   - Telemetry clients absorb transient network drops and HTTP 429 rate limits via exponential backoff with full randomized jitter. Model calls go through the LLM gateway, which retries an outage once and fails over to a second Groq model on a 429 ([resilience guide](docs/resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns)).
 4. **Pydantic Validation & Automated Self-Repair**:
    - All LLM outputs are strictly validated against `IncidentTriageReport`.
    - Any `ValidationError` extracts exact error paths and feeds the traceback back to the LLM context to iteratively repair malformed fields (capped at 2 retries).
@@ -93,7 +93,7 @@
    - If an external `REDIS_URL` is provided (e.g. Upstash or Docker Compose), internal Redis is bypassed automatically.
 6. **Telemetry & Embedding Vector Optimization (v1.3.0)**:
    - **10-Second Statuspage In-Memory Cache**: Eliminates redundant transcontinental network fetches to status APIs, saving ~700ms on successive triage queries.
-   - **Persistent Groq HTTP Connection Pooling**: Keeps connections warm with `max_tokens=650`, eliminating TCP/TLS handshake latency.
+   - **Persistent Groq HTTP Connection Pooling**: Keeps connections warm and caps generation at `LLM_MAX_TOKENS` (default 2500), eliminating TCP/TLS handshake latency.
    - **In-Memory LRU Vector Cache & Pre-Warming**: Caches up to 512 query vectors and pre-warms demo presets at boot, driving cache-hit lookups down to **1.16ms**.
 
 ---
@@ -177,7 +177,9 @@ Explore the architecture, resilience engineering, API specifications, and archit
   - [ADR 0002: Dual-Engine Semantic Caching](docs/decisions/0002-dual-engine-semantic-caching.md)
   - [ADR 0003: Pybreaker & Tenacity for Resilience](docs/decisions/0003-pybreaker-and-tenacity-for-resilience.md)
   - [ADR 0004: Strict Pydantic Contracts & Self-Repair Loop](docs/decisions/0004-strict-pydantic-contracts-and-self-repair.md)
-  - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md)
+  - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md) (fallback model superseded by ADR 0006)
+  - [ADR 0006: Project-Owned LLM Gateway](docs/decisions/0006-project-owned-llm-gateway.md)
+  - [ADR 0007: No Checkpointing on the Request Path](docs/decisions/0007-no-checkpointing-on-the-request-path.md)
 
 ---
 
@@ -220,7 +222,7 @@ resilient-triage/
 │   ├── schemas.md                  # Strict Pydantic contracts and schemas
 │   ├── demo.md                     # Interactive 5-Act presentation script & demo guide
 │   ├── deployment.md               # 100% Free cloud hosting guide (Hugging Face Spaces / Render)
-│   └── decisions/                  # MADR Architecture Decision Records (0001 - 0005)
+│   └── decisions/                  # MADR Architecture Decision Records (0001 - 0007)
 ├── src/resilient_triage/
 │   ├── config.py                   # Centralized pydantic-settings configuration
 │   ├── schemas/                    # Pydantic v2 data contracts (incident, telemetry, state, api)

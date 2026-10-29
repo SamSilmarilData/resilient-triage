@@ -78,13 +78,60 @@ class Settings(BaseSettings):
         description="Max retries allowed for Pydantic LLM self-repair loop",
     )
 
-    # LLM Providers (Groq LPU, OpenAI, Google)
+    # LLM Provider (Groq LPU; without a key the app runs the zero-config simulation)
     groq_api_key: str | None = Field(
         default=None, description="Groq API key for ultra-fast LPU inference"
     )
     groq_model: str = Field(
         default="qwen/qwen3.8-27b",
         description="Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
+    )
+    llm_request_timeout_s: float = Field(
+        default=20.0,
+        gt=0,
+        le=120,
+        description="Timeout in seconds for one HTTP call to the LLM provider",
+    )
+    llm_temperature: float = Field(
+        default=0.0,
+        ge=0,
+        le=2,
+        description="Sampling temperature sent with every LLM call (0 is deterministic)",
+    )
+    llm_max_tokens: int = Field(
+        default=2500,
+        ge=1,
+        le=32768,
+        description="Max completion tokens the LLM may return for one triage report",
+    )
+    llm_max_keepalive_connections: int = Field(
+        default=20,
+        ge=0,
+        le=1000,
+        description="Idle keep-alive connections the LLM HTTP client pool holds open",
+    )
+    llm_max_connections: int = Field(
+        default=50,
+        ge=1,
+        le=1000,
+        description="Max concurrent connections in the LLM HTTP client pool",
+    )
+    groq_fallback_model: str = Field(
+        default="llama-3.1-8b-instant",
+        min_length=1,
+        description="Groq model the gateway fails over to when the primary model fails",
+    )
+    llm_default_cooldown_s: float = Field(
+        default=30.0,
+        ge=1,
+        le=3600,
+        description="Seconds a rate-limited model cools down when no usable reset is known",
+    )
+    llm_max_cooldown_s: float = Field(
+        default=3600.0,
+        ge=1,
+        le=86400,
+        description="Upper bound in seconds on any rate-limit cooldown of one model",
     )
 
     # Security & Administration

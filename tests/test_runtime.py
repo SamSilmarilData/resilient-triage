@@ -5,10 +5,11 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest_asyncio
+from langchain_core.messages import HumanMessage
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import Settings, settings
-from resilient_triage.graph.llm import MockTriageChatModel
+from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
@@ -34,11 +35,11 @@ def _settings(**overrides: object) -> Settings:
 
 @pytest_asyncio.fixture
 async def make_runtime() -> AsyncIterator[Callable[..., AppRuntime]]:
-    """Build runtimes on demand (offline embedder, mock LLM) and close them all afterwards."""
+    """Build runtimes on demand (offline embedder, scripted LLM); close them all afterwards."""
     built: list[AppRuntime] = []
 
     def _make(app_settings: Settings | None = None, **kwargs: object) -> AppRuntime:
-        kwargs.setdefault("llm_adapter", MockTriageChatModel())
+        kwargs.setdefault("llm_adapter", ScriptedAdapter())
         kwargs.setdefault("embedder", DeterministicEmbeddingProvider())
         runtime = build_runtime(app_settings or _settings(), **kwargs)  # type: ignore[arg-type]
         built.append(runtime)
@@ -74,10 +75,11 @@ async def test_redis_unreachable_start_and_snapshot_report_memory_cache(make_run
 
 
 async def test_deps_carry_the_injected_llm(make_runtime):
-    adapter = MockTriageChatModel()
+    adapter = ScriptedAdapter()
     runtime = make_runtime(llm_adapter=adapter)
 
-    assert runtime.deps.llm is adapter
+    assert runtime.deps.llm is runtime.llm
+    assert runtime.deps.llm.adapter is adapter
 
 
 async def test_deps_history_reads_what_the_cache_writer_stored(make_runtime):
@@ -114,7 +116,7 @@ async def test_deps_telemetry_statuspage_fails_fast_on_this_runtimes_open_breake
     assert [s.status for s in signals] == ["CIRCUIT_OPEN"]
 
 
-async def test_groq_llm_calls_through_this_runtimes_http_client_and_quota_tracker(
+async def test_groq_llm_calls_through_this_runtimes_http_client_and_gateway(
     make_runtime, monkeypatch
 ):
     requests: list[httpx.Request] = []
@@ -125,28 +127,28 @@ async def test_groq_llm_calls_through_this_runtimes_http_client_and_quota_tracke
         return httpx.Response(200, json=body, headers={"x-ratelimit-remaining-requests": "41"})
 
     monkeypatch.setattr(
-        "resilient_triage.runtime.new_groq_http_client",
-        lambda: httpx.AsyncClient(transport=httpx.MockTransport(groq_api)),
+        "resilient_triage.llm.groq.new_groq_http_client",
+        lambda timeout: httpx.AsyncClient(transport=httpx.MockTransport(groq_api)),
     )
     groq_settings = _settings(groq_api_key="test-key", groq_model="qwen/qwen3.8-27b")
     runtime = make_runtime(groq_settings, llm_adapter=None)
     other = make_runtime(groq_settings, llm_adapter=None)
 
-    reply = await runtime.deps.llm.ainvoke("triage this")
+    reply = await runtime.deps.llm.complete([HumanMessage(content="triage this")])
 
-    assert reply.content == '{"ok": true}'
+    assert reply.text == '{"ok": true}'  # type: ignore[union-attr]
     assert len(requests) == 1
     snapshot = await runtime.snapshot()
     assert snapshot.llm_quota.total_calls == 1
     assert snapshot.llm_quota.remaining_requests == 41
     assert snapshot.active_model == "Groq LPU (qwen/qwen3.8-27b)"
     assert (await other.snapshot()).llm_quota.total_calls == 0
-    assert other.quota is not runtime.quota
-    assert other.quota.get_snapshot().remaining_requests is None
+    assert other.llm is not runtime.llm
+    assert other.llm.snapshot().remaining_requests is None
 
 
 async def test_snapshot_reports_chaos_cache_entries_and_injected_model(make_runtime):
-    runtime = make_runtime(llm_adapter=MockTriageChatModel())
+    runtime = make_runtime(llm_adapter=ScriptedAdapter())
     await runtime.start()
     before = await runtime.snapshot()
 
@@ -156,7 +158,7 @@ async def test_snapshot_reports_chaos_cache_entries_and_injected_model(make_runt
 
     assert (before.chaos_active, before.cache_entries) == (False, 0)
     assert (after.chaos_active, after.cache_entries) == (True, 1)
-    assert after.active_model == "Test Override (mock-triage-llm)"
+    assert after.active_model == "Zero-Config SRE Simulation"
     assert after.llm_quota.provider == "groq"
 
 
@@ -165,12 +167,12 @@ async def test_aclose_closes_owned_http_clients_and_cache_and_is_idempotent(
 ):
     opened: list[httpx.AsyncClient] = []
 
-    def tracked_client() -> httpx.AsyncClient:
+    def tracked_client(timeout: float | None = None) -> httpx.AsyncClient:
         client = httpx.AsyncClient()
         opened.append(client)
         return client
 
-    monkeypatch.setattr("resilient_triage.runtime.new_groq_http_client", tracked_client)
+    monkeypatch.setattr("resilient_triage.llm.groq.new_groq_http_client", tracked_client)
     monkeypatch.setattr("resilient_triage.runtime.new_statuspage_http_client", tracked_client)
     # The configured Redis URL: when Redis is up, start() really connects and aclose() must drop it.
     runtime = make_runtime(
@@ -307,7 +309,7 @@ async def test_snapshot_never_raises_when_the_chaos_config_read_fails(make_runti
 async def test_snapshot_never_raises_when_the_quota_snapshot_fails(make_runtime):
     runtime = make_runtime(_settings(groq_model="runtime-specific-model"))
     await runtime.start()
-    runtime.quota.get_snapshot = _explode  # type: ignore[method-assign]
+    runtime.llm.snapshot = _explode  # type: ignore[method-assign]
 
     snapshot = await runtime.snapshot()
 

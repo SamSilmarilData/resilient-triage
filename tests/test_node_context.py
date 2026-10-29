@@ -7,11 +7,11 @@ from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from resilient_triage.cache.semantic_cache import CacheMatch
-from resilient_triage.graph.llm import MockTriageChatModel
 from resilient_triage.graph.nodes.collect_telemetry import collect_telemetry_node
 from resilient_triage.graph.nodes.compensate_blindspots import compensate_blindspots_node
 from resilient_triage.graph.nodes.finalize import finalize_node
 from resilient_triage.graph.nodes.generate_report import generate_report_node
+from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 
@@ -62,16 +62,15 @@ async def test_compensate_blindspots_reads_history_from_context():
 
 
 async def test_generate_report_calls_the_llm_from_context():
-    llm = MockTriageChatModel()
-    llm.responses = [json.dumps({"summary": "from the context llm"})]
+    llm = ScriptedAdapter([json.dumps({"summary": "from the context llm"})])
 
     result = await generate_report_node(
         {"messages": [HumanMessage(content="Is checkout down?")]},
-        Runtime(context=make_triage_deps(llm=llm)),
+        Runtime(context=make_triage_deps(llm_adapter=llm)),
     )
 
     assert result["candidate_report_raw"] == json.dumps({"summary": "from the context llm"})
-    assert llm.call_count == 1
+    assert len(llm.calls) == 1
 
 
 async def test_finalize_stores_the_report_through_the_context_cache_writer():

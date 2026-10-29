@@ -142,7 +142,7 @@ Liveness and readiness health probe for Kubernetes/load balancers, returning ser
   "llm_quota": {
     "provider": "groq",
     "active_model": "qwen/qwen3.8-27b",
-    "fallback_model": "openai/gpt-oss-20b",
+    "fallback_model": "llama-3.1-8b-instant",
     "remaining_requests": 999,
     "limit_requests": 1000,
     "remaining_tokens": 7112,
@@ -210,14 +210,14 @@ curl -s http://127.0.0.1:8000/resilience/status
 ---
 
 ### 4. `GET /llm/quota`
-Retrieves live rate limit budgets, remaining token allowances, and failover metrics captured from Groq API response headers.
+Returns the LLM gateway's quota snapshot: the primary model's rate-limit budgets from Groq's response headers, plus call, rate-limit and failover counters for both models. `active_model` is the model that served the last completion. Without `GROQ_API_KEY` the budget fields stay `null`. Field reference: [`LLMQuotaSnapshot`](schemas.md#llmquotasnapshot).
 
 #### Response (`200 OK`)
 ```json
 {
   "provider": "groq",
   "active_model": "qwen/qwen3.8-27b",
-  "fallback_model": "openai/gpt-oss-20b",
+  "fallback_model": "llama-3.1-8b-instant",
   "remaining_requests": 999,
   "limit_requests": 1000,
   "remaining_tokens": 7112,
@@ -286,7 +286,7 @@ curl -s http://127.0.0.1:8000/metrics
 ---
 
 ### 6. `POST /resilience/reset`
-Administrative reset restoring all circuit breakers to `CLOSED`, clearing chaos injection rules, and resetting LLM quota counters.
+Administrative reset restoring all circuit breakers to `CLOSED`, clearing chaos injection rules, and resetting the LLM gateway: its counters and last error are zeroed and every model cooldown ends.
 
 #### Headers
 | Header | Type | Description |
