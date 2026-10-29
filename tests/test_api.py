@@ -8,10 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from fakes import fake_statuspage_http
+from langchain_core.messages import HumanMessage
 
 from resilient_triage.api.app import create_app
 from resilient_triage.config import settings
-from resilient_triage.graph.llm import MockTriageChatModel
+from resilient_triage.llm import RateLimited, ScriptedAdapter, Unavailable, build_llm_gateway
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.schemas.incident import SeverityLevel
 
@@ -268,15 +269,10 @@ async def test_triage_llm_failure_degrades_gracefully(
     client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
 ):
     """Verify a failed LLM call (e.g. HTTP 429, network error) still returns 200 with a fallback."""
-    mock_llm = MagicMock()
-    mock_llm.ainvoke = AsyncMock(
-        side_effect=httpx.HTTPStatusError(
-            "429 Too Many Requests: Rate limit reached",
-            request=httpx.Request("POST", "https://api.groq.com"),
-            response=httpx.Response(429),
-        )
-    )
-    monkeypatch.setattr(runtime, "deps", dataclasses.replace(runtime.deps, llm=mock_llm))
+    failure = Unavailable(detail="429 Too Many Requests: Rate limit reached")
+    # Enough failures for every model call one complete() may make.
+    scripted = build_llm_gateway(settings, ScriptedAdapter([failure] * 3))
+    monkeypatch.setattr(runtime, "deps", dataclasses.replace(runtime.deps, llm=scripted))
     resp = await client.post(
         "/triage",
         json={"query": "High memory pressure on payment service", "force_refresh": True},
@@ -392,25 +388,21 @@ async def test_resilience_reset_clears_llm_quota_counters(
     client: httpx.AsyncClient, runtime: AppRuntime
 ):
     """Verify POST /resilience/reset resets LLM quota tracker metrics."""
-    # Simulate some tracked calls
-    mock_resp = httpx.Response(
-        429,
-        headers={
-            "x-ratelimit-remaining-tokens": "500",
-            "x-ratelimit-limit-tokens": "8000",
-        },
-        request=httpx.Request("POST", "https://api.groq.com"),
-    )
-    runtime.quota.record_response(mock_resp, model_name="qwen/qwen3.8-27b")
-    snap_before = runtime.quota.get_snapshot()
-    assert snap_before.total_calls == 1
+    # Simulate some tracked calls: a primary 429 answered by the fallback model
+    adapter = runtime.llm.adapter
+    assert isinstance(adapter, ScriptedAdapter)
+    adapter.script.append(RateLimited(retry_after_s=None, scope="unknown", detail="Rate limit"))
+    await runtime.llm.complete([HumanMessage(content="Is checkout down?")])
+    snap_before = runtime.llm.snapshot()
+    assert snap_before.total_calls == 2
     assert snap_before.rate_limit_hits == 1
+    assert snap_before.failover_events == 1
 
     # Reset via API
     reset_resp = await client.post("/resilience/reset")
     assert reset_resp.status_code == 200
 
-    snap_after = runtime.quota.get_snapshot()
+    snap_after = runtime.llm.snapshot()
     assert snap_after.total_calls == 0
     assert snap_after.rate_limit_hits == 0
     assert snap_after.failover_events == 0
@@ -602,7 +594,7 @@ async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
 async def test_lifespan_closes_telemetry_and_llm_clients(monkeypatch):
     """Verify the app lifespan starts its runtime and closes the Statuspage and Groq clients."""
     groq_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
-    monkeypatch.setattr("resilient_triage.runtime.new_groq_http_client", lambda: groq_http)
+    monkeypatch.setattr("resilient_triage.llm.groq.new_groq_http_client", lambda t: groq_http)
     statuspage_http = fake_statuspage_http()
     rt = build_runtime(
         settings.model_copy(update={"groq_api_key": "test-key"}), statuspage_http=statuspage_http
@@ -651,7 +643,7 @@ async def test_two_apps_keep_separate_breakers_and_request_metrics(
 ):
     """Verify a second app instance has its own runtime: breakers and counters don't leak."""
     other_rt = build_runtime(
-        settings, llm_adapter=MockTriageChatModel(), statuspage_http=fake_statuspage_http()
+        settings, llm_adapter=ScriptedAdapter(), statuspage_http=fake_statuspage_http()
     )
     other_app = create_app(lambda: other_rt)
     async with other_app.router.lifespan_context(other_app):

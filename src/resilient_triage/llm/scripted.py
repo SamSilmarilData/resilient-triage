@@ -1,0 +1,70 @@
+"""ScriptedAdapter: the test fake and zero-config simulation behind the LLM gateway."""
+
+import json
+from collections.abc import Sequence
+
+from langchain_core.messages import BaseMessage
+
+from resilient_triage.llm.gateway import Completion, ProviderFailure
+
+# The answer once the script runs out: a valid report, so the simulation triages end to end.
+DEFAULT_REPORT_JSON = json.dumps(
+    {
+        "summary": "GitHub Actions workflows experiencing elevated failure rates",
+        "severity": "HIGH",
+        "root_cause_analysis": "Upstream webhook processing queue saturation",
+        "affected_services": [
+            {
+                "service_name": "Actions Runner",
+                "impact_level": "Major Outage",
+                "details": "Job pickup delayed by >15 minutes",
+            }
+        ],
+        "telemetry_signals": [
+            {
+                "source": "statuspage:global",
+                "status": "major",
+                "latency_ms": 320.0,
+                "error_rate": 0.5,
+                "raw_snippet": "GitHub: Major Service Outage",
+            }
+        ],
+        "recommended_actions": [
+            {
+                "priority": "P0",
+                "action": ("Inspect Actions webhook runner health: kubectl get pods -n actions"),
+                "target_system": "Actions Controller",
+                "action_type": "diagnostic",
+                "requires_approval": False,
+            },
+            {
+                "priority": "P1",
+                "action": "Scale runner replica pool by 50%",
+                "target_system": "Runner Deployment",
+                "action_type": "remediative",
+                "requires_approval": True,
+            },
+        ],
+        "degradation_status": "HEALTHY",
+        "circuit_breakers_tripped": [],
+        "confidence_score": 0.90,
+    }
+)
+
+
+class ScriptedAdapter:
+    """Returns script entries in order, then DEFAULT_REPORT_JSON; records each call's model."""
+
+    def __init__(self, script: Sequence[str | ProviderFailure] = ()) -> None:
+        self.script: list[str | ProviderFailure] = list(script)
+        self.calls: list[str] = []
+
+    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
+        """Return the next script entry (a str becomes a Completion from model)."""
+        index = len(self.calls)
+        self.calls.append(model)
+        entry = self.script[index] if index < len(self.script) else DEFAULT_REPORT_JSON
+        return Completion(text=entry, model=model) if isinstance(entry, str) else entry
+
+    async def aclose(self) -> None:
+        """Nothing to release."""

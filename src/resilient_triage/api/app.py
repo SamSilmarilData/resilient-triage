@@ -349,12 +349,12 @@ async def get_llm_quota(runtime: RuntimeDep) -> LLMQuotaSnapshot:
     """Retrieve real-time rate limit headers, token budgets, and failover metrics for LLM providers.
 
     Args:
-        runtime: The app's runtime, whose quota tracker is read.
+        runtime: The app's runtime, whose LLM gateway is read.
 
     Returns:
         LLMQuotaSnapshot: Token budgets, rate limits, and fallback statistics.
     """
-    return runtime.quota.get_snapshot()
+    return runtime.llm.snapshot()
 
 
 @router.post("/resilience/reset", response_model=None, dependencies=[Depends(verify_admin_key)])
@@ -362,14 +362,14 @@ async def reset_resilience(runtime: RuntimeDep) -> dict[str, Any]:
     """Reset all circuit breakers to closed, and reset chaos configuration and LLM quota counters.
 
     Args:
-        runtime: The app's runtime, whose breakers, chaos manager and quota tracker are reset.
+        runtime: The app's runtime, whose breakers, chaos manager and LLM gateway are reset.
 
     Returns:
         dict[str, str]: Operation confirmation status dictionary.
     """
     runtime.breakers.reset_all()
     runtime.chaos.reset()
-    runtime.quota.reset_counters()
+    runtime.llm.reset()
     return {
         "status": "ok",
         "message": "Circuit breakers, chaos state, and LLM counters successfully reset",

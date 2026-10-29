@@ -78,13 +78,19 @@ class Settings(BaseSettings):
         description="Max retries allowed for Pydantic LLM self-repair loop",
     )
 
-    # LLM Providers (Groq LPU, OpenAI, Google)
+    # LLM Provider (Groq LPU; without a key the app runs the zero-config simulation)
     groq_api_key: str | None = Field(
         default=None, description="Groq API key for ultra-fast LPU inference"
     )
     groq_model: str = Field(
         default="qwen/qwen3.8-27b",
         description="Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
+    )
+    llm_request_timeout_s: float = Field(
+        default=20.0,
+        gt=0,
+        le=120,
+        description="Timeout in seconds for one HTTP call to the LLM provider",
     )
 
     # Security & Administration
