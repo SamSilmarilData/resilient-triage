@@ -63,6 +63,18 @@ class ClusterSentinelSource:
     """Cluster Sentinel Telemetry source: one sub-probe signal, subject to Chaos injection."""
 
     id = "chaos"
+    keywords = frozenset(
+        {
+            "internal",
+            "chaos",
+            "auth",
+            "database",
+            "redis",
+            "latency probe",
+            "payment",
+            "chaos_probe",
+        }
+    )
 
     def __init__(self, manager: ChaosManager) -> None:
         self.manager = manager
