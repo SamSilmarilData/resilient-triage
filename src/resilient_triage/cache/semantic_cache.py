@@ -6,7 +6,8 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -265,21 +266,14 @@ class SemanticCacheManager:
         # 2. Search Redis if it is up and searchable; a Redis MISS still checks the standby
         redis = self._redis
         if redis is not None and redis.supports_search and not self._clear_pending:
-            try:
+            redis_hit: VectorHit | None = None
+            async with self._redis_call("search"):
                 redis_hit = await redis.search(query_vec, target_scope, effective_threshold)
-            except StoreUnavailable as conn_err:
-                await self._mark_down(f"search failed: {conn_err}")
-            except Exception as query_err:
-                logger.warning(
-                    "Redis search error: %s. Falling back to the standby without disconnecting.",
-                    query_err,
-                )
-            else:
-                if redis_hit is not None:
-                    match = self._to_match(redis_hit, start_time)
-                    if match is None:
-                        await self._evict(redis_hit.doc_id)
-                    return match
+            if redis_hit is not None:
+                match = self._to_match(redis_hit, start_time)
+                if match is None:
+                    await self._evict(redis_hit.doc_id)
+                return match
 
         # 3. Fall back to the in-memory standby
         hit = await self._standby.search(query_vec, target_scope, effective_threshold)
@@ -307,12 +301,8 @@ class SemanticCacheManager:
         redis = self._redis
         if redis is None:
             return
-        try:
+        async with self._redis_call(f"delete of invalid entry {doc_id}"):
             await redis.delete(doc_id)
-        except StoreUnavailable as conn_err:
-            await self._mark_down(f"delete failed: {conn_err}")
-        except Exception as err:
-            logger.warning("Redis delete of invalid entry %s failed: %s", doc_id, err)
 
     @staticmethod
     def _to_match(hit: VectorHit, start_time: float) -> CacheMatch | None:
@@ -395,12 +385,8 @@ class SemanticCacheManager:
         redis = self._redis
         if redis is None:
             return
-        try:
+        async with self._redis_call("store"):
             await redis.put(entry, ttl=effective_ttl)
-        except StoreUnavailable as conn_err:
-            await self._mark_down(f"store failed: {conn_err}")
-        except Exception as err:
-            logger.warning("Redis store error: %s (in-memory copy active).", err)
 
     async def clear(self) -> None:
         """Clear all in-memory and Redis cache entries."""
@@ -420,14 +406,23 @@ class SemanticCacheManager:
     async def _clear_redis(self, redis: RemoteVectorStore) -> None:
         """Clear Redis; on any failure the clear stays pending until a retry succeeds."""
         self._clear_pending = True
-        try:
+        async with self._redis_call("clear"):
             await redis.clear()
-        except StoreUnavailable as conn_err:
-            await self._mark_down(f"clear failed: {conn_err}")
-        except Exception as err:
-            logger.warning("Redis clear error: %s", err)
-        else:
             self._clear_pending = False
+
+    @asynccontextmanager
+    async def _redis_call(self, operation: str) -> AsyncIterator[None]:
+        """Swallow a Redis failure: drop Redis if it is unreachable, else log and stay up."""
+        try:
+            yield
+        except StoreUnavailable as conn_err:
+            await self._mark_down(f"{operation} failed: {conn_err}")
+        except Exception as err:
+            logger.warning(
+                "Redis %s error: %s. Serving from the standby; Redis stays connected.",
+                operation,
+                err,
+            )
 
     @property
     def driver(self) -> str:
