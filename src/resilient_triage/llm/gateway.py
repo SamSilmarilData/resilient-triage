@@ -129,6 +129,15 @@ class LLMGateway:
         self, messages: list[BaseMessage], attempts: list[Attempt]
     ) -> Completion | ProviderFailure:
         if self._cooling_down(self.primary):
+            if self._cooling_down(self.fallback):
+                # No call made and no 429 received, so attempts stays empty: nothing is recorded.
+                return RateLimited(
+                    retry_after_s=min(
+                        self._remaining_s(self.primary), self._remaining_s(self.fallback)
+                    ),
+                    scope="unknown",
+                    detail=f"Both {self.primary} and {self.fallback} are cooling down",
+                )
             return await self._call(self.fallback, messages, attempts)
         result = await self._call(self.primary, messages, attempts)
         if isinstance(result, Unavailable):
@@ -147,7 +156,10 @@ class LLMGateway:
         return await self._call(self.fallback, messages, attempts)
 
     def _cooling_down(self, model: str) -> bool:
-        return self._clock() < self._cooldown_until.get(model, 0.0)
+        return self._remaining_s(model) > 0
+
+    def _remaining_s(self, model: str) -> float:
+        return self._cooldown_until.get(model, 0.0) - self._clock()
 
     async def _call(
         self, model: str, messages: list[BaseMessage], attempts: list[Attempt]
