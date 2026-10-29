@@ -167,7 +167,7 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
   - The gateway counts adapter calls, 429 rate-limit hits and failover events.
   - `LLMGateway.snapshot()` returns the strict typed [`LLMQuotaSnapshot`](schemas.md#llmquotasnapshot) served by `GET /llm/quota` and embedded in `GET /health` and `GET /resilience/status`. Its budget fields describe the primary model only.
 - **Secondary Model Failover**:
-  - A 429 from the primary puts it into a cooldown sized by the rate limit's scope, and the same prompt goes to the fallback model, which has its own quota bucket. While the primary cools down, calls go straight to the fallback.
+  - A 429 from the primary puts it into a cooldown sized by the rate limit's scope, and the same prompt goes to the fallback model, which has its own quota bucket, unless the fallback is cooling down too. While the primary cools down, calls go straight to the fallback; a model in cooldown is never called, so while both cool down `complete()` makes no call and returns `RateLimited`.
   - Each `complete()` makes at most 3 calls. The full policy is in the [resilience guide](resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns).
 - **Diagnostic Logging**:
   - Every failed call logs its model and failure kind at `WARNING`, and the provider's error message is kept as the snapshot's `last_error`.

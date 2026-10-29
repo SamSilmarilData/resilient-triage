@@ -207,7 +207,7 @@ The primary is `GROQ_MODEL` (`qwen/qwen3.8-27b`), the fallback `GROQ_FALLBACK_MO
 | :--- | :--- |
 | `Completion` | Return it. |
 | `RateLimited` | Start the primary's cooldown and call the fallback once. The primary is never retried. |
-| `Unavailable` | Retry the primary once after a jittered backoff (`random.uniform(RETRY_MIN_WAIT_SECONDS, RETRY_MAX_WAIT_SECONDS)`). If the retry fails with anything but `Rejected`, call the fallback once. |
+| `Unavailable` | Retry the primary once after a jittered backoff (`random.uniform(RETRY_MIN_WAIT_SECONDS, RETRY_MAX_WAIT_SECONDS)`). If the retry fails with anything but `Rejected`, call the fallback once. The retry is sent even if a concurrent call put the primary into cooldown during the backoff. |
 | `MalformedResponse` | Call the fallback once. |
 | `Rejected` | Return it at once: no retry, no failover. |
 | *(primary in cooldown)* | Skip the primary and call the fallback once. |

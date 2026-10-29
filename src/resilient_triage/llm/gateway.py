@@ -88,8 +88,9 @@ class LLMGateway:
     returned as is; while both cool down, no call is made and a RateLimited carrying the
     shorter remaining window is returned. A 429 starts its model's cooldown when it arrives,
     so concurrent and later-cancelled calls see it; counters are applied only when complete()
-    finishes. Known limit: calls already waiting on the primary when its first 429 arrives
-    still get their own 429s (no single-flight).
+    finishes. Known limits: calls already waiting on the primary when its first 429 arrives
+    still get their own 429s (no single-flight), and the Unavailable retry is sent even if a
+    concurrent call put the primary into cooldown during the backoff.
     """
 
     def __init__(
@@ -136,13 +137,14 @@ class LLMGateway:
     async def _complete(
         self, messages: list[BaseMessage], attempts: list[Attempt]
     ) -> Completion | ProviderFailure:
-        if self._cooling_down(self.primary):
-            if self._cooling_down(self.fallback):
+        primary_left_s = self._remaining_s(self.primary)
+        if primary_left_s > 0:
+            fallback_left_s = self._remaining_s(self.fallback)
+            if fallback_left_s > 0:
                 # No call made and no 429 received, so attempts stays empty: nothing is recorded.
+                # Reusing the values checked above keeps retry_after_s positive.
                 return RateLimited(
-                    retry_after_s=min(
-                        self._remaining_s(self.primary), self._remaining_s(self.fallback)
-                    ),
+                    retry_after_s=min(primary_left_s, fallback_left_s),
                     scope="unknown",
                     detail=f"Both {self.primary} and {self.fallback} are cooling down",
                 )
