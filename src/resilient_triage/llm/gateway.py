@@ -81,8 +81,15 @@ class LLMGateway:
     At most 3 adapter calls per complete(). The primary's result decides what follows:
     RateLimited cools the primary down and calls the fallback; Unavailable retries the primary
     once after a jittered backoff, then calls the fallback; MalformedResponse calls the
-    fallback; Rejected returns at once. While the primary cools down, only the fallback is
-    called. Cooldowns are per model.
+    fallback; Rejected returns at once.
+
+    Cooldowns are per model, and a model in cooldown is never called. While the primary cools
+    down, only the fallback is called; while the fallback cools down, a primary failure is
+    returned as is; while both cool down, no call is made and a RateLimited carrying the
+    shorter remaining window is returned. A 429 starts its model's cooldown when it arrives,
+    so concurrent and later-cancelled calls see it; counters are applied only when complete()
+    finishes. Known limit: calls already waiting on the primary when its first 429 arrives
+    still get their own 429s (no single-flight).
     """
 
     def __init__(
