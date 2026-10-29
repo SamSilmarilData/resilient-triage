@@ -78,6 +78,20 @@ class Settings(BaseSettings):
         description="Max retries allowed for Pydantic LLM self-repair loop",
     )
 
+    # Triage gateway: run slots and load shedding
+    triage_max_concurrent_runs: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Max graph runs in flight per app; further requests queue for a slot",
+    )
+    triage_queue_timeout_s: float = Field(
+        default=5.0,
+        gt=0,
+        le=30,
+        description="Seconds a request waits for a run slot before it is shed with a 503",
+    )
+
     # LLM Provider (Groq LPU; without a key the app runs the zero-config simulation)
     groq_api_key: str | None = Field(
         default=None, description="Groq API key for ultra-fast LPU inference"

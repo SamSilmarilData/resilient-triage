@@ -9,7 +9,6 @@ from resilient_triage.config import settings
 from resilient_triage.llm import ModelAdapter, ScriptedAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.runtime import TelemetrySources, TriageDeps
-from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.telemetry.chaos import ChaosClient, ChaosManager
 from resilient_triage.telemetry.statuspage import StatuspageClient
 
@@ -34,23 +33,17 @@ class FakeClock:
 
 
 class FakeHistory:
-    """In-memory CacheReader/CacheWriter: records stores, returns a preset lookup match."""
+    """In-memory CacheReader: records lookups, returns a preset lookup match."""
 
     def __init__(self, match: CacheMatch | None = None) -> None:
         self.match = match
         self.lookups: list[tuple[str, str | None, float]] = []
-        self.stored: list[tuple[str, IncidentTriageReport, str | None]] = []
 
     async def lookup(
         self, query: str, service_filter: str | None, threshold: float
     ) -> CacheMatch | None:
         self.lookups.append((query, service_filter, threshold))
         return self.match
-
-    async def store(
-        self, query: str, report: IncidentTriageReport, service_filter: str | None = None
-    ) -> None:
-        self.stored.append((query, report, service_filter))
 
 
 def fake_statuspage_http(payload: dict[str, Any] | None = None) -> httpx.AsyncClient:
@@ -85,5 +78,4 @@ def make_triage_deps(
             breakers=breakers,
         ),
         history=fake_history,
-        cache_writer=fake_history,
     )
