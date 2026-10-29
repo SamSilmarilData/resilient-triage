@@ -64,7 +64,7 @@ Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(
 - **Adapters**: the gateway owns model failover and per-model cooldowns ([resilience guide](resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns)). An adapter makes exactly one call to one model:
   - `GroqAdapter` (`llm/groq.py`) owns the pooled `httpx.AsyncClient`, maps each response to a result, and parses the rate-limit headers.
   - `ScriptedAdapter` (`llm/scripted.py`) returns scripted results in order, then a valid default report. It is both the test fake and the zero-config simulation.
-- **Provider selection**: `build_llm_gateway(settings, adapter=None)` (`llm/__init__.py`) is the only place a provider is chosen. With `GROQ_API_KEY` set it uses `GroqAdapter` and the `/health` label `Groq LPU (<GROQ_MODEL>)`; without it, `ScriptedAdapter` and `Zero-Config SRE Simulation`. No other key selects a provider. `build_runtime(settings, llm_adapter=...)` passes an adapter through, which is how tests script the model.
+- **Provider selection**: `build_llm_gateway(settings, adapter=None)` (`llm/__init__.py`) is the only place a provider is chosen. With `GROQ_API_KEY` set it uses `GroqAdapter` and the `/health` label `Groq LPU (<GROQ_MODEL>)`; without it, `ScriptedAdapter` and `Zero-Config SRE Simulation`. No other key selects a provider. Each adapter supplies its own label (`ModelAdapter.label(primary)`) and rate-limit headers (`quota_headers(model)`), so the gateway never checks an adapter's type. `build_runtime(settings, llm_adapter=...)` passes an adapter through, which is how tests script the model.
 - **Graph contract**: `generate_report` calls `runtime.context.llm.complete(messages)`. On a provider failure it sets `validation_errors=["LLM Provider Failure: <Kind>: <detail>"]` and `repair_attempts` to the maximum, so `route_after_validation` goes to `fallback_report`.
 
 ---
@@ -137,8 +137,8 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
    - Upstream Atlassian/GitHub status pages update every 1–5 minutes.
    - `StatuspageClient` caches parsed summaries for 10 seconds in-memory, eliminating transcontinental HTTPS latency (**~650ms – 700ms saved per query**).
 2. **Persistent Groq HTTP Connection Pooling & Token Budget**:
-   - Replaced per-request HTTP client creation with a persistent, keep-alive client pool (`httpx.Limits(max_keepalive_connections=20, max_connections=50)`).
-   - Added `max_tokens=650` to the Groq LPU payload to eliminate runaway token generation while producing complete, structured incident reports.
+   - Replaced per-request HTTP client creation with a persistent, keep-alive client pool (`httpx.Limits(max_keepalive_connections=LLM_MAX_KEEPALIVE_CONNECTIONS, max_connections=LLM_MAX_CONNECTIONS)`, defaults 20 and 50).
+   - Caps the Groq LPU payload at `max_tokens=LLM_MAX_TOKENS` (default 2500) to stop runaway token generation while leaving room for a complete, structured incident report.
    - Eliminates ~200ms of TCP/TLS handshake latency and ~300ms of generation time.
 3. **In-Memory LRU Vector Cache (512 Entries) & Preset Pre-Warming**:
    - Added an `OrderedDict` LRU cache to both `FastEmbedProvider` and `DeterministicEmbeddingProvider`.

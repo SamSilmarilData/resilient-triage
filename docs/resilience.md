@@ -212,6 +212,7 @@ Reset headers are Go-style durations: every `<number><unit>` part counts (`h`, `
 
 `LLMGateway.snapshot()` is the `LLMQuotaSnapshot` behind `GET /llm/quota` and the `llm_quota` field of `/health` and `/resilience/status`:
 - `remaining_*`, `limit_*`, `reset_*` and `last_status` come from the **primary model's** headers only, so a fallback call never overwrites the primary's budget.
+- `last_error`, by contrast, is the error of the latest failed call to **either** model, so it can describe a fallback failure while `last_status` still shows the primary's last HTTP status.
 - `active_model` is the model that served the last completion; `fallback_model` is `GROQ_FALLBACK_MODEL`.
 - `total_calls` (adapter calls, not `complete()` calls), `rate_limit_hits` and `failover_events` cover both models. `failover_events` counts completions answered by the fallback, whether after a live failure or a cooldown skip.
 
