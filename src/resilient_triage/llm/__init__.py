@@ -9,6 +9,7 @@ from resilient_triage.llm.gateway import (
     ProviderFailure,
     QuotaHeaders,
     RateLimited,
+    RateLimitScope,
     Rejected,
     Unavailable,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "ModelAdapter",
     "ProviderFailure",
     "QuotaHeaders",
+    "RateLimitScope",
     "RateLimited",
     "Rejected",
     "ScriptedAdapter",

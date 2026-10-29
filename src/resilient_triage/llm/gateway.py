@@ -25,12 +25,16 @@ class Completion:
     model: str
 
 
+# Which quota a 429 hit: the per-minute bucket, the per-day bucket, or not known.
+RateLimitScope = Literal["minute", "day", "unknown"]
+
+
 @dataclass(frozen=True)
 class RateLimited:
     """The provider refused the call for quota (HTTP 429)."""
 
     retry_after_s: float | None
-    scope: Literal["minute", "day", "unknown"]
+    scope: RateLimitScope
     detail: str
 
 

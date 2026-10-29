@@ -25,6 +25,7 @@ from resilient_triage.llm import (
     ProviderFailure,
     QuotaHeaders,
     RateLimited,
+    RateLimitScope,
     Rejected,
     ScriptedAdapter,
     Unavailable,
@@ -218,7 +219,7 @@ def _limited(headers: dict[str, str]) -> GroqAdapter:
     ],
 )
 async def test_groq_adapter_reads_the_rate_limit_from_the_429_headers(
-    headers: dict[str, str], retry_after_s: float | None, scope: str
+    headers: dict[str, str], retry_after_s: float | None, scope: RateLimitScope
 ) -> None:
     result = await _limited(headers).call(PRIMARY, MESSAGES)
 

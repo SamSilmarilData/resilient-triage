@@ -2,7 +2,6 @@
 
 import logging
 import re
-from typing import Literal
 
 import httpx
 from langchain_core.messages import BaseMessage
@@ -13,6 +12,7 @@ from resilient_triage.llm.gateway import (
     ProviderFailure,
     QuotaHeaders,
     RateLimited,
+    RateLimitScope,
     Rejected,
     Unavailable,
 )
@@ -79,7 +79,7 @@ def _seconds_header(headers: httpx.Headers, name: str) -> float | None:
 def _rate_limit(headers: httpx.Headers, detail: str) -> RateLimited:
     """Read a 429's retry-after and scope; bucket resets reach the gateway via QuotaHeaders."""
     retry_after_s = _seconds_header(headers, "retry-after")
-    scope: Literal["minute", "day", "unknown"]
+    scope: RateLimitScope
     # x-ratelimit-*-requests is the per-day bucket, *-tokens the per-minute one (#5).
     # Both at 0: the daily bucket decides, since its reset is the longer wait.
     if headers.get("x-ratelimit-remaining-requests") == "0":
