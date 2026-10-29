@@ -76,3 +76,33 @@ async def test_force_refresh_skips_the_lookup_and_runs_the_graph(cache):
     assert isinstance(outcome, Analyzed)
     assert outcome.report.summary == "Fresh answer"
     assert graph.calls == [{"query": QUERY, "service_filter": "billing"}]
+
+
+async def test_a_miss_stores_the_report_under_its_scope(cache):
+    graph = ReturningGraph({"final_report": _report("Fresh answer")})
+
+    outcome = await _gateway(cache, graph).triage(QUERY, "billing")
+
+    assert isinstance(outcome, Analyzed)
+    stored = await cache.lookup(QUERY, service_filter="billing")
+    assert stored is not None
+    assert stored.report == outcome.report
+    assert await cache.lookup(QUERY, service_filter="actions") is None
+
+
+async def test_a_run_without_a_final_report_answers_with_a_stored_synthesis_fallback(cache):
+    graph = ReturningGraph({"tripped_breakers": ["statuspage"]})
+
+    outcome = await _gateway(cache, graph).triage(QUERY, None)
+
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.summary == f"Automated incident triage degraded for: {QUERY}"
+    assert outcome.report.severity == SeverityLevel.UNKNOWN
+    assert outcome.report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
+    assert outcome.report.circuit_breakers_tripped == ["statuspage"]
+    assert outcome.report.root_cause_analysis == (
+        "Self-repair limits reached. Diagnostic context: LLM synthesis error"
+    )
+    stored = await cache.lookup(QUERY)
+    assert stored is not None
+    assert stored.report == outcome.report
