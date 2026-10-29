@@ -10,7 +10,13 @@ from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.config import Settings, settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
-from resilient_triage.triage_gateway import Analyzed, CacheHit, Shed, TriageGateway
+from resilient_triage.triage_gateway import (
+    Analyzed,
+    CacheHit,
+    Shed,
+    TriageGateway,
+    TriageMetrics,
+)
 
 UNREACHABLE_REDIS = "redis://127.0.0.1:1/0"
 QUERY = "Payments API returning 503 for card checkouts"
@@ -157,3 +163,29 @@ async def test_the_run_slot_is_freed_once_the_run_finishes(cache):
     outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
 
     assert isinstance(outcome, Analyzed)
+
+
+async def test_metrics_count_each_outcome(cache):
+    graph = BlockingGraph()
+    gateway = _gateway(cache, graph, _one_slot())
+    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0)
+
+    first = asyncio.create_task(gateway.triage(QUERY, None))
+    await graph.started.wait()
+    await gateway.triage("Checkout latency spike in eu-west-1", None)  # shed
+    graph.release.set()
+    await first  # miss
+    await gateway.triage(QUERY, None)  # hit
+    await gateway.triage(QUERY, None, force_refresh=True)  # miss
+
+    assert gateway.metrics == TriageMetrics(hit=1, miss=2, saturated=1)
+
+
+async def test_metrics_are_a_snapshot(cache):
+    gateway = _gateway(cache, ReturningGraph({"final_report": _report()}))
+    before = gateway.metrics
+
+    await gateway.triage(QUERY, None)
+
+    assert before == TriageMetrics(hit=0, miss=0, saturated=0)
+    assert gateway.metrics.miss == 1

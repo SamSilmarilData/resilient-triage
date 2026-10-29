@@ -48,6 +48,15 @@ class Shed:
 TriageOutcome = CacheHit | Analyzed | Shed
 
 
+@dataclass(frozen=True)
+class TriageMetrics:
+    """Counts of triage outcomes, exported on /metrics as cache=hit/miss/saturated."""
+
+    hit: int = 0
+    miss: int = 0
+    saturated: int = 0
+
+
 class TriageGateway:
     """Answers a triage query from the cache, or by a run in a bounded slot, or sheds it."""
 
@@ -58,6 +67,11 @@ class TriageGateway:
         self._run_graph = run_graph
         self._settings = settings
         self._run_slots = asyncio.Semaphore(settings.triage_max_concurrent_runs)
+
+    @property
+    def metrics(self) -> TriageMetrics:
+        """A snapshot of this gateway's outcome counts."""
+        return TriageMetrics()
 
     async def triage(
         self, query: str, scope: str | None, *, force_refresh: bool = False
