@@ -729,6 +729,30 @@ async def test_only_the_groq_api_key_setting_selects_groq(monkeypatch: pytest.Mo
     await gateway.aclose()
 
 
+async def test_the_gateway_label_and_budget_come_from_the_adapter() -> None:
+    """Any ModelAdapter names itself and reports its headers; the gateway has no type checks."""
+
+    class OwnAdapter:
+        def label(self, primary: str) -> str:
+            return f"Own adapter ({primary})"
+
+        def quota_headers(self, model: str) -> QuotaHeaders:
+            return QuotaHeaders(remaining_requests=7 if model == "m" else 0)
+
+        async def call(
+            self, model: str, messages: list[BaseMessage]
+        ) -> Completion | ProviderFailure:
+            return Completion(text="{}", model=model)
+
+        async def aclose(self) -> None:
+            """Nothing to release."""
+
+    gateway = build_llm_gateway(settings.model_copy(update={"groq_model": "m"}), OwnAdapter())
+
+    assert gateway.label == "Own adapter (m)"
+    assert gateway.snapshot().remaining_requests == 7
+
+
 def test_settings_read_the_groq_api_key_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
