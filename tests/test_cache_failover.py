@@ -367,3 +367,30 @@ async def test_clear_reconnects_inside_cooldown_and_clears_redis(clock):
     assert remote.connects == connects + 1
     assert cache.driver == "redisearch"
     assert remote.count == 0
+
+
+async def test_clear_before_initialize_leaks_no_client_and_connects_once(clock):
+    """A clear() that connects counts as initialization: no second connect, no unclosed client."""
+    created: list[ScriptedStore] = []
+    shared = InMemoryVectorStore()
+
+    def factory() -> ScriptedStore:
+        store = ScriptedStore(searchable=False)
+        store.data = shared  # one Redis, many clients
+        created.append(store)
+        return store
+
+    cache = SemanticCacheManager(
+        embedding_provider=DeterministicEmbeddingProvider(),
+        remote_store_factory=factory,
+        clock=clock,
+    )
+
+    await cache.clear()  # connects while uninitialized
+    await cache.initialize()
+    await cache.lookup(QUERY)
+
+    assert len(created) == 1
+    assert cache.driver == "redis_hash_fallback"
+    await cache.close()
+    assert all(store.acloses == 1 for store in created)
