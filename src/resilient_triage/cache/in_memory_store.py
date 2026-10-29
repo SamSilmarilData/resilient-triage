@@ -56,10 +56,8 @@ class InMemoryVectorStore:
         )
 
     async def put(self, entry: VectorEntry, ttl: float) -> None:
-        """Store `entry` for `ttl` seconds, evicting the oldest entry when at capacity.
-
-        Raises ValueError, storing nothing, if the vector's size isn't `dimension`.
-        """
+        """Store `entry` for `ttl` seconds, evicting the oldest entry when at capacity."""
+        # A vector whose size isn't `dimension` raises ValueError and stores nothing.
         if not self._fits(entry.vector):
             raise ValueError(
                 f"vector has {np.size(entry.vector)} dimensions, expected {self.dimension}"

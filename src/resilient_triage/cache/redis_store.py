@@ -129,11 +129,9 @@ class RedisVectorStore:
             logger.debug("Error closing Redis connection: %s", err)
 
     async def search(self, vector: np.ndarray, scope: str, threshold: float) -> VectorHit | None:
-        """Return the nearest entry whose scope is exactly `scope`, at or above `threshold`.
-
-        Fetches the top SEARCH_KNN neighbours and takes the best exact-scope one, so an
-        unscoped search never returns a scoped entry (nor a scoped search an unscoped one).
-        """
+        """Return the nearest entry whose scope is exactly `scope`, at or above `threshold`."""
+        # Fetch the top SEARCH_KNN neighbours and take the best exact-scope one, so an unscoped
+        # search never returns a scoped entry (nor a scoped search an unscoped one).
         if not self._supports_search:
             raise StoreQueryError("Redis search is unsupported without the search module")
         from redis.commands.search.query import Query
@@ -209,11 +207,9 @@ class RedisVectorStore:
         self._known.clear()
 
     async def entries(self) -> AsyncIterator[tuple[VectorEntry, float]]:
-        """Yield every stored entry with its remaining TTL in seconds, for standby hydration.
-
-        A hash missing its vector or report is skipped. The vector is decoded but not
-        validated here; the standby's `put` is where an inbound vector is checked.
-        """
+        """Yield every stored entry with its remaining TTL in seconds, for standby hydration."""
+        # A hash missing its vector or report is skipped. The vector is decoded but not
+        # validated here; the standby's `put` is where an inbound vector is checked.
         with _store_errors("scan"):
             client = self._require_client()
             keys = [k async for k in client.scan_iter(match=f"{DOC_PREFIX}*", count=100)]

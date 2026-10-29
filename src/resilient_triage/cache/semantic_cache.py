@@ -403,12 +403,10 @@ class SemanticCacheManager:
             logger.warning("Redis store error: %s (in-memory copy active).", err)
 
     async def clear(self) -> None:
-        """Clear all in-memory and Redis cache entries.
-
-        While Redis is down, this reconnects at once (ignoring the cooldown); if Redis is still
-        down, the clear stays pending and runs on the next successful connect, before Redis
-        serves a search or hydrates the standby.
-        """
+        """Clear all in-memory and Redis cache entries."""
+        # While Redis is down, reconnect at once (ignoring the cooldown); if Redis is still
+        # down, the clear stays pending and runs on the next successful connect, before Redis
+        # serves a search or hydrates the standby.
         await self._standby.clear()
         redis = self._redis
         if redis is None:

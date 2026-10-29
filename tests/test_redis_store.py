@@ -1,14 +1,17 @@
 """RedisVectorStore tests against a mocked redis client: failure kinds, modes, SCAN-based clear."""
 
+from unittest.mock import AsyncMock
+
 import numpy as np
 import pytest
 import redis.exceptions
+from pytest_mock import MockerFixture
 
 from resilient_triage.cache.redis_store import RedisVectorStore
 from resilient_triage.cache.vector_store import StoreQueryError, StoreUnavailable, VectorEntry
 
 
-def _client(mocker, *, search: bool = True):
+def _client(mocker: MockerFixture, *, search: bool = True) -> AsyncMock:
     """A mocked async redis client that answers PING and reports the search module or not."""
     client = mocker.AsyncMock()
     client.module_list.return_value = [{b"name": b"search"}] if search else []
@@ -21,7 +24,7 @@ def _client(mocker, *, search: bool = True):
     return client
 
 
-async def _connected(client, dimension: int = 4) -> RedisVectorStore:
+async def _connected(client: AsyncMock, dimension: int = 4) -> RedisVectorStore:
     store = RedisVectorStore("redis://127.0.0.1:6379/0", dimension, client_factory=lambda _: client)
     await store.connect()
     return store
