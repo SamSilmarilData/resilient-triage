@@ -18,7 +18,7 @@ Every HTTP response returned by the API includes the following observability hea
 | `x-process-time-ms` | Total server processing time in milliseconds | `12.45` |
 | `x-cache` | Cache status (`HIT` or `MISS`) — *present on `/triage`* | `HIT` |
 | `x-cache-similarity` | Cosine similarity score ($\ge 0.90$) — *present on cache `HIT`* | `0.9417` |
-| `x-thread-id` | LangGraph persistence checkpoint thread identifier — *present on `/triage`* | `e1f8b4a2-...` |
+| `x-thread-id` | Correlation id: the caller's `X-Thread-ID` echoed back, or a new UUID4 if none was sent. It names no checkpoint thread (ADR-007) — *present on `/triage`* | `e1f8b4a2-...` |
 
 ### Security & Authentication Headers
 - `X-Admin-Key`: Required for mutating endpoints (`/resilience/reset`, `/cache/clear`, `/chaos/inject`) if `ADMIN_API_KEY` is configured in the environment. Unauthenticated requests receive `401 Unauthorized`.

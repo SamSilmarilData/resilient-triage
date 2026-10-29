@@ -1,9 +1,8 @@
 """LangGraph cyclic state machine construction and compilation."""
 
 import logging
-from typing import Any, Literal
+from typing import Literal
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -26,32 +25,6 @@ from resilient_triage.graph.nodes.validate_report import self_repair_exhausted
 from resilient_triage.schemas.state import TriageState
 
 logger = logging.getLogger(__name__)
-
-
-class BoundedMemorySaver(MemorySaver):
-    """LangGraph MemorySaver checkpointer with bounded thread capacity and FIFO/LRU eviction."""
-
-    def __init__(self, max_threads: int = 1000) -> None:
-        super().__init__()
-        self.max_threads = max_threads
-
-    def put(
-        self,
-        config: Any,
-        checkpoint: Any,
-        metadata: Any,
-        new_versions: Any,
-    ) -> Any:
-        """Persist checkpoint while enforcing max thread storage capacity."""
-        thread_id = (
-            config.get("configurable", {}).get("thread_id") if hasattr(config, "get") else None
-        )
-        if thread_id and thread_id not in self.storage and len(self.storage) >= self.max_threads:
-            oldest_thread = next(iter(self.storage))
-            self.storage.pop(oldest_thread, None)
-            if hasattr(self, "writes") and isinstance(self.writes, dict):
-                self.writes.pop(oldest_thread, None)  # type: ignore[call-overload]
-        return super().put(config, checkpoint, metadata, new_versions)
 
 
 def route_after_telemetry(state: TriageState) -> Literal["compensate", "synthesize"]:
@@ -127,14 +100,10 @@ def route_after_validation(
     return "fallback"
 
 
-def build_triage_graph(
-    enable_checkpointing: bool = True, max_checkpoint_threads: int = 1000
-) -> CompiledStateGraph[TriageState, TriageDeps, TriageState, TriageState]:
-    """Build and compile the LangGraph cyclic state graph with BoundedMemorySaver checkpointing.
+def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageState, TriageState]:
+    """Build and compile the LangGraph cyclic state graph, without a checkpointer.
 
-    Args:
-        enable_checkpointing: If True, attaches a checkpointer to preserve thread state.
-        max_checkpoint_threads: Maximum number of distinct threads to retain in memory.
+    Each run is self-contained: its state lives only while ``ainvoke`` runs (ADR-007).
 
     Returns:
         CompiledStateGraph: Runnable LangGraph workflow engine.
@@ -204,10 +173,7 @@ def build_triage_graph(
     graph.add_edge("fallback_report", "finalize_report")
     graph.add_edge("finalize_report", END)
 
-    checkpointer = (
-        BoundedMemorySaver(max_threads=max_checkpoint_threads) if enable_checkpointing else None
-    )
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile()
 
 
-triage_graph = build_triage_graph(enable_checkpointing=True)
+triage_graph = build_triage_graph()

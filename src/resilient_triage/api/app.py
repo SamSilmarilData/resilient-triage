@@ -13,7 +13,6 @@ import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
-from langchain_core.runnables import RunnableConfig
 
 from resilient_triage import __version__
 from resilient_triage.config import settings
@@ -119,7 +118,7 @@ async def triage_incident(
     Headers returned:
       - X-Cache: 'HIT' or 'MISS'
       - X-Cache-Similarity: Cosine score (if HIT)
-      - X-Thread-ID: Conversation memory checkpoint identifier
+      - X-Thread-ID: Correlation id, the caller's or a new uuid4, echoed back
     """
     thread_id = request.headers.get("X-Thread-ID") or str(uuid.uuid4())
     start_req = time.monotonic()
@@ -167,12 +166,7 @@ async def triage_incident(
             "query": payload.query,
             "service_filter": payload.service_filter,
         }
-        # Isolate per-execution thread to prevent previous query errors from contaminating state
-        execution_thread_id = f"{thread_id}_{uuid.uuid4().hex[:8]}"
-        config: RunnableConfig = {"configurable": {"thread_id": execution_thread_id}}
-        state_result = await triage_graph.ainvoke(
-            initial_state, config=config, context=runtime.deps
-        )
+        state_result = await triage_graph.ainvoke(initial_state, context=runtime.deps)
     finally:
         runtime.graph_semaphore.release()
 

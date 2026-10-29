@@ -145,7 +145,7 @@ docker compose up -d --build
 ============================== 85 passed in 1.80s ==============================
 - tests/test_api.py: 24 passed (FastAPI endpoints, middleware, load shedding, admin auth, metrics)
 - tests/test_cache.py: 17 passed (HNSW indexing, LRU caching, disconnect failover, scope isolation, offline fallback)
-- tests/test_graph.py: 16 passed (LangGraph state machine, BoundedMemorySaver, self-repair loops)
+- tests/test_graph.py: 16 passed (LangGraph state machine, self-repair loops)
 - tests/test_schemas.py: 10 passed (Pydantic v2 strict models, confidence bounds, enum validation)
 - tests/test_telemetry.py: 9 passed (Statuspage parsing, 10s short-TTL cache, dynamic probe routing)
 - tests/test_retry.py: 5 passed (Tenacity backoff, jitter, HTTP 429 retries)
