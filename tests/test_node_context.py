@@ -32,7 +32,7 @@ async def test_collect_telemetry_reads_statuspage_and_breakers_from_context():
     force_open_for_tests(deps.telemetry.breakers.get_or_create("chaos"))
 
     result = await collect_telemetry_node(
-        {"query": "Service outage", "target_tools": ["statuspage", "chaos"]},
+        {"query": "Service outage", "targeted_sources": ["statuspage", "chaos"]},
         Runtime(context=deps),
     )
 

@@ -104,54 +104,59 @@ def test_clean_json_string_utilities():
     assert clean_json_string(conversational) == '{"summary": "Outage"}'
 
 
-def test_dynamic_tool_targeting():
-    """Verify analyze_query selectively targets relevant telemetry sources."""
+def _analyze(state: dict[str, Any]) -> dict[str, Any]:
+    """Run analyze_query against fresh fakes, whose probe holds both real sources."""
+    return analyze_query_node(state, Runtime(context=make_triage_deps()))
+
+
+def test_analyze_query_targets_sources_through_the_probe():
+    """analyze_query writes the probe's targeted sources as a sorted list."""
     # External query -> statuspage
-    state1 = analyze_query_node({"query": "GitHub Actions workflows are failing with 503"})
-    assert state1["target_tools"] == ["statuspage"]
+    state1 = _analyze({"query": "GitHub Actions workflows are failing with 503"})
+    assert state1["targeted_sources"] == ["statuspage"]
 
     # Internal query -> chaos
-    state2 = analyze_query_node({"query": "Internal latency probe on auth-service"})
-    assert state2["target_tools"] == ["chaos"]
+    state2 = _analyze({"query": "Internal latency probe on auth-service"})
+    assert state2["targeted_sources"] == ["chaos"]
 
     # Broad query -> both
-    state3 = analyze_query_node({"query": "Service outage across entire infrastructure"})
-    assert state3["target_tools"] == ["statuspage", "chaos"]
+    state3 = _analyze({"query": "Service outage across entire infrastructure"})
+    assert state3["targeted_sources"] == ["chaos", "statuspage"]
 
 
 @pytest.mark.parametrize(
     ("query", "expected"),
     [
         # "repo" inside "reporting" and "auth" inside "author" must not match
-        ("Kubernetes ingress reporting 502 errors", ["statuspage", "chaos"]),
-        ("Kubernetes ingress 502 errors", ["statuspage", "chaos"]),
+        ("Kubernetes ingress reporting 502 errors", ["chaos", "statuspage"]),
+        ("Kubernetes ingress 502 errors", ["chaos", "statuspage"]),
         # "actions" inside "transactions" must not match
         ("Payment transactions failing at checkout", ["chaos"]),
-        ("Pod author label missing after deploy", ["statuspage", "chaos"]),
+        ("Pod author label missing after deploy", ["chaos", "statuspage"]),
         # strict whole word: plurals do not match their singular keyword
-        ("Webhooks delayed for all repos", ["statuspage", "chaos"]),
+        ("Webhooks delayed for all repos", ["chaos", "statuspage"]),
         # underscore is part of a word
         ("chaos_probe reports failure", ["chaos"]),
-        ("my_auth_helper timing out", ["statuspage", "chaos"]),
+        ("my_auth_helper timing out", ["chaos", "statuspage"]),
     ],
 )
-def test_tool_targeting_matches_whole_words(query, expected):
+def test_source_targeting_matches_whole_words(query, expected):
     """Keywords count only as whole words or phrases, never as substrings."""
-    assert analyze_query_node({"query": query})["target_tools"] == expected
+    assert _analyze({"query": query})["targeted_sources"] == expected
 
 
 @pytest.mark.parametrize(
     ("service_filter", "expected"),
     [
         ("auth-service", ["chaos"]),
-        ("author-service", ["statuspage", "chaos"]),
+        ("author-service", ["chaos", "statuspage"]),
         ("github", ["statuspage"]),
     ],
 )
-def test_tool_targeting_service_filter_matches_whole_words(service_filter, expected):
+def test_source_targeting_service_filter_matches_whole_words(service_filter, expected):
     """A keyword in service_filter gets the same whole-word treatment as the query."""
-    state = analyze_query_node({"query": "Errors spiking", "service_filter": service_filter})
-    assert state["target_tools"] == expected
+    state = _analyze({"query": "Errors spiking", "service_filter": service_filter})
+    assert state["targeted_sources"] == expected
 
 
 @pytest.mark.asyncio
@@ -557,7 +562,7 @@ async def test_collect_telemetry_dynamic_probe_routing():
     state_pg = {
         "query": "Database connection pool exhausted on orders-db",
         "service_filter": "postgres",
-        "target_tools": ["chaos"],
+        "targeted_sources": ["chaos"],
     }
     res_pg = await collect_telemetry_node(state_pg, Runtime(context=make_triage_deps()))
     signals_pg = res_pg.get("telemetry_signals", [])
@@ -568,7 +573,7 @@ async def test_collect_telemetry_dynamic_probe_routing():
     state_gw = {
         "query": "ALB ingress router dropping HTTP connections",
         "service_filter": "api-gateway",
-        "target_tools": ["chaos"],
+        "targeted_sources": ["chaos"],
     }
     res_gw = await collect_telemetry_node(state_gw, Runtime(context=make_triage_deps()))
     signals_gw = res_gw.get("telemetry_signals", [])
@@ -595,7 +600,7 @@ async def test_collect_telemetry_records_source_whose_task_raised():
     deps = make_triage_deps(statuspage_http=_statuspage_http(_boom))
 
     result = await collect_telemetry_node(
-        {"query": "q", "target_tools": ["statuspage"]}, Runtime(context=deps)
+        {"query": "q", "targeted_sources": ["statuspage"]}, Runtime(context=deps)
     )
 
     assert result["unavailable_sources"] == ["statuspage"]
@@ -609,7 +614,7 @@ async def test_collect_telemetry_tripped_breaker_is_not_unavailable():
     force_open_for_tests(deps.telemetry.breakers.get_or_create("statuspage"))
 
     result = await collect_telemetry_node(
-        {"query": "q", "target_tools": ["statuspage"]}, Runtime(context=deps)
+        {"query": "q", "targeted_sources": ["statuspage"]}, Runtime(context=deps)
     )
 
     assert result["tripped_breakers"] == ["statuspage"]
@@ -628,7 +633,7 @@ async def test_collect_telemetry_never_records_untargeted_source():
     deps = make_triage_deps(statuspage_http=_statuspage_http(fetch))
 
     result = await collect_telemetry_node(
-        {"query": "Database connection pool exhausted", "target_tools": ["chaos"]},
+        {"query": "Database connection pool exhausted", "targeted_sources": ["chaos"]},
         Runtime(context=deps),
     )
 
@@ -788,7 +793,7 @@ async def test_only_targeted_breakers_degrade_the_report():
         {"query": "GitHub Actions webhook delivery failing"}, context=deps
     )
 
-    assert final_state["target_tools"] == ["statuspage"]
+    assert final_state["targeted_sources"] == ["statuspage"]
     report = final_state["final_report"]
     assert report.degradation_status == DegradationStatus.HEALTHY
     assert report.circuit_breakers_tripped == []
@@ -823,7 +828,7 @@ async def test_unavailable_source_degrades_the_report():
         {"query": "GitHub Actions webhook delivery failing"}, context=deps
     )
 
-    assert final_state["target_tools"] == ["statuspage"]
+    assert final_state["targeted_sources"] == ["statuspage"]
     assert not deps.telemetry.breakers.get_or_create("statuspage").info().is_open
     report = final_state["final_report"]
     assert report.circuit_breakers_tripped == []
