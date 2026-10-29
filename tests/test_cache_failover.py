@@ -349,3 +349,21 @@ async def test_clear_while_down_clears_redis_on_reconnect_before_serving(clock, 
     assert cache.driver == driver
     assert remote.count == 0
     assert cache.count == 0
+
+
+async def test_clear_reconnects_inside_cooldown_and_clears_redis(clock):
+    """clear() while down reconnects at once, ignoring the cooldown, and clears Redis."""
+    remote = ScriptedStore()
+    cache = _cache(remote, clock)
+    await cache.initialize()
+    await cache.store(QUERY, _report())
+    remote.down = True
+    await cache.check_connection()  # drops Redis and starts the cooldown
+    remote.down = False
+    connects = remote.connects
+
+    await cache.clear()  # still inside the cooldown window
+
+    assert remote.connects == connects + 1
+    assert cache.driver == "redisearch"
+    assert remote.count == 0
