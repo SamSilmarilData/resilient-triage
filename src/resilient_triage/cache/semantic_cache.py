@@ -272,7 +272,7 @@ class SemanticCacheManager:
             if redis_hit is not None:
                 match = self._to_match(redis_hit, start_time)
                 if match is None:
-                    await self._evict(redis_hit.doc_id)
+                    await self._evict(redis_hit.entry.doc_id)
                 return match
 
         # 3. Fall back to the in-memory standby
@@ -281,7 +281,7 @@ class SemanticCacheManager:
             return None
         match = self._to_match(hit, start_time)
         if match is None:
-            await self._standby.delete(hit.doc_id)
+            await self._standby.delete(hit.entry.doc_id)
         return match
 
     async def _ready(self) -> None:
@@ -308,11 +308,11 @@ class SemanticCacheManager:
     def _to_match(hit: VectorHit, start_time: float) -> CacheMatch | None:
         """Validate a store hit's report and wrap it as a CacheMatch; None if it is invalid."""
         try:
-            report = IncidentTriageReport.model_validate(json.loads(hit.report_json))
+            report = IncidentTriageReport.model_validate(json.loads(hit.entry.report_json))
         except ValueError as invalid:  # JSONDecodeError and ValidationError both subclass it
             logger.warning(
                 "Cached report %s failed validation: %s. Treating as MISS and evicting.",
-                hit.doc_id,
+                hit.entry.doc_id,
                 invalid,
             )
             return None
@@ -321,7 +321,7 @@ class SemanticCacheManager:
             report=report,
             similarity=round(hit.similarity, 4),
             execution_time_ms=round(elapsed_ms, 2),
-            matched_query=hit.query,
+            matched_query=hit.entry.query,
             cache_hit=True,
         )
 

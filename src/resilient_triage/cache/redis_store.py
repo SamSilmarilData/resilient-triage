@@ -152,6 +152,7 @@ class RedisVectorStore:
             Query(filter_query)
             .sort_by("score")
             .return_fields("query", "service_scope", "report", "score")
+            .return_field("vector", decode_field=False)
             .paging(0, SEARCH_KNN)
             .dialect(2)
         )
@@ -173,13 +174,14 @@ class RedisVectorStore:
             similarity = 1.0 - float(getattr(doc, "score", 1.0))
             if similarity < threshold:
                 return None
-            return VectorHit(
+            entry = VectorEntry(
                 doc_id=_to_str(doc.id).removeprefix(DOC_PREFIX),
                 query=_to_str(getattr(doc, "query", "")),
                 service_scope=scope,
                 report_json=_to_str(doc.report),
-                similarity=similarity,
+                vector=np.frombuffer(getattr(doc, "vector", b""), dtype=np.float32),
             )
+            return VectorHit(entry=entry, similarity=similarity)
 
     async def put(self, entry: VectorEntry, ttl: float) -> None:
         """Write the entry's hash and expire it after `ttl` (rounded up to whole seconds)."""

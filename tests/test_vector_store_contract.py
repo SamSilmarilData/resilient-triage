@@ -111,9 +111,10 @@ async def test_search_returns_entry_at_or_above_threshold(make_harness: HarnessF
     hit = await store.search(NEAR, scope="", threshold=0.75)
 
     assert hit is not None
-    assert hit.doc_id == "a"
-    assert hit.query == "query a"
-    assert hit.report_json == '{"summary": "a"}'
+    assert hit.entry.doc_id == "a"
+    assert hit.entry.query == "query a"
+    assert hit.entry.report_json == '{"summary": "a"}'
+    np.testing.assert_array_equal(hit.entry.vector, E0)
     assert hit.similarity == pytest.approx(0.8, abs=1e-4)
 
 
@@ -135,7 +136,7 @@ async def test_search_returns_the_most_similar_entry(make_harness: HarnessFactor
     hit = await store.search(E0, scope="", threshold=0.5)
 
     assert hit is not None
-    assert hit.doc_id == "exact"
+    assert hit.entry.doc_id == "exact"
     assert hit.similarity == pytest.approx(1.0, abs=1e-4)
 
 
@@ -155,9 +156,9 @@ async def test_scoped_search_only_sees_entries_in_that_scope(make_harness: Harne
     actions = await store.search(E0, scope="actions", threshold=0.9)
     billing = await store.search(E0, scope="billing", threshold=0.9)
 
-    assert actions is not None and actions.doc_id == "actions-doc"
-    assert actions.service_scope == "actions"
-    assert billing is not None and billing.doc_id == "billing-doc"
+    assert actions is not None and actions.entry.doc_id == "actions-doc"
+    assert actions.entry.service_scope == "actions"
+    assert billing is not None and billing.entry.doc_id == "billing-doc"
     assert await store.search(E0, scope="database", threshold=0.9) is None
 
 
@@ -189,10 +190,10 @@ async def test_exact_scope_match_hits_past_closer_entries_in_other_scopes(
     unscoped = await store.search(E0, scope="", threshold=0.5)
     billing = await store.search(E0, scope="billing", threshold=0.5)
 
-    assert unscoped is not None and unscoped.doc_id == "unscoped-near"
-    assert unscoped.service_scope == ""
+    assert unscoped is not None and unscoped.entry.doc_id == "unscoped-near"
+    assert unscoped.entry.service_scope == ""
     assert unscoped.similarity == pytest.approx(0.8, abs=1e-4)
-    assert billing is not None and billing.doc_id == "billing-exact"
+    assert billing is not None and billing.entry.doc_id == "billing-exact"
     assert billing.similarity == pytest.approx(1.0, abs=1e-4)
 
 
@@ -208,7 +209,7 @@ async def test_entry_expires_after_its_ttl(make_harness: HarnessFactory) -> None
 
     assert await harness.store.search(E0, scope="", threshold=0.9) is None
     long_hit = await harness.store.search(FAR, scope="", threshold=0.9)
-    assert long_hit is not None and long_hit.doc_id == "long"
+    assert long_hit is not None and long_hit.entry.doc_id == "long"
 
 
 async def test_capacity_evicts_the_oldest_entry(make_harness: HarnessFactory) -> None:
@@ -224,7 +225,7 @@ async def test_capacity_evicts_the_oldest_entry(make_harness: HarnessFactory) ->
     assert store.count == 2
     assert await store.search(E0, scope="", threshold=0.9) is None
     third = await store.search(_unit(3), scope="", threshold=0.9)
-    assert third is not None and third.doc_id == "third"
+    assert third is not None and third.entry.doc_id == "third"
 
 
 async def test_put_with_existing_doc_id_replaces_without_evicting(
@@ -276,4 +277,4 @@ async def test_delete_removes_only_that_entry(make_harness: HarnessFactory) -> N
     assert store.count == 1
     assert await store.search(E0, scope="", threshold=0.9) is None
     kept = await store.search(FAR, scope="", threshold=0.9)
-    assert kept is not None and kept.doc_id == "kept"
+    assert kept is not None and kept.entry.doc_id == "kept"

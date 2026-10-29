@@ -46,14 +46,7 @@ class InMemoryVectorStore:
         if best_similarity < threshold:
             return None
 
-        best = candidates[best_idx].entry
-        return VectorHit(
-            doc_id=best.doc_id,
-            query=best.query,
-            service_scope=best.service_scope,
-            report_json=best.report_json,
-            similarity=best_similarity,
-        )
+        return VectorHit(entry=candidates[best_idx].entry, similarity=best_similarity)
 
     async def put(self, entry: VectorEntry, ttl: float) -> None:
         """Store `entry` for `ttl` seconds, evicting the oldest entry when at capacity."""

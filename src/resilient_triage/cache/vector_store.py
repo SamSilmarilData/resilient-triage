@@ -20,12 +20,9 @@ class VectorEntry:
 
 @dataclass(frozen=True)
 class VectorHit:
-    """The best entry a search found at or above the threshold; the report is unvalidated."""
+    """The best entry a search found at or above the threshold; its report is unvalidated."""
 
-    doc_id: str
-    query: str
-    service_scope: str
-    report_json: str
+    entry: VectorEntry
     similarity: float
 
 
