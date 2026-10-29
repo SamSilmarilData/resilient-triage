@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import Literal
 
 import httpx
 from langchain_core.messages import BaseMessage
@@ -50,14 +51,54 @@ def _int_header(headers: httpx.Headers, name: str, current: int | None) -> int |
         return current
 
 
-def _rate_limit_cooldown_s(resp: httpx.Response) -> float | None:
-    """Seconds from the requests-bucket reset header, as parsed before the gateway existed."""
-    reset_header = resp.headers.get("x-ratelimit-reset-requests")
-    if reset_header:
-        match = re.search(r"(\d+(?:\.\d+)?)\s*s", reset_header)
-        if match:
-            return float(match.group(1))
-    return None
+# Go-style duration units (Groq's reset headers, e.g. "2m59.56s", "120ms"), in seconds.
+_DURATION_UNITS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|us|ns|h|m|s)")
+_BARE_SECONDS = re.compile(r"\d+(?:\.\d+)?")
+
+
+def parse_duration_s(value: str | None) -> float | None:
+    """Seconds in a Go-style duration ("1h2m3s", "120ms") or bare seconds ("2"), else None."""
+    if value is None:
+        return None
+    text = value.strip()
+    if _BARE_SECONDS.fullmatch(text):
+        return float(text)
+    parts = _DURATION_PART.findall(text)
+    if not parts or "".join(num + unit for num, unit in parts) != text:
+        return None
+    return sum(float(num) * _DURATION_UNITS[unit] for num, unit in parts)
+
+
+def _seconds_header(headers: httpx.Headers, name: str) -> float | None:
+    """A non-negative number of seconds in the named header, else None."""
+    value = headers.get(name, "").strip()
+    return float(value) if _BARE_SECONDS.fullmatch(value) else None
+
+
+def _rate_limit(headers: httpx.Headers, detail: str) -> RateLimited:
+    """Read a 429's wait and scope: retry-after first, else the bucket at 0, else unknown."""
+    retry_after_s = _seconds_header(headers, "retry-after")
+    scope: Literal["minute", "day", "unknown"]
+    # x-ratelimit-*-requests is the per-day bucket, *-tokens the per-minute one (#5).
+    # Both at 0: the daily bucket decides, since its reset is the longer wait.
+    if headers.get("x-ratelimit-remaining-requests") == "0":
+        scope = "day"
+        reset_s = parse_duration_s(headers.get("x-ratelimit-reset-requests"))
+    elif headers.get("x-ratelimit-remaining-tokens") == "0":
+        scope = "minute"
+        reset_s = parse_duration_s(headers.get("x-ratelimit-reset-tokens"))
+    else:
+        # No bucket at 0. A retry-after still says how long to wait, and the gateway honours
+        # retry_after_s only for scope minute (unknown gets llm_default_cooldown_s), so call
+        # it minute. Groq's RPM limit, which has no header, is the likely cause.
+        scope = "minute" if retry_after_s is not None else "unknown"
+        reset_s = None
+    return RateLimited(
+        retry_after_s=retry_after_s if retry_after_s is not None else reset_s,
+        scope=scope,
+        detail=detail,
+    )
 
 
 class GroqAdapter:
@@ -102,6 +143,8 @@ class GroqAdapter:
 
     def _record_headers(self, model: str, resp: httpx.Response) -> None:
         known, headers = self.quota_headers(model), resp.headers
+        reset_requests = headers.get("x-ratelimit-reset-requests", known.reset_requests)
+        reset_tokens = headers.get("x-ratelimit-reset-tokens", known.reset_tokens)
         self._headers[model] = QuotaHeaders(
             remaining_requests=_int_header(
                 headers, "x-ratelimit-remaining-requests", known.remaining_requests
@@ -111,19 +154,17 @@ class GroqAdapter:
                 headers, "x-ratelimit-remaining-tokens", known.remaining_tokens
             ),
             limit_tokens=_int_header(headers, "x-ratelimit-limit-tokens", known.limit_tokens),
-            reset_requests=headers.get("x-ratelimit-reset-requests", known.reset_requests),
-            reset_tokens=headers.get("x-ratelimit-reset-tokens", known.reset_tokens),
+            reset_requests=reset_requests,
+            reset_tokens=reset_tokens,
             last_status=resp.status_code,
+            reset_requests_s=parse_duration_s(reset_requests),
+            reset_tokens_s=parse_duration_s(reset_tokens),
         )
 
     def _to_result(self, resp: httpx.Response, model: str) -> Completion | ProviderFailure:
         status = resp.status_code
         if status == 429:
-            return RateLimited(
-                retry_after_s=_rate_limit_cooldown_s(resp),
-                scope="unknown",
-                detail=_error_message(resp),
-            )
+            return _rate_limit(resp.headers, _error_message(resp))
         if status >= 500:
             return Unavailable(detail=f"HTTP {status}: {_error_message(resp)}")
         if status >= 400:
