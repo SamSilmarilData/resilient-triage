@@ -717,16 +717,26 @@ async def test_a_cooling_primary_is_skipped_until_its_window_ends() -> None:
     assert snapshot.active_model == PRIMARY
 
 
-class HangsOnFallback(ScriptedAdapter):
-    """Blocks every fallback call until released is set."""
+class HoldsCalls(ScriptedAdapter):
+    """Blocks each call to model on its own gate in gates, until release() is called."""
 
-    def __init__(self, script: list[str | ProviderFailure]) -> None:
+    def __init__(self, script: list[str | ProviderFailure], model: str) -> None:
         super().__init__(script)
-        self.released = asyncio.Event()
+        self.model = model
+        self.holding = True
+        self.gates: list[asyncio.Event] = []
+
+    def release(self) -> None:
+        """Open every gate and stop holding later calls."""
+        self.holding = False
+        for gate in self.gates:
+            gate.set()
 
     async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        if model == FALLBACK:
-            await self.released.wait()
+        if model == self.model and self.holding:
+            gate = asyncio.Event()
+            self.gates.append(gate)
+            await gate.wait()
         return await super().call(model, messages)
 
 
@@ -737,7 +747,7 @@ async def _let_tasks_run() -> None:
 
 
 async def test_a_429_cools_the_primary_before_the_fallback_answers() -> None:
-    adapter = HangsOnFallback([LIMITED])
+    adapter = HoldsCalls([LIMITED], FALLBACK)
     gateway = _gateway(adapter)
     first = asyncio.create_task(gateway.complete(MESSAGES))
     await _let_tasks_run()
@@ -745,7 +755,7 @@ async def test_a_429_cools_the_primary_before_the_fallback_answers() -> None:
 
     second = asyncio.create_task(gateway.complete(MESSAGES))
     await _let_tasks_run()
-    adapter.released.set()
+    adapter.release()
     await asyncio.gather(first, second)
 
     assert adapter.calls == [PRIMARY, FALLBACK, FALLBACK]
@@ -753,7 +763,7 @@ async def test_a_429_cools_the_primary_before_the_fallback_answers() -> None:
 
 
 async def test_a_call_cancelled_after_a_429_records_no_counters_but_keeps_the_cooldown() -> None:
-    adapter = HangsOnFallback([LIMITED])
+    adapter = HoldsCalls([LIMITED], FALLBACK)
     gateway = _gateway(adapter)
     task = asyncio.create_task(gateway.complete(MESSAGES))
     await _let_tasks_run()
@@ -765,9 +775,60 @@ async def test_a_call_cancelled_after_a_429_records_no_counters_but_keeps_the_co
     snapshot = gateway.snapshot()
     assert (snapshot.total_calls, snapshot.rate_limit_hits, snapshot.failover_events) == (0, 0, 0)
     assert snapshot.last_error is None
-    adapter.released.set()
+    adapter.release()
     assert isinstance(await gateway.complete(MESSAGES), Completion)
     assert adapter.calls == [PRIMARY, FALLBACK]  # the primary was cooling
+
+
+DAY_LIMITED_900S = RateLimited(retry_after_s=900.0, scope="day", detail="day quota used up")
+MINUTE_LIMITED_7S = RateLimited(retry_after_s=7.0, scope="minute", detail="minute quota used up")
+
+
+async def test_a_later_shorter_429_does_not_shorten_a_running_cooldown() -> None:
+    """Regression (#73): a minute 429 arriving after a day 429 keeps the primary cooling 900s."""
+    clock = FakeClock()
+    adapter = HoldsCalls(
+        [DAY_LIMITED_900S, "first failover", MINUTE_LIMITED_7S, "second failover"], PRIMARY
+    )
+    gateway = _gateway(adapter, clock)
+    first = asyncio.create_task(gateway.complete(MESSAGES))
+    second = asyncio.create_task(gateway.complete(MESSAGES))
+    await _let_tasks_run()
+    assert len(adapter.gates) == 2  # both calls are waiting on the primary
+
+    adapter.gates[0].set()
+    await first  # the day 429 arrives: 900s
+    adapter.gates[1].set()
+    await second  # then the minute 429: 7s
+    adapter.release()
+    start = clock.now
+    clock.now = start + 8
+    await gateway.complete(MESSAGES)
+    clock.now = start + 900 - 0.5
+    await gateway.complete(MESSAGES)
+    clock.now = start + 900
+    await gateway.complete(MESSAGES)
+
+    assert adapter.calls == [PRIMARY, FALLBACK, PRIMARY, FALLBACK, FALLBACK, FALLBACK, PRIMARY]
+
+
+async def test_a_429_after_a_cooldown_ends_starts_a_fresh_shorter_window() -> None:
+    clock = FakeClock()
+    adapter = ScriptedAdapter(
+        [DAY_LIMITED_900S, "first failover", MINUTE_LIMITED_7S, "second failover"]
+    )
+    gateway = _gateway(adapter, clock)
+    await gateway.complete(MESSAGES)
+    clock.now += 900
+    await gateway.complete(MESSAGES)  # the window has ended: primary 429s for 7s
+    start = clock.now
+
+    clock.now = start + 7 - 0.5
+    await gateway.complete(MESSAGES)
+    clock.now = start + 7
+    await gateway.complete(MESSAGES)
+
+    assert adapter.calls == [PRIMARY, FALLBACK, PRIMARY, FALLBACK, FALLBACK, PRIMARY]
 
 
 PRIMARY_LIMITED_5S = RateLimited(retry_after_s=5.0, scope="minute", detail="primary 429")
