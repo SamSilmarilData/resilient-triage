@@ -178,6 +178,18 @@ async def test_a_groq_key_selects_groq_with_the_configured_request_timeout(
     await gateway.aclose()
 
 
+async def test_the_fallback_model_comes_from_settings() -> None:
+    adapter = ScriptedAdapter([RateLimited(retry_after_s=None, scope="unknown", detail="429")])
+    gateway = build_llm_gateway(
+        settings.model_copy(update={"groq_fallback_model": "fb-model"}), adapter
+    )
+
+    await gateway.complete(MESSAGES)
+
+    assert gateway.snapshot().fallback_model == "fb-model"
+    assert adapter.calls[-1] == "fb-model"
+
+
 async def test_complete_returns_unavailable_when_the_adapter_raises() -> None:
     class ExplodingAdapter(ScriptedAdapter):
         async def call(

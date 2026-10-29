@@ -20,7 +20,6 @@ from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, ScriptedAdapter
 
 __all__ = [
     "DEFAULT_REPORT_JSON",
-    "FALLBACK_MODEL",
     "SIMULATION_LABEL",
     "Completion",
     "GroqAdapter",
@@ -37,7 +36,6 @@ __all__ = [
     "build_llm_gateway",
 ]
 
-FALLBACK_MODEL = "llama-3.1-8b-instant"
 SIMULATION_LABEL = "Zero-Config SRE Simulation"
 
 
@@ -60,5 +58,8 @@ def build_llm_gateway(app_settings: Settings, adapter: ModelAdapter | None = Non
             adapter = ScriptedAdapter()
     primary = app_settings.groq_model
     return LLMGateway(
-        adapter, primary=primary, fallback=FALLBACK_MODEL, label=_label(adapter, primary)
+        adapter,
+        primary=primary,
+        fallback=app_settings.groq_fallback_model,
+        label=_label(adapter, primary),
     )

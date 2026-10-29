@@ -92,6 +92,23 @@ class Settings(BaseSettings):
         le=120,
         description="Timeout in seconds for one HTTP call to the LLM provider",
     )
+    groq_fallback_model: str = Field(
+        default="llama-3.1-8b-instant",
+        min_length=1,
+        description="Groq model the gateway fails over to when the primary model fails",
+    )
+    llm_default_cooldown_s: float = Field(
+        default=30.0,
+        ge=1,
+        le=3600,
+        description="Seconds a rate-limited model cools down when no usable reset is known",
+    )
+    llm_max_cooldown_s: float = Field(
+        default=3600.0,
+        ge=1,
+        le=86400,
+        description="Upper bound in seconds on any rate-limit cooldown of one model",
+    )
 
     # Security & Administration
     admin_api_key: str | None = Field(
