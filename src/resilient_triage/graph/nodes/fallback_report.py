@@ -1,5 +1,6 @@
 """Node: fallback_report - Constructs a safe report on a provider failure or repair exhaustion."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from resilient_triage.llm.failures import (
@@ -38,27 +39,16 @@ def _root_cause(failure: ProviderFailure | None, validation_errors: list[str]) -
             return f"Self-repair limits reached. Diagnostic context: {err_snippet}"
 
 
-def fallback_report_node(state: TriageState) -> dict[str, Any]:
-    """Emit a guaranteed valid report after a provider failure or exhausted self-repair."""
-    query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
-    validation_errors = state.get("validation_errors", [])
-
-    raw_signals = state.get("telemetry_signals", [])
-    signals = []
-    for s in raw_signals:
-        try:
-            signals.append(TelemetrySignal.model_validate(s))
-        except Exception:
-            pass
-
-    root_cause = _root_cause(state.get("provider_failure"), validation_errors)
-
-    report = IncidentTriageReport(
+def build_fallback_report(
+    query: str, *, reason: str, signals: Sequence[TelemetrySignal] = ()
+) -> IncidentTriageReport:
+    """Build a guaranteed valid low-confidence report whose root cause is ``reason``."""
+    return IncidentTriageReport(
         summary=f"Automated incident triage degraded for: {query[:80]}",
         severity=SeverityLevel.UNKNOWN,
-        root_cause_analysis=root_cause,
+        root_cause_analysis=reason,
         affected_services=[],
-        telemetry_signals=signals,
+        telemetry_signals=list(signals),
         recommended_actions=[
             ActionRecommendation(
                 priority=PriorityLevel.P0,
@@ -70,8 +60,26 @@ def fallback_report_node(state: TriageState) -> dict[str, Any]:
         confidence_score=0.20,
     )
 
+
+def _valid_signals(raw_signals: Sequence[Any]) -> list[TelemetrySignal]:
+    """Keep the telemetry signals that validate, dropping malformed ones."""
+    signals = []
+    for s in raw_signals:
+        try:
+            signals.append(TelemetrySignal.model_validate(s))
+        except Exception:
+            pass
+    return signals
+
+
+def fallback_report_node(state: TriageState) -> dict[str, Any]:
+    """Emit a guaranteed valid report after a provider failure or exhausted self-repair."""
+    query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
+    reason = _root_cause(state.get("provider_failure"), state.get("validation_errors", []))
+    signals = _valid_signals(state.get("telemetry_signals", []))
+
     return {
-        "final_report": report,
+        "final_report": build_fallback_report(query, reason=reason, signals=signals),
         "is_degraded": True,
         "synthesis_fell_back": True,
     }
