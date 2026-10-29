@@ -105,23 +105,25 @@ class TriageGateway:
             logger.warning("No run slot freed up in time; shed request.")
             return Shed()
         try:
-            report = await self._analyze(query, scope)
+            report, fell_back = await self._analyze(query, scope)
         finally:
             self._run_slots.release()
-        if report is None:
-            return Analyzed(report=_graph_exception_fallback(query))
-        await self._cache.store(query=query, report=report, service_filter=scope)
+        if not fell_back:
+            await self._cache.store(query=query, report=report, service_filter=scope)
         return Analyzed(report=report)
 
-    async def _analyze(self, query: str, scope: str | None) -> IncidentTriageReport | None:
-        """Run the graph and return its report or a synthesis fallback; None if the graph raised."""
+    async def _analyze(self, query: str, scope: str | None) -> tuple[IncidentTriageReport, bool]:
+        """Run the graph; return its report, or a synthesis fallback, and whether it fell back."""
         try:
             state = await self._run_graph({"query": query, "service_filter": scope})
         except Exception:
-            logger.exception("Triage graph raised; answering with an unstored synthesis fallback.")
-            return None
+            logger.exception("Triage graph raised; answering with a synthesis fallback.")
+            return _graph_exception_fallback(query), True
         final_report: IncidentTriageReport | None = state.get("final_report")
-        return final_report or _synthesis_fallback(query, state)
+        if final_report is None:
+            return _synthesis_fallback(query, state), True
+        evidence = DegradationEvidence.from_state(cast(TriageState, state))
+        return final_report, evidence.synthesis_fell_back
 
 
 def _synthesis_fallback(query: str, state: dict[str, Any]) -> IncidentTriageReport:
