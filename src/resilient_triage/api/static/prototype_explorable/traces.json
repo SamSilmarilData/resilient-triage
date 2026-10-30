@@ -1,0 +1,3503 @@
+{
+ "recorded_at": "2026-10-30T21:21:48Z",
+ "graph": {
+  "nodes": [
+   "analyze_query",
+   "collect_telemetry",
+   "compensate_blindspots",
+   "degraded_fallback",
+   "fallback_report",
+   "finalize_report",
+   "generate_report",
+   "refine_reflection",
+   "self_repair",
+   "synthesize_telemetry",
+   "validate_report"
+  ],
+  "edges": [
+   {
+    "from": "__start__",
+    "to": "analyze_query",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "analyze_query",
+    "to": "collect_telemetry",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "collect_telemetry",
+    "to": "compensate_blindspots",
+    "label": "compensate",
+    "conditional": true
+   },
+   {
+    "from": "collect_telemetry",
+    "to": "synthesize_telemetry",
+    "label": "synthesize",
+    "conditional": true
+   },
+   {
+    "from": "compensate_blindspots",
+    "to": "degraded_fallback",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "degraded_fallback",
+    "to": "synthesize_telemetry",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "fallback_report",
+    "to": "finalize_report",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "generate_report",
+    "to": "fallback_report",
+    "label": "fallback",
+    "conditional": true
+   },
+   {
+    "from": "generate_report",
+    "to": "finalize_report",
+    "label": "finalize",
+    "conditional": true
+   },
+   {
+    "from": "generate_report",
+    "to": "validate_report",
+    "label": "validate",
+    "conditional": true
+   },
+   {
+    "from": "refine_reflection",
+    "to": "generate_report",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "self_repair",
+    "to": "generate_report",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "synthesize_telemetry",
+    "to": "generate_report",
+    "label": null,
+    "conditional": false
+   },
+   {
+    "from": "validate_report",
+    "to": "fallback_report",
+    "label": "fallback",
+    "conditional": true
+   },
+   {
+    "from": "validate_report",
+    "to": "finalize_report",
+    "label": "finalize",
+    "conditional": true
+   },
+   {
+    "from": "validate_report",
+    "to": "refine_reflection",
+    "label": "refine",
+    "conditional": true
+   },
+   {
+    "from": "validate_report",
+    "to": "self_repair",
+    "label": "repair",
+    "conditional": true
+   },
+   {
+    "from": "finalize_report",
+    "to": "__end__",
+    "label": null,
+    "conditional": false
+   }
+  ]
+ },
+ "models": {
+  "primary": "qwen/qwen3.8-27b",
+  "fallback": "llama-3.1-8b-instant"
+ },
+ "scenarios": [
+  {
+   "id": "healthy",
+   "chapter": "Fast paths",
+   "title": "Healthy run",
+   "caption": "Every dependency up, one model call, a validated report.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 2.6,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "healthy",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 2.8,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 2.6,
+     "duration_ms": 0.1
+    },
+    {
+     "seq": 2,
+     "t_ms": 2.8,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 4.6,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 5.1,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 4.6,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 7.8,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 220.4,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "read",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 7.9,
+     "duration_ms": 212.5,
+     "signals": 4
+    },
+    {
+     "seq": 7,
+     "t_ms": 221.7,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 7.8,
+     "duration_ms": 213.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 222.4,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 222.4,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 222.9,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 222.4,
+     "duration_ms": 0.4
+    },
+    {
+     "seq": 11,
+     "t_ms": 223.5,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 1124.3,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 223.6,
+     "duration_ms": 900.7,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1125.8,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 223.5,
+     "duration_ms": 902.3
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1126.5,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 14
+    },
+    {
+     "seq": 15,
+     "t_ms": 1126.5,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 16,
+     "t_ms": 1127.7,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1126.5,
+     "duration_ms": 1.2,
+     "confidence": 0.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1128.2,
+     "from": "validate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 17
+    },
+    {
+     "seq": 18,
+     "t_ms": 1128.2,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 6
+    },
+    {
+     "seq": 19,
+     "t_ms": 1129.2,
+     "kind": "reconciled",
+     "changes": []
+    },
+    {
+     "seq": 20,
+     "t_ms": 1129.2,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 1128.2,
+     "duration_ms": 1.0
+    },
+    {
+     "seq": 21,
+     "t_ms": 1130.0,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 1129.9,
+     "duration_ms": 0.1
+    },
+    {
+     "seq": 22,
+     "t_ms": 1130.1,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "ff5631d0-952a-4c05-a45e-05a3a048c043",
+       "timestamp": "2026-10-30T21:21:23.458708Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "HEALTHY",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.9
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "cache-hit",
+   "chapter": "Fast paths",
+   "title": "Cache hit",
+   "caption": "A similar question was answered before, so the semantic cache answers.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [
+    "A similar question's report is already in this run's private cache."
+   ],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 6.7,
+     "kind": "scenario_setup",
+     "step": "seed_cache",
+     "entries": 1
+    },
+    {
+     "seq": 1,
+     "t_ms": 6.7,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "cache-hit",
+     "scoped": false
+    },
+    {
+     "seq": 2,
+     "t_ms": 7.2,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": true,
+     "similarity": 0.963,
+     "threshold": 0.9,
+     "entries": 1,
+     "started_ms": 6.7,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 3,
+     "t_ms": 7.5,
+     "kind": "trace_finished",
+     "triage_outcome": "cache_hit",
+     "response": {
+      "outcome": "CacheHit",
+      "report": {
+       "incident_id": "3cff40d5-f619-4810-855d-e165050524e5",
+       "timestamp": "2026-10-30T21:21:23.470046Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "HEALTHY",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.9
+      },
+      "similarity": 0.963
+     }
+    }
+   ]
+  },
+  {
+   "id": "failover",
+   "chapter": "Fast paths",
+   "title": "Model failover",
+   "caption": "The primary model is rate-limited; the gateway fails over.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 4.0,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "failover",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 4.2,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 4.0,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 2,
+     "t_ms": 4.2,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 5.7,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 6.1,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 5.7,
+     "duration_ms": 0.4
+    },
+    {
+     "seq": 5,
+     "t_ms": 6.7,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 218.8,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "read",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 6.8,
+     "duration_ms": 212.0,
+     "signals": 4
+    },
+    {
+     "seq": 7,
+     "t_ms": 220.4,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 6.7,
+     "duration_ms": 213.7
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 221.2,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 221.2,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 221.7,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 221.2,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 11,
+     "t_ms": 222.2,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 403.5,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "RateLimited",
+     "started_ms": 222.3,
+     "duration_ms": 181.1,
+     "cooldown": true,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1304.8,
+     "kind": "model_call",
+     "model": "llama-3.1-8b-instant",
+     "role": "fallback",
+     "outcome": "completion",
+     "started_ms": 403.6,
+     "duration_ms": 901.2,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 14,
+     "t_ms": 1306.1,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 222.2,
+     "duration_ms": 1083.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1306.8,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 15
+    },
+    {
+     "seq": 16,
+     "t_ms": 1306.8,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 17,
+     "t_ms": 1308.1,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1306.8,
+     "duration_ms": 1.3,
+     "confidence": 0.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1308.7,
+     "from": "validate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 18
+    },
+    {
+     "seq": 19,
+     "t_ms": 1308.7,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 6
+    },
+    {
+     "seq": 20,
+     "t_ms": 1309.2,
+     "kind": "reconciled",
+     "changes": []
+    },
+    {
+     "seq": 21,
+     "t_ms": 1309.3,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 1308.7,
+     "duration_ms": 0.6
+    },
+    {
+     "seq": 22,
+     "t_ms": 1310.0,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 1309.9,
+     "duration_ms": 0.1
+    },
+    {
+     "seq": 23,
+     "t_ms": 1310.1,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "afe85b95-2e79-4bd4-902e-df8d38407255",
+       "timestamp": "2026-10-30T21:21:24.780782Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "HEALTHY",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.9
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "self-repair",
+   "chapter": "The model misbehaves",
+   "title": "Self-repair",
+   "caption": "The reply breaks the contract and goes back to the model.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 5.4,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "self-repair",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 5.6,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 5.4,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 2,
+     "t_ms": 5.7,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.1,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 7.0,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 7.5,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 7.0,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 8.0,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 220.0,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "read",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 8.2,
+     "duration_ms": 211.8,
+     "signals": 4
+    },
+    {
+     "seq": 7,
+     "t_ms": 222.1,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 8.0,
+     "duration_ms": 214.1
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 222.8,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 222.8,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 223.4,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 222.8,
+     "duration_ms": 0.6
+    },
+    {
+     "seq": 11,
+     "t_ms": 224.0,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 1124.9,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 224.1,
+     "duration_ms": 900.8,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1126.3,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 224.0,
+     "duration_ms": 902.3
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1127.1,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 14
+    },
+    {
+     "seq": 15,
+     "t_ms": 1127.1,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 16,
+     "t_ms": 1129.2,
+     "kind": "validation_failed",
+     "attempt": 1,
+     "errors": 2,
+     "fields": [
+      "confidence_score",
+      "severity"
+     ]
+    },
+    {
+     "seq": 17,
+     "t_ms": 1129.2,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1127.1,
+     "duration_ms": 2.1
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1129.8,
+     "from": "validate_report",
+     "to": "self_repair",
+     "route": "repair",
+     "seq": 18
+    },
+    {
+     "seq": 19,
+     "t_ms": 1129.8,
+     "kind": "node_started",
+     "node": "self_repair",
+     "step": 6
+    },
+    {
+     "seq": 20,
+     "t_ms": 1130.2,
+     "kind": "node_finished",
+     "node": "self_repair",
+     "started_ms": 1129.8,
+     "duration_ms": 0.4
+    },
+    {
+     "seq": 21,
+     "t_ms": 1130.7,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 7
+    },
+    {
+     "seq": 22,
+     "t_ms": 2032.1,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 1130.8,
+     "duration_ms": 901.3,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 23,
+     "t_ms": 2033.8,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 1130.7,
+     "duration_ms": 903.1
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2034.6,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 24
+    },
+    {
+     "seq": 25,
+     "t_ms": 2034.6,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 8
+    },
+    {
+     "seq": 26,
+     "t_ms": 2036.0,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 2034.6,
+     "duration_ms": 1.4,
+     "confidence": 0.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2036.8,
+     "from": "validate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 27
+    },
+    {
+     "seq": 28,
+     "t_ms": 2036.8,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 9
+    },
+    {
+     "seq": 29,
+     "t_ms": 2037.5,
+     "kind": "reconciled",
+     "changes": []
+    },
+    {
+     "seq": 30,
+     "t_ms": 2037.5,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 2036.8,
+     "duration_ms": 0.7
+    },
+    {
+     "seq": 31,
+     "t_ms": 2038.4,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 2038.2,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 32,
+     "t_ms": 2038.5,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "3c83764e-dd63-491c-94cb-6cbdfc517af4",
+       "timestamp": "2026-10-30T21:21:26.820611Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "HEALTHY",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.9
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "refine",
+   "chapter": "The model misbehaves",
+   "title": "Refine",
+   "caption": "Low confidence triggers one reflection round.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 4.2,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "refine",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 4.5,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 4.3,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 2,
+     "t_ms": 4.6,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 5.9,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 6.4,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 5.9,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 6.9,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 218.2,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "read",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 7.0,
+     "duration_ms": 211.1,
+     "signals": 4
+    },
+    {
+     "seq": 7,
+     "t_ms": 219.8,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 6.9,
+     "duration_ms": 212.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 220.4,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 220.4,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 220.8,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 220.4,
+     "duration_ms": 0.4
+    },
+    {
+     "seq": 11,
+     "t_ms": 221.5,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 1122.8,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 221.6,
+     "duration_ms": 901.1,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1124.1,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 221.5,
+     "duration_ms": 902.6
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1124.9,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 14
+    },
+    {
+     "seq": 15,
+     "t_ms": 1124.9,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 16,
+     "t_ms": 1126.0,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1124.9,
+     "duration_ms": 1.1,
+     "confidence": 0.45
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1126.6,
+     "from": "validate_report",
+     "to": "refine_reflection",
+     "route": "refine",
+     "seq": 17
+    },
+    {
+     "seq": 18,
+     "t_ms": 1126.6,
+     "kind": "node_started",
+     "node": "refine_reflection",
+     "step": 6
+    },
+    {
+     "seq": 19,
+     "t_ms": 1127.1,
+     "kind": "node_finished",
+     "node": "refine_reflection",
+     "started_ms": 1126.6,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 20,
+     "t_ms": 1127.6,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 7
+    },
+    {
+     "seq": 21,
+     "t_ms": 2028.7,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 1127.7,
+     "duration_ms": 901.0,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 22,
+     "t_ms": 2030.0,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 1127.6,
+     "duration_ms": 902.3
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2030.8,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 23
+    },
+    {
+     "seq": 24,
+     "t_ms": 2030.8,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 8
+    },
+    {
+     "seq": 25,
+     "t_ms": 2032.2,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 2030.8,
+     "duration_ms": 1.3,
+     "confidence": 0.82
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2032.7,
+     "from": "validate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 26
+    },
+    {
+     "seq": 27,
+     "t_ms": 2032.7,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 9
+    },
+    {
+     "seq": 28,
+     "t_ms": 2033.3,
+     "kind": "reconciled",
+     "changes": []
+    },
+    {
+     "seq": 29,
+     "t_ms": 2033.3,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 2032.7,
+     "duration_ms": 0.6
+    },
+    {
+     "seq": 30,
+     "t_ms": 2034.0,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 2033.8,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 31,
+     "t_ms": 2034.1,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "a3461abb-a4a9-42b0-8589-071ba73eb5f5",
+       "timestamp": "2026-10-30T21:21:28.857320Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "HEALTHY",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.82
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "refine-provider-failure",
+   "chapter": "The model misbehaves",
+   "title": "Refine, then provider failure",
+   "caption": "The second opinion never comes, so the first one stands.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 4.4,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "refine-provider-failure",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 4.7,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 4.4,
+     "duration_ms": 0.3
+    },
+    {
+     "seq": 2,
+     "t_ms": 4.7,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 6.3,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 6.8,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 6.3,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 7.4,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 219.3,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "read",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 7.5,
+     "duration_ms": 211.8,
+     "signals": 4
+    },
+    {
+     "seq": 7,
+     "t_ms": 220.7,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 7.4,
+     "duration_ms": 213.3
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 221.4,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 221.4,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 221.8,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 221.4,
+     "duration_ms": 0.4
+    },
+    {
+     "seq": 11,
+     "t_ms": 222.4,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 1123.7,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 222.5,
+     "duration_ms": 901.2,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1125.4,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 222.4,
+     "duration_ms": 902.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1126.2,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 14
+    },
+    {
+     "seq": 15,
+     "t_ms": 1126.2,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 16,
+     "t_ms": 1127.7,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1126.2,
+     "duration_ms": 1.5,
+     "confidence": 0.45
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1128.4,
+     "from": "validate_report",
+     "to": "refine_reflection",
+     "route": "refine",
+     "seq": 17
+    },
+    {
+     "seq": 18,
+     "t_ms": 1128.4,
+     "kind": "node_started",
+     "node": "refine_reflection",
+     "step": 6
+    },
+    {
+     "seq": 19,
+     "t_ms": 1128.9,
+     "kind": "node_finished",
+     "node": "refine_reflection",
+     "started_ms": 1128.4,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 20,
+     "t_ms": 1129.4,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 7
+    },
+    {
+     "seq": 21,
+     "t_ms": 1310.6,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "Unavailable",
+     "started_ms": 1129.5,
+     "duration_ms": 181.1,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 22,
+     "t_ms": 2229.1,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "Unavailable",
+     "started_ms": 2047.7,
+     "duration_ms": 181.4,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 23,
+     "t_ms": 2410.7,
+     "kind": "model_call",
+     "model": "llama-3.1-8b-instant",
+     "role": "fallback",
+     "outcome": "Unavailable",
+     "started_ms": 2229.5,
+     "duration_ms": 181.2,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 24,
+     "t_ms": 2413.9,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 1129.4,
+     "duration_ms": 1284.5
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2415.2,
+     "from": "generate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 25
+    },
+    {
+     "seq": 26,
+     "t_ms": 2415.2,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 8
+    },
+    {
+     "seq": 27,
+     "t_ms": 2416.3,
+     "kind": "reconciled",
+     "changes": []
+    },
+    {
+     "seq": 28,
+     "t_ms": 2416.3,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 2415.2,
+     "duration_ms": 1.1
+    },
+    {
+     "seq": 29,
+     "t_ms": 2417.8,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 2417.6,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 30,
+     "t_ms": 2417.9,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "c6f82d08-1f7f-4cec-849a-0f7273660c39",
+       "timestamp": "2026-10-30T21:21:29.988795Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "HEALTHY",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.45
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "repair-exhausted",
+   "chapter": "The model misbehaves",
+   "title": "Self-repair exhausted",
+   "caption": "Out of retries, the report is built deterministically.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 6.4,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "repair-exhausted",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 6.6,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 6.4,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 2,
+     "t_ms": 6.7,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 8.5,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 9.0,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 8.5,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 9.7,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 221.7,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "read",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 9.8,
+     "duration_ms": 211.9,
+     "signals": 4
+    },
+    {
+     "seq": 7,
+     "t_ms": 223.7,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 9.6,
+     "duration_ms": 214.1
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 224.8,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 224.8,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 225.4,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 224.8,
+     "duration_ms": 0.6
+    },
+    {
+     "seq": 11,
+     "t_ms": 226.0,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 1127.4,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 226.1,
+     "duration_ms": 901.2,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1129.8,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 226.0,
+     "duration_ms": 903.8
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1130.6,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 14
+    },
+    {
+     "seq": 15,
+     "t_ms": 1130.6,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 16,
+     "t_ms": 1132.6,
+     "kind": "validation_failed",
+     "attempt": 1,
+     "errors": 2,
+     "fields": [
+      "confidence_score",
+      "severity"
+     ]
+    },
+    {
+     "seq": 17,
+     "t_ms": 1132.6,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1130.6,
+     "duration_ms": 2.0
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1133.5,
+     "from": "validate_report",
+     "to": "self_repair",
+     "route": "repair",
+     "seq": 18
+    },
+    {
+     "seq": 19,
+     "t_ms": 1133.5,
+     "kind": "node_started",
+     "node": "self_repair",
+     "step": 6
+    },
+    {
+     "seq": 20,
+     "t_ms": 1134.4,
+     "kind": "node_finished",
+     "node": "self_repair",
+     "started_ms": 1133.5,
+     "duration_ms": 0.9
+    },
+    {
+     "seq": 21,
+     "t_ms": 1135.7,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 7
+    },
+    {
+     "seq": 22,
+     "t_ms": 2037.0,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 1135.9,
+     "duration_ms": 901.0,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 23,
+     "t_ms": 2039.1,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 1135.7,
+     "duration_ms": 903.4
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2040.3,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 24
+    },
+    {
+     "seq": 25,
+     "t_ms": 2040.3,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 8
+    },
+    {
+     "seq": 26,
+     "t_ms": 2043.1,
+     "kind": "validation_failed",
+     "attempt": 2,
+     "errors": 2,
+     "fields": [
+      "confidence_score",
+      "severity"
+     ]
+    },
+    {
+     "seq": 27,
+     "t_ms": 2043.1,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 2040.3,
+     "duration_ms": 2.8
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2043.9,
+     "from": "validate_report",
+     "to": "fallback_report",
+     "route": "fallback",
+     "seq": 28
+    },
+    {
+     "seq": 29,
+     "t_ms": 2043.9,
+     "kind": "node_started",
+     "node": "fallback_report",
+     "step": 9
+    },
+    {
+     "seq": 30,
+     "t_ms": 2044.9,
+     "kind": "node_finished",
+     "node": "fallback_report",
+     "started_ms": 2043.9,
+     "duration_ms": 1.0
+    },
+    {
+     "seq": 31,
+     "t_ms": 2046.1,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 10
+    },
+    {
+     "seq": 32,
+     "t_ms": 2047.1,
+     "kind": "reconciled",
+     "changes": [
+      {
+       "field": "degradation_status",
+       "from": "HEALTHY",
+       "to": "SEVERELY_DEGRADED"
+      }
+     ]
+    },
+    {
+     "seq": 33,
+     "t_ms": 2047.1,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 2046.1,
+     "duration_ms": 1.0
+    },
+    {
+     "seq": 34,
+     "t_ms": 2048.0,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "088e9599-79bb-4647-a046-ab2be167de6f",
+       "timestamp": "2026-10-30T21:21:33.327043Z",
+       "summary": "Automated incident triage degraded for: GitHub Actions jobs failing with 503 and delayed webhooks",
+       "severity": "UNKNOWN",
+       "root_cause_analysis": "Self-repair limits reached. Diagnostic context: Field 'severity': Input should be 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW' or 'UNKNOWN' (input was: 'CATASTROPHIC'); Field 'confidence_score': Input should be less than or equal to 1 (input was: 1.7)",
+       "affected_services": [],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 211.63,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Partial System Outage"
+        },
+        {
+         "source": "statuspage:component:Actions",
+         "status": "major_outage",
+         "latency_ms": 211.63,
+         "error_rate": 0.8,
+         "raw_snippet": "Component status is major_outage"
+        },
+        {
+         "source": "statuspage:component:Webhooks",
+         "status": "degraded_performance",
+         "latency_ms": 211.63,
+         "error_rate": 0.3,
+         "raw_snippet": "Component status is degraded_performance"
+        },
+        {
+         "source": "statuspage:incident:Delayed Actions jobs",
+         "status": "investigating",
+         "latency_ms": 211.63,
+         "error_rate": 0.6,
+         "raw_snippet": "Impact: major. Details: Ongoing"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Manually inspect service dashboards and verify telemetry signals",
+         "target_system": "Monitoring",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        }
+       ],
+       "degradation_status": "SEVERELY_DEGRADED",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.2
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "reconciliation",
+   "chapter": "The model misbehaves",
+   "title": "Reconciliation",
+   "caption": "reconcile overrules the model and requires approval.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 5.6,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "reconciliation",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 5.9,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 5.6,
+     "duration_ms": 0.3
+    },
+    {
+     "seq": 2,
+     "t_ms": 5.9,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 7.8,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 8.3,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 7.8,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 8.9,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 221.1,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "read",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 9.0,
+     "duration_ms": 212.1,
+     "signals": 4
+    },
+    {
+     "seq": 7,
+     "t_ms": 222.8,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 8.9,
+     "duration_ms": 213.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 223.5,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 223.5,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 224.0,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 223.5,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 11,
+     "t_ms": 224.6,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 1125.0,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 224.7,
+     "duration_ms": 900.3,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1127.1,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 224.6,
+     "duration_ms": 902.5
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1128.5,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 14
+    },
+    {
+     "seq": 15,
+     "t_ms": 1128.5,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 16,
+     "t_ms": 1129.9,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1128.5,
+     "duration_ms": 1.4,
+     "confidence": 0.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1130.4,
+     "from": "validate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 17
+    },
+    {
+     "seq": 18,
+     "t_ms": 1130.4,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 6
+    },
+    {
+     "seq": 19,
+     "t_ms": 1131.6,
+     "kind": "reconciled",
+     "changes": [
+      {
+       "field": "recommended_actions[0].requires_approval",
+       "from": false,
+       "to": true
+      }
+     ]
+    },
+    {
+     "seq": 20,
+     "t_ms": 1131.7,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 1130.4,
+     "duration_ms": 1.3
+    },
+    {
+     "seq": 21,
+     "t_ms": 1133.0,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 1132.9,
+     "duration_ms": 0.1
+    },
+    {
+     "seq": 22,
+     "t_ms": 1133.1,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "1aba1fac-9846-4fe7-a9b8-5d40de40962e",
+       "timestamp": "2026-10-30T21:21:34.462104Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Restart the Actions webhook consumer",
+         "target_system": "Actions Controller",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "HEALTHY",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.9
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "unavailable-source",
+   "chapter": "Dependencies fail",
+   "title": "Unavailable source",
+   "caption": "One failed read: degraded, but the run stays on the normal path.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 6.7,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "unavailable-source",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 7.0,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 6.7,
+     "duration_ms": 0.3
+    },
+    {
+     "seq": 2,
+     "t_ms": 7.0,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 8.4,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 8.9,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 8.4,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 9.5,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 856.6,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "unavailable",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 9.6,
+     "duration_ms": 847.0,
+     "signals": 1
+    },
+    {
+     "seq": 7,
+     "t_ms": 858.2,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 9.5,
+     "duration_ms": 848.7
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 858.9,
+     "from": "collect_telemetry",
+     "to": "synthesize_telemetry",
+     "route": "synthesize",
+     "seq": 8
+    },
+    {
+     "seq": 9,
+     "t_ms": 858.9,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 3
+    },
+    {
+     "seq": 10,
+     "t_ms": 859.3,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 858.9,
+     "duration_ms": 0.4
+    },
+    {
+     "seq": 11,
+     "t_ms": 859.9,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 4
+    },
+    {
+     "seq": 12,
+     "t_ms": 1761.0,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 860.0,
+     "duration_ms": 901.0,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 13,
+     "t_ms": 1763.4,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 859.9,
+     "duration_ms": 903.5
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1764.7,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 14
+    },
+    {
+     "seq": 15,
+     "t_ms": 1764.7,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 5
+    },
+    {
+     "seq": 16,
+     "t_ms": 1767.2,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 1764.7,
+     "duration_ms": 2.5,
+     "confidence": 0.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 1768.4,
+     "from": "validate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 17
+    },
+    {
+     "seq": 18,
+     "t_ms": 1768.4,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 6
+    },
+    {
+     "seq": 19,
+     "t_ms": 1769.4,
+     "kind": "reconciled",
+     "changes": [
+      {
+       "field": "degradation_status",
+       "from": "HEALTHY",
+       "to": "PARTIALLY_DEGRADED"
+      }
+     ]
+    },
+    {
+     "seq": 20,
+     "t_ms": 1769.4,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 1768.4,
+     "duration_ms": 1.0
+    },
+    {
+     "seq": 21,
+     "t_ms": 1771.0,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 1770.7,
+     "duration_ms": 0.3
+    },
+    {
+     "seq": 22,
+     "t_ms": 1771.2,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "f493d729-0283-49bb-8057-324b833a095e",
+       "timestamp": "2026-10-30T21:21:36.236291Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "PARTIALLY_DEGRADED",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.9
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "tripped-breaker",
+   "chapter": "Dependencies fail",
+   "title": "Tripped breaker",
+   "caption": "The breaker was open before the run, so the agent compensates for the blind spot.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [
+    "Statuspage failed 3 times before this run; its breaker is open."
+   ],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 926.3,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "statuspage",
+     "outcome": "unavailable",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 5.2,
+     "duration_ms": 921.1,
+     "signals": 1
+    },
+    {
+     "seq": 1,
+     "t_ms": 1831.9,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "statuspage",
+     "outcome": "unavailable",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 926.5,
+     "duration_ms": 905.4,
+     "signals": 1
+    },
+    {
+     "seq": 2,
+     "t_ms": 2769.1,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "statuspage",
+     "outcome": "tripped",
+     "breaker_before": "closed",
+     "breaker_after": "open",
+     "started_ms": 1832.2,
+     "duration_ms": 936.9,
+     "signals": 1
+    },
+    {
+     "seq": 3,
+     "t_ms": 2769.3,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "tripped-breaker",
+     "scoped": false
+    },
+    {
+     "seq": 4,
+     "t_ms": 2769.6,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 2769.3,
+     "duration_ms": 0.3
+    },
+    {
+     "seq": 5,
+     "t_ms": 2769.7,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 6,
+     "t_ms": 2773.0,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 7,
+     "t_ms": 2773.9,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 2773.0,
+     "duration_ms": 0.9
+    },
+    {
+     "seq": 8,
+     "t_ms": 2775.1,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 9,
+     "t_ms": 2775.8,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "tripped",
+     "breaker_before": "open",
+     "breaker_after": "open",
+     "started_ms": 2775.3,
+     "duration_ms": 0.4,
+     "signals": 1
+    },
+    {
+     "seq": 10,
+     "t_ms": 2777.6,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 2775.0,
+     "duration_ms": 2.6
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2779.4,
+     "from": "collect_telemetry",
+     "to": "compensate_blindspots",
+     "route": "compensate",
+     "seq": 11
+    },
+    {
+     "seq": 12,
+     "t_ms": 2779.4,
+     "kind": "node_started",
+     "node": "compensate_blindspots",
+     "step": 3
+    },
+    {
+     "seq": 13,
+     "t_ms": 2779.6,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 2779.5,
+     "duration_ms": 0.1
+    },
+    {
+     "seq": 14,
+     "t_ms": 2780.0,
+     "kind": "node_finished",
+     "node": "compensate_blindspots",
+     "started_ms": 2779.4,
+     "duration_ms": 0.6
+    },
+    {
+     "seq": 15,
+     "t_ms": 2780.8,
+     "kind": "node_started",
+     "node": "degraded_fallback",
+     "step": 4
+    },
+    {
+     "seq": 16,
+     "t_ms": 2781.4,
+     "kind": "node_finished",
+     "node": "degraded_fallback",
+     "started_ms": 2780.8,
+     "duration_ms": 0.6
+    },
+    {
+     "seq": 17,
+     "t_ms": 2782.1,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 5
+    },
+    {
+     "seq": 18,
+     "t_ms": 2782.7,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 2782.1,
+     "duration_ms": 0.6
+    },
+    {
+     "seq": 19,
+     "t_ms": 2783.4,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 6
+    },
+    {
+     "seq": 20,
+     "t_ms": 3684.7,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "completion",
+     "started_ms": 2783.5,
+     "duration_ms": 901.1,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 21,
+     "t_ms": 3686.7,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 2783.4,
+     "duration_ms": 903.3
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 3688.0,
+     "from": "generate_report",
+     "to": "validate_report",
+     "route": "validate",
+     "seq": 22
+    },
+    {
+     "seq": 23,
+     "t_ms": 3688.0,
+     "kind": "node_started",
+     "node": "validate_report",
+     "step": 7
+    },
+    {
+     "seq": 24,
+     "t_ms": 3690.2,
+     "kind": "node_finished",
+     "node": "validate_report",
+     "started_ms": 3688.0,
+     "duration_ms": 2.2,
+     "confidence": 0.9
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 3691.3,
+     "from": "validate_report",
+     "to": "finalize_report",
+     "route": "finalize",
+     "seq": 25
+    },
+    {
+     "seq": 26,
+     "t_ms": 3691.3,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 8
+    },
+    {
+     "seq": 27,
+     "t_ms": 3691.8,
+     "kind": "reconciled",
+     "changes": [
+      {
+       "field": "degradation_status",
+       "from": "HEALTHY",
+       "to": "PARTIALLY_DEGRADED"
+      },
+      {
+       "field": "circuit_breakers_tripped",
+       "from": [],
+       "to": [
+        "statuspage"
+       ]
+      }
+     ]
+    },
+    {
+     "seq": 28,
+     "t_ms": 3691.8,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 3691.3,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 29,
+     "t_ms": 3693.0,
+     "kind": "cache_store",
+     "backend": "in_memory",
+     "private": true,
+     "stored": true,
+     "started_ms": 3692.8,
+     "duration_ms": 0.2
+    },
+    {
+     "seq": 30,
+     "t_ms": 3693.1,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "de544e1c-72a5-4c04-b198-a860961de888",
+       "timestamp": "2026-10-30T21:21:39.934152Z",
+       "summary": "GitHub Actions workflows experiencing elevated failure rates",
+       "severity": "HIGH",
+       "root_cause_analysis": "Upstream webhook processing queue saturation",
+       "affected_services": [
+        {
+         "service_name": "Actions Runner",
+         "impact_level": "Major Outage",
+         "details": "Job pickup delayed by >15 minutes"
+        }
+       ],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "major",
+         "latency_ms": 320.0,
+         "error_rate": 0.5,
+         "raw_snippet": "GitHub: Major Service Outage"
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Inspect Actions webhook runner health: kubectl get pods -n actions",
+         "target_system": "Actions Controller",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        },
+        {
+         "priority": "P1",
+         "action": "Scale runner replica pool by 50%",
+         "target_system": "Runner Deployment",
+         "action_type": "remediative",
+         "requires_approval": true
+        }
+       ],
+       "degradation_status": "PARTIALLY_DEGRADED",
+       "circuit_breakers_tripped": [
+        "statuspage"
+       ],
+       "confidence_score": 0.9
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "run-deadline",
+   "chapter": "Dependencies fail",
+   "title": "Run deadline",
+   "caption": "The run hits its deadline and is answered anyway.",
+   "query": "Internal auth service token validation latency spiking",
+   "setup": [
+    "This scenario's run deadline is 3 s.",
+    "Cluster Sentinel answers after 5 s."
+   ],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 5.9,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "run-deadline",
+     "scoped": false
+    },
+    {
+     "seq": 1,
+     "t_ms": 6.2,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 5.9,
+     "duration_ms": 0.3
+    },
+    {
+     "seq": 2,
+     "t_ms": 6.2,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 3,
+     "t_ms": 7.9,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 8.4,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 7.9,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 5,
+     "t_ms": 9.1,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 6,
+     "t_ms": 3009.4,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 9.1,
+     "duration_ms": 3000.2,
+     "cancelled": true
+    },
+    {
+     "seq": 7,
+     "t_ms": 3009.4,
+     "kind": "deadline_exceeded",
+     "deadline_s": 3.0
+    },
+    {
+     "seq": 8,
+     "t_ms": 3010.0,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "5448a88e-5cc4-40eb-8460-ce63b343d677",
+       "timestamp": "2026-10-30T21:21:42.952931Z",
+       "summary": "Automated incident triage degraded for: Internal auth service token validation latency spiking",
+       "severity": "UNKNOWN",
+       "root_cause_analysis": "Run deadline exceeded before analysis finished. Safe heuristic fallback engaged.",
+       "affected_services": [],
+       "telemetry_signals": [],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Manually inspect service dashboards and verify telemetry signals",
+         "target_system": "Monitoring",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        }
+       ],
+       "degradation_status": "SEVERELY_DEGRADED",
+       "circuit_breakers_tripped": [],
+       "confidence_score": 0.2
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "shed",
+   "chapter": "Dependencies fail",
+   "title": "Shed request",
+   "caption": "No capacity: refused promptly, not left hanging.",
+   "query": "GitHub Actions jobs failing with 503 and delayed webhooks",
+   "setup": [
+    "All 2 run slots are already held.",
+    "Queue wait is 1.5 s."
+   ],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 6.1,
+     "kind": "scenario_setup",
+     "step": "hold_run_slots",
+     "held": 2
+    },
+    {
+     "seq": 1,
+     "t_ms": 6.1,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "shed",
+     "scoped": false
+    },
+    {
+     "seq": 2,
+     "t_ms": 6.4,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": false,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 6.1,
+     "duration_ms": 0.3
+    },
+    {
+     "seq": 3,
+     "t_ms": 1507.6,
+     "kind": "run_slot",
+     "acquired": false,
+     "waited_ms": 1501.1,
+     "capacity": 2,
+     "in_flight": 2
+    },
+    {
+     "seq": 4,
+     "t_ms": 1507.7,
+     "kind": "trace_finished",
+     "triage_outcome": "shed",
+     "response": {
+      "outcome": "Shed",
+      "retry_after_s": 5
+     }
+    }
+   ]
+  },
+  {
+   "id": "everything-down",
+   "chapter": "Finale",
+   "title": "Everything down",
+   "caption": "Everything down, still a report, no 500.",
+   "query": "GitHub Actions webhooks and internal auth both failing",
+   "setup": [
+    "Redis refuses connections.",
+    "Statuspage and Cluster Sentinel each failed 3 times before this run.",
+    "Both models are failing."
+   ],
+   "events": [
+    {
+     "seq": 0,
+     "t_ms": 227.4,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "chaos",
+     "outcome": "unavailable",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 5.1,
+     "duration_ms": 222.3,
+     "signals": 1
+    },
+    {
+     "seq": 1,
+     "t_ms": 846.0,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "statuspage",
+     "outcome": "unavailable",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 4.8,
+     "duration_ms": 841.2,
+     "signals": 1
+    },
+    {
+     "seq": 2,
+     "t_ms": 1091.8,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "chaos",
+     "outcome": "unavailable",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 846.6,
+     "duration_ms": 245.2,
+     "signals": 1
+    },
+    {
+     "seq": 3,
+     "t_ms": 1691.1,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "statuspage",
+     "outcome": "unavailable",
+     "breaker_before": "closed",
+     "breaker_after": "closed",
+     "started_ms": 846.2,
+     "duration_ms": 844.9,
+     "signals": 1
+    },
+    {
+     "seq": 4,
+     "t_ms": 1929.2,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "chaos",
+     "outcome": "tripped",
+     "breaker_before": "closed",
+     "breaker_after": "open",
+     "started_ms": 1691.7,
+     "duration_ms": 237.4,
+     "signals": 1
+    },
+    {
+     "seq": 5,
+     "t_ms": 2615.9,
+     "kind": "telemetry_read",
+     "phase": "setup",
+     "source": "statuspage",
+     "outcome": "tripped",
+     "breaker_before": "closed",
+     "breaker_after": "open",
+     "started_ms": 1691.3,
+     "duration_ms": 924.6,
+     "signals": 1
+    },
+    {
+     "seq": 6,
+     "t_ms": 2616.2,
+     "kind": "trace_started",
+     "schema_version": 1,
+     "scenario_id": "everything-down",
+     "scoped": false
+    },
+    {
+     "seq": 7,
+     "t_ms": 2616.7,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": true,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 2616.2,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 8,
+     "t_ms": 2616.8,
+     "kind": "run_slot",
+     "acquired": true,
+     "waited_ms": 0.0,
+     "capacity": 10,
+     "in_flight": 0
+    },
+    {
+     "seq": 9,
+     "t_ms": 2620.6,
+     "kind": "node_started",
+     "node": "analyze_query",
+     "step": 1
+    },
+    {
+     "seq": 10,
+     "t_ms": 2624.9,
+     "kind": "node_finished",
+     "node": "analyze_query",
+     "started_ms": 2620.6,
+     "duration_ms": 4.3
+    },
+    {
+     "seq": 11,
+     "t_ms": 2625.9,
+     "kind": "node_started",
+     "node": "collect_telemetry",
+     "step": 2
+    },
+    {
+     "seq": 12,
+     "t_ms": 2626.2,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "statuspage",
+     "outcome": "tripped",
+     "breaker_before": "open",
+     "breaker_after": "open",
+     "started_ms": 2626.0,
+     "duration_ms": 0.2,
+     "signals": 1
+    },
+    {
+     "seq": 13,
+     "t_ms": 2626.3,
+     "kind": "telemetry_read",
+     "phase": "run",
+     "source": "chaos",
+     "outcome": "tripped",
+     "breaker_before": "open",
+     "breaker_after": "open",
+     "started_ms": 2626.2,
+     "duration_ms": 0.1,
+     "signals": 1
+    },
+    {
+     "seq": 14,
+     "t_ms": 2627.8,
+     "kind": "node_finished",
+     "node": "collect_telemetry",
+     "started_ms": 2625.8,
+     "duration_ms": 2.0
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 2628.4,
+     "from": "collect_telemetry",
+     "to": "compensate_blindspots",
+     "route": "compensate",
+     "seq": 15
+    },
+    {
+     "seq": 16,
+     "t_ms": 2628.4,
+     "kind": "node_started",
+     "node": "compensate_blindspots",
+     "step": 3
+    },
+    {
+     "seq": 17,
+     "t_ms": 2628.6,
+     "kind": "cache_lookup",
+     "backend": "in_memory",
+     "private": true,
+     "redis_refused": true,
+     "hit": false,
+     "similarity": null,
+     "threshold": 0.9,
+     "entries": 0,
+     "started_ms": 2628.5,
+     "duration_ms": 0.1
+    },
+    {
+     "seq": 18,
+     "t_ms": 2628.8,
+     "kind": "node_finished",
+     "node": "compensate_blindspots",
+     "started_ms": 2628.4,
+     "duration_ms": 0.4
+    },
+    {
+     "seq": 19,
+     "t_ms": 2629.4,
+     "kind": "node_started",
+     "node": "degraded_fallback",
+     "step": 4
+    },
+    {
+     "seq": 20,
+     "t_ms": 2629.9,
+     "kind": "node_finished",
+     "node": "degraded_fallback",
+     "started_ms": 2629.4,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 21,
+     "t_ms": 2630.5,
+     "kind": "node_started",
+     "node": "synthesize_telemetry",
+     "step": 5
+    },
+    {
+     "seq": 22,
+     "t_ms": 2631.0,
+     "kind": "node_finished",
+     "node": "synthesize_telemetry",
+     "started_ms": 2630.5,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 23,
+     "t_ms": 2631.7,
+     "kind": "node_started",
+     "node": "generate_report",
+     "step": 6
+    },
+    {
+     "seq": 24,
+     "t_ms": 2813.0,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "Unavailable",
+     "started_ms": 2631.8,
+     "duration_ms": 181.1,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 25,
+     "t_ms": 3630.1,
+     "kind": "model_call",
+     "model": "qwen/qwen3.8-27b",
+     "role": "primary",
+     "outcome": "Unavailable",
+     "started_ms": 3448.9,
+     "duration_ms": 181.2,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 26,
+     "t_ms": 3811.5,
+     "kind": "model_call",
+     "model": "llama-3.1-8b-instant",
+     "role": "fallback",
+     "outcome": "Unavailable",
+     "started_ms": 3630.4,
+     "duration_ms": 181.1,
+     "cooldown": false,
+     "scripted": true
+    },
+    {
+     "seq": 27,
+     "t_ms": 3813.0,
+     "kind": "node_finished",
+     "node": "generate_report",
+     "started_ms": 2631.7,
+     "duration_ms": 1181.3
+    },
+    {
+     "kind": "route_decided",
+     "t_ms": 3813.7,
+     "from": "generate_report",
+     "to": "fallback_report",
+     "route": "fallback",
+     "seq": 28
+    },
+    {
+     "seq": 29,
+     "t_ms": 3813.7,
+     "kind": "node_started",
+     "node": "fallback_report",
+     "step": 7
+    },
+    {
+     "seq": 30,
+     "t_ms": 3814.2,
+     "kind": "node_finished",
+     "node": "fallback_report",
+     "started_ms": 3813.7,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 31,
+     "t_ms": 3814.8,
+     "kind": "node_started",
+     "node": "finalize_report",
+     "step": 8
+    },
+    {
+     "seq": 32,
+     "t_ms": 3815.3,
+     "kind": "reconciled",
+     "changes": [
+      {
+       "field": "degradation_status",
+       "from": "HEALTHY",
+       "to": "SEVERELY_DEGRADED"
+      },
+      {
+       "field": "circuit_breakers_tripped",
+       "from": [],
+       "to": [
+        "chaos",
+        "statuspage"
+       ]
+      }
+     ]
+    },
+    {
+     "seq": 33,
+     "t_ms": 3815.3,
+     "kind": "node_finished",
+     "node": "finalize_report",
+     "started_ms": 3814.8,
+     "duration_ms": 0.5
+    },
+    {
+     "seq": 34,
+     "t_ms": 3815.9,
+     "kind": "trace_finished",
+     "triage_outcome": "analyzed",
+     "response": {
+      "outcome": "Analyzed",
+      "report": {
+       "incident_id": "34a30069-2049-4881-9abe-527fde900274",
+       "timestamp": "2026-10-30T21:21:48.281480Z",
+       "summary": "Automated incident triage degraded for: GitHub Actions webhooks and internal auth both failing",
+       "severity": "UNKNOWN",
+       "root_cause_analysis": "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged.",
+       "affected_services": [],
+       "telemetry_signals": [
+        {
+         "source": "statuspage:global",
+         "status": "CIRCUIT_OPEN",
+         "latency_ms": 0.13,
+         "error_rate": 1.0,
+         "raw_snippet": "Circuit breaker 'statuspage' tripped OPEN; failing fast without hanging."
+        },
+        {
+         "source": "auth_service_probe",
+         "status": "CIRCUIT_OPEN",
+         "latency_ms": 0.06,
+         "error_rate": 1.0,
+         "raw_snippet": "Circuit breaker 'chaos' tripped OPEN; failing fast without hanging."
+        },
+        {
+         "source": "resilience_guard",
+         "status": "CIRCUIT_BREAKER_OPEN",
+         "latency_ms": null,
+         "error_rate": 1.0,
+         "raw_snippet": "Circuit breaker(s) [Statuspage [statuspage], Cluster Sentinel [chaos]] tripped OPEN. Upstream telemetry unavailable; protecting downstream services."
+        }
+       ],
+       "recommended_actions": [
+        {
+         "priority": "P0",
+         "action": "Manually inspect service dashboards and verify telemetry signals",
+         "target_system": "Monitoring",
+         "action_type": "diagnostic",
+         "requires_approval": false
+        }
+       ],
+       "degradation_status": "SEVERELY_DEGRADED",
+       "circuit_breakers_tripped": [
+        "chaos",
+        "statuspage"
+       ],
+       "confidence_score": 0.2
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

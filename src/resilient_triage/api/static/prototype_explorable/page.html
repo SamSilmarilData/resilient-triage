@@ -1,0 +1,24 @@
+<title>Resilient Triage Prototype</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!-- PROTOTYPE (issue #96), throwaway: three layouts of the explorable page over real recorded traces. -->
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">
+{
+  "imports": {
+    "preact": "./vendor/preact.module.js",
+    "preact/hooks": "./vendor/hooks.module.js",
+    "htm": "./vendor/htm.module.js",
+    "htm/preact": "./vendor/htm-preact.module.js",
+    "@preact/signals-core": "./vendor/signals-core.module.js",
+    "@preact/signals": "./vendor/signals.module.js"
+  }
+}
+</script>
+<script>
+  // Prototype aid: surface script errors on the page itself.
+  const showErr = (m) => document.body.insertAdjacentHTML("afterbegin", `<pre class="proto-error">ERR ${m}</pre>`);
+  addEventListener("error", (e) => showErr(`${e.message} @ ${e.filename}:${e.lineno}`));
+  addEventListener("unhandledrejection", (e) => showErr(`${e.reason?.stack ?? e.reason}`));
+</script>
+<div id="app"><p class="loading">Loading recorded traces…</p></div>
+<script type="module" src="js/main.js"></script>
