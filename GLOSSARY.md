@@ -95,3 +95,17 @@ _Avoid_: trace (when meaning the summary)
 **Abandoned request**:
 A triage request whose caller disconnected before its outcome. It has no triage outcome and leaves nothing in the cache.
 _Avoid_: cancelled request, shed request (that is a refusal)
+
+### Demonstration
+
+**Scenario run**:
+A run requested by naming a catalogued scenario, whose model replies and Statuspage readings are scripted by that scenario. It never calls the real model, never touches the shared cache, and never counts as the deployment's real traffic. The rest of the run (graph, reconciliation, cache logic) is real.
+_Avoid_: demo mode, demo run, simulation (that is the keyless model stand-in)
+
+**Free play**:
+A visitor's own query, answered exactly as any triage request is, with the real model when one is configured.
+_Avoid_: live mode, sandbox
+
+**Scenario seed**:
+An answer placed in a scenario run's private cache before the run starts, so the scenario can show a cache hit independently of what any earlier run did.
+_Avoid_: warm-up (that is embedding pre-warming), fixture
