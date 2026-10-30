@@ -53,7 +53,7 @@ How a triage request ended: answered from the cache, answered by a run, or shed.
 _Avoid_: result, response (that is the HTTP layer)
 
 **Shed request**:
-A triage request refused because no run slot freed up in time. The caller is told to retry later; no report is produced.
+A triage request refused because the deployment has no capacity for it right now: no run slot freed up in time, or free play's run budget is spent. The caller is told to retry later; no report is produced.
 _Avoid_: saturated (except as the existing metric label), rejected, throttled
 
 **Run deadline**:
@@ -107,5 +107,13 @@ A visitor's own query, answered exactly as any triage request is, with the real 
 _Avoid_: live mode, sandbox
 
 **Scenario seed**:
-An answer placed in a scenario run's private cache before the run starts, so the scenario can show a cache hit independently of what any earlier run did.
+An answer placed in a scenario run's private cache before the run starts, so the scenario can show a cache hit independently of what any earlier run did. Part of the scenario setup.
 _Avoid_: warm-up (that is embedding pre-warming), fixture
+
+**Scenario fault**:
+A failure a scenario arranges for its own run only, such as Statuspage failing, Redis being unreachable or a model refusing calls. It never affects any other run.
+_Avoid_: fault hook, demo fault, chaos injection (that is the operator's global fault)
+
+**Scenario setup**:
+Everything a scenario arranges before its run starts, its seed and any failures that must already have happened (such as a breaker already tripped), shown to the visitor as what was true before the run.
+_Avoid_: fixture, preconditions
