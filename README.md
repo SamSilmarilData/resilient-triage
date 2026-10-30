@@ -180,6 +180,7 @@ Explore the architecture, resilience engineering, API specifications, and archit
   - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md) (fallback model superseded by ADR 0006)
   - [ADR 0006: Project-Owned LLM Gateway](docs/decisions/0006-project-owned-llm-gateway.md)
   - [ADR 0007: No Checkpointing on the Request Path](docs/decisions/0007-no-checkpointing-on-the-request-path.md)
+  - [ADR 0008: Execution Trace from a Per-Request Recorder, Streamed over SSE](docs/decisions/0008-execution-trace.md)
 
 ---
 

@@ -77,3 +77,21 @@ _Avoid_: chaos, chaos probe (when meaning the source)
 **Chaos injection**:
 Faults an operator deliberately applies to Cluster Sentinel (latency, forced or random failures) to exercise degradation.
 _Avoid_: chaos (unqualified), simulation
+
+### Execution trace
+
+**Execution trace**:
+The ordered record of what happened while one triage request was handled, from the cache lookup to its triage outcome, including the work done outside the run.
+_Avoid_: telemetry (that is incident signals), log, history
+
+**Trace event**:
+One entry in an execution trace.
+_Avoid_: step, span, log line
+
+**Trace summary**:
+The condensed execution trace returned with every triage answer.
+_Avoid_: trace (when meaning the summary)
+
+**Abandoned request**:
+A triage request whose caller disconnected before its outcome. It has no triage outcome and leaves nothing in the cache.
+_Avoid_: cancelled request, shed request (that is a refusal)
