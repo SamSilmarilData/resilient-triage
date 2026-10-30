@@ -29,6 +29,15 @@ def fast_retry_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.005)
 
 
+ADMIN_TEST_KEY = "test-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def admin_key_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure an admin key: admin routes fail closed (403) without one (#107)."""
+    monkeypatch.setattr(settings, "admin_api_key", ADMIN_TEST_KEY)
+
+
 def _is_local(host: object) -> bool:
     if host is None or host == "localhost":
         return True
@@ -95,12 +104,18 @@ async def _started_runtime(
 
 
 @asynccontextmanager
-async def _app_client(rt: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
-    """Open an async test client for an app that owns `rt`, lifespan included."""
+async def _app_client(
+    rt: AppRuntime, *, as_operator: bool = True
+) -> AsyncIterator[httpx.AsyncClient]:
+    """Open an async test client for an app that owns `rt`, lifespan included.
+
+    As the operator it sends the test admin key on every request; otherwise it sends none.
+    """
     app = create_app(lambda: rt)
+    headers = {"X-Admin-Key": ADMIN_TEST_KEY} if as_operator else {}
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers=headers
         ) as ac:
             yield ac
 
@@ -123,8 +138,15 @@ async def runtime() -> AsyncIterator[AppRuntime]:
 
 @pytest_asyncio.fixture
 async def client(runtime: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
-    """An async test client for an app that owns the `runtime` fixture, lifespan included."""
+    """An async test client for an app that owns the `runtime` fixture, sent as the operator."""
     async with _app_client(runtime) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def anonymous_client(runtime: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
+    """Like `client`, but sends no X-Admin-Key header: a visitor, not the operator."""
+    async with _app_client(runtime, as_operator=False) as ac:
         yield ac
 
 

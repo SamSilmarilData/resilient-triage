@@ -599,44 +599,52 @@ async def test_triage_request_payload_bounds_rejection(client: httpx.AsyncClient
     assert resp_ok.status_code == 200
 
 
-@pytest.mark.asyncio
-async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
-    """Verify mutating control-plane endpoints enforce X-Admin-Key when it is configured."""
-    from resilient_triage.config import settings
+ADMIN_ROUTES = [
+    pytest.param("/chaos/inject", {"active": False}, id="chaos-inject"),
+    pytest.param("/resilience/reset", None, id="resilience-reset"),
+    pytest.param("/cache/clear", None, id="cache-clear"),
+]
 
-    # Configure secret admin key
-    monkeypatch.setattr(settings, "admin_api_key", "super_secret_token_42")
 
-    # /chaos/inject rejected without key
-    r1 = await client.post("/chaos/inject", json={"active": True})
-    assert r1.status_code == 401
-    assert "unauthorized" in r1.json()["detail"].lower()
+@pytest.mark.parametrize(("path", "body"), ADMIN_ROUTES)
+@pytest.mark.parametrize(
+    ("configured_key", "sent_key", "expected_status"),
+    [
+        pytest.param(None, None, 403, id="unset-key-no-header"),
+        pytest.param(None, "anything", 403, id="unset-key-any-header"),
+        pytest.param("super_secret_token_42", None, 401, id="missing-header"),
+        pytest.param("super_secret_token_42", "wrong", 401, id="wrong-header"),
+        pytest.param("super_secret_token_42", "super_secret_token_42", 200, id="right-header"),
+    ],
+)
+async def test_admin_routes_fail_closed(
+    anonymous_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    body: dict[str, object] | None,
+    configured_key: str | None,
+    sent_key: str | None,
+    expected_status: int,
+):
+    """Admin routes refuse every caller without ADMIN_API_KEY, and need the right key with one."""
+    monkeypatch.setattr(settings, "admin_api_key", configured_key)
+    headers = {} if sent_key is None else {"X-Admin-Key": sent_key}
 
-    # /chaos/inject rejected with wrong key
-    r2 = await client.post("/chaos/inject", json={"active": True}, headers={"X-Admin-Key": "wrong"})
-    assert r2.status_code == 401
+    resp = await anonymous_client.post(path, json=body, headers=headers)
 
-    # /chaos/inject accepted with valid key
-    r3 = await client.post(
-        "/chaos/inject", json={"active": False}, headers={"X-Admin-Key": "super_secret_token_42"}
-    )
-    assert r3.status_code == 200
+    assert resp.status_code == expected_status
 
-    # /resilience/reset rejected without key
-    r4 = await client.post("/resilience/reset")
-    assert r4.status_code == 401
 
-    # /resilience/reset accepted with valid key
-    r5 = await client.post("/resilience/reset", headers={"X-Admin-Key": "super_secret_token_42"})
-    assert r5.status_code == 200
+async def test_openapi_declares_admin_key_security_scheme(client: httpx.AsyncClient):
+    """/docs gets an Authorize button: the X-Admin-Key header is an OpenAPI security scheme."""
+    schema = (await client.get("/openapi.json")).json()
 
-    # /cache/clear rejected without key
-    r6 = await client.post("/cache/clear")
-    assert r6.status_code == 401
-
-    # /cache/clear accepted with valid key
-    r7 = await client.post("/cache/clear", headers={"X-Admin-Key": "super_secret_token_42"})
-    assert r7.status_code == 200
+    schemes = schema["components"]["securitySchemes"]
+    (scheme_name,) = schemes
+    assert schemes[scheme_name] == {"type": "apiKey", "in": "header", "name": "X-Admin-Key"}
+    for path in ("/chaos/inject", "/resilience/reset", "/cache/clear"):
+        assert schema["paths"][path]["post"]["security"] == [{scheme_name: []}]
+    assert "security" not in schema["paths"]["/triage"]["post"]
 
 
 @pytest.mark.asyncio
