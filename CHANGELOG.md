@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Admin routes fail closed** (#107): `POST /chaos/inject`, `/resilience/reset` and `/cache/clear` now answer `403` when `ADMIN_API_KEY` is unset or empty, where they used to admit everyone. With a key set, a missing or wrong `X-Admin-Key` still gets `401`, and the key is compared in constant time. **Set `ADMIN_API_KEY`** (in `.env` locally; `.env.example` has a placeholder) to keep using them. The header is now a `fastapi.security.APIKeyHeader` security scheme (`AdminKey`), so `/docs` has an **Authorize** button. `scripts/smoke_test.py` sends `ADMIN_API_KEY` (or `--admin-key`) and gives a server it launches a random key; `docker-compose.yml` passes `ADMIN_API_KEY` through. The old page's chaos buttons send no key, so they get `403` until the page shell replaces that page.
+
 ## [2.0.0] - 2026-10-30 — Deep Modules: Gateways, Guarded Probe & One Runtime
 
 HTTP routes, response models, the `IncidentTriageReport` schema and the cache key/index format are unchanged. This is a major release because of the Python and configuration removals below: `OPENAI_API_KEY` / `GOOGLE_API_KEY` / `GEMINI_API_KEY` no longer select a provider, the LangChain model classes and `BoundedMemorySaver` are gone, module-level singletons are replaced by `AppRuntime`, and a refused breaker call raises `BreakerOpen` instead of `pybreaker.CircuitBreakerError`.

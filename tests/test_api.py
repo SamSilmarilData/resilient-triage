@@ -612,6 +612,7 @@ ADMIN_ROUTES = [
     [
         pytest.param(None, None, 403, id="unset-key-no-header"),
         pytest.param(None, "anything", 403, id="unset-key-any-header"),
+        pytest.param("", "", 403, id="empty-key-empty-header"),
         pytest.param("super_secret_token_42", None, 401, id="missing-header"),
         pytest.param("super_secret_token_42", "wrong", 401, id="wrong-header"),
         pytest.param("super_secret_token_42", "super_secret_token_42", 200, id="right-header"),
@@ -641,7 +642,8 @@ async def test_openapi_declares_admin_key_security_scheme(client: httpx.AsyncCli
 
     schemes = schema["components"]["securitySchemes"]
     (scheme_name,) = schemes
-    assert schemes[scheme_name] == {"type": "apiKey", "in": "header", "name": "X-Admin-Key"}
+    scheme = schemes[scheme_name]
+    assert (scheme["type"], scheme["in"], scheme["name"]) == ("apiKey", "header", "X-Admin-Key")
     for path in ("/chaos/inject", "/resilience/reset", "/cache/clear"):
         assert schema["paths"][path]["post"]["security"] == [{scheme_name: []}]
     assert "security" not in schema["paths"]["/triage"]["post"]

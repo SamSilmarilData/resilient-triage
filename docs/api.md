@@ -21,7 +21,10 @@ Every HTTP response returned by the API includes the following observability hea
 | `x-thread-id` | Correlation id: the caller's `X-Thread-ID` echoed back, or a new UUID4 if none was sent. It names no checkpoint thread (ADR-007) — *present on `/triage`* | `e1f8b4a2-...` |
 
 ### Security & Authentication Headers
-- `X-Admin-Key`: Required for mutating endpoints (`/resilience/reset`, `/cache/clear`, `/chaos/inject`) if `ADMIN_API_KEY` is configured in the environment. Unauthenticated requests receive `401 Unauthorized`.
+- `X-Admin-Key`: Required on the mutating admin endpoints (`/resilience/reset`, `/cache/clear`, `/chaos/inject`). They fail closed:
+  - `ADMIN_API_KEY` unset or empty on the server: `403 Forbidden` for every caller, whatever header it sends.
+  - `ADMIN_API_KEY` set: a missing or wrong header gets `401 Unauthorized`; the matching key (compared in constant time) is admitted.
+- The header is declared as an OpenAPI `apiKey` security scheme (`AdminKey`), so `/docs` has an **Authorize** button: enter the key there once and Swagger UI sends it on the admin routes. That is the operator path. Admin routes act only on the shared runtime.
 
 ---
 
@@ -291,7 +294,7 @@ Administrative reset restoring all circuit breakers to `CLOSED`, clearing chaos 
 #### Headers
 | Header | Type | Description |
 | :--- | :--- | :--- |
-| `X-Admin-Key` | `string` | *(Optional)* Required if `ADMIN_API_KEY` is configured in gateway environment. |
+| `X-Admin-Key` | `string` | **Required.** Must equal the server's `ADMIN_API_KEY` (`401` if missing or wrong; `403` if the server has no key configured). |
 
 #### Response (`200 OK`)
 ```json
@@ -315,7 +318,7 @@ Configures live chaos injection parameters to simulate upstream infrastructure f
 #### Headers
 | Header | Type | Description |
 | :--- | :--- | :--- |
-| `X-Admin-Key` | `string` | *(Optional)* Required if `ADMIN_API_KEY` is configured in gateway environment. |
+| `X-Admin-Key` | `string` | **Required.** Must equal the server's `ADMIN_API_KEY` (`401` if missing or wrong; `403` if the server has no key configured). |
 
 #### Request Body (`application/json`)
 ```json
@@ -394,7 +397,7 @@ If Redis is down, the in-memory store is emptied at once and the Redis purge sta
 #### Headers
 | Header | Type | Description |
 | :--- | :--- | :--- |
-| `X-Admin-Key` | `string` | *(Optional)* Required if `ADMIN_API_KEY` is configured in gateway environment. |
+| `X-Admin-Key` | `string` | **Required.** Must equal the server's `ADMIN_API_KEY` (`401` if missing or wrong; `403` if the server has no key configured). |
 
 #### Response (`200 OK`)
 ```json

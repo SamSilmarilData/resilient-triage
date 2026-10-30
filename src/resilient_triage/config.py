@@ -169,7 +169,11 @@ class Settings(BaseSettings):
     # Security & Administration
     admin_api_key: str | None = Field(
         default=None,
-        description="Optional secret key required for mutating admin endpoints (X-Admin-Key)",
+        description=(
+            "Secret key the X-Admin-Key header must match on mutating admin routes "
+            "(/chaos/inject, /resilience/reset, /cache/clear). Unset or empty: those routes "
+            "fail closed with 403."
+        ),
     )
 
 

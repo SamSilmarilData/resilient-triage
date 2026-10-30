@@ -4,6 +4,7 @@ Can run against an already-running server or automatically spawn a temporary loc
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -43,8 +44,9 @@ def is_server_running(base_url: str) -> bool:
         return False
 
 
-def run_battery(base_url: str):
-    client = httpx.Client(base_url=base_url, timeout=30.0)
+def run_battery(base_url: str, admin_key: str):
+    # Admin routes fail closed (403) without ADMIN_API_KEY, so every call sends the key.
+    client = httpx.Client(base_url=base_url, timeout=30.0, headers={"X-Admin-Key": admin_key})
 
     # 1. Health Probe
     print_step("Step 1: System Health & Active Model Engine Probe")
@@ -58,8 +60,13 @@ def run_battery(base_url: str):
     print_pass(f"Circuit Breakers: {data['circuits']}")
 
     # Ensure clean slate before running tests
-    client.post("/cache/clear")
-    client.post("/resilience/reset")
+    for admin_path in ("/cache/clear", "/resilience/reset"):
+        res_admin = client.post(admin_path)
+        if res_admin.status_code in (401, 403):
+            print_fail(
+                f"{admin_path} returned HTTP {res_admin.status_code}: the server's ADMIN_API_KEY "
+                "is unset (403) or differs from --admin-key / $ADMIN_API_KEY (401)"
+            )
 
     # 2. Triage Cache Miss (Live Inference)
     print_step("Step 2: Live Incident Triage Query (Cache MISS)")
@@ -185,18 +192,33 @@ def run_battery(base_url: str):
 def main():
     parser = argparse.ArgumentParser(description="Resilient Triage Live Smoke Test")
     parser.add_argument("--url", default="http://127.0.0.1:8000", help="Target API base URL")
+    parser.add_argument(
+        "--admin-key",
+        default=os.environ.get("ADMIN_API_KEY"),
+        help="X-Admin-Key for admin routes (default: $ADMIN_API_KEY). Must match the server's "
+        "ADMIN_API_KEY; an ephemeral instance gets a random one when this is unset.",
+    )
     args = parser.parse_args()
 
+    import secrets
     import socket
     import tempfile
     import urllib.parse
 
     target_url = args.url.rstrip("/")
     server_process = None
+    admin_key = args.admin_key
 
     if is_server_running(target_url):
         print(f"{CYAN}Detected running server at {target_url}. Running tests directly.{RESET}")
+        if not admin_key:
+            print_fail(
+                "Admin routes need a key: pass --admin-key or set ADMIN_API_KEY to the "
+                "running server's ADMIN_API_KEY"
+            )
     else:
+        # The ephemeral instance gets the key in its environment, which wins over .env.
+        admin_key = admin_key or secrets.token_urlsafe(32)
         parsed = urllib.parse.urlparse(target_url)
         target_host = parsed.hostname or "127.0.0.1"
         target_port = parsed.port or 8000
@@ -239,6 +261,7 @@ def main():
             ],
             stdout=log_file,
             stderr=log_file,
+            env={**os.environ, "ADMIN_API_KEY": admin_key},
         )
         # Wait for readiness (up to 30s to allow cold-start ONNX model initialization)
         ready = False
@@ -256,7 +279,7 @@ def main():
             print_fail(f"Ephemeral server failed to start within 30 seconds.\n{err_output}")
 
     try:
-        run_battery(target_url)
+        run_battery(target_url, admin_key)
     finally:
         if server_process:
             print(f"{CYAN}Tearing down ephemeral server instance...{RESET}")
