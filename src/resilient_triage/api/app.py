@@ -52,13 +52,9 @@ admin_key_header = APIKeyHeader(
 async def verify_admin_key(
     x_admin_key: Annotated[str | None, Security(admin_key_header)],
 ) -> None:
-    """Admit only the operator to an admin route; fail closed when no key is configured.
-
-    Raises:
-        HTTPException: 403 when ADMIN_API_KEY is unset or empty, whatever the caller sends;
-            401 when a key is configured and the header is missing or wrong.
-    """
-    expected = settings.admin_api_key
+    """Admit only the operator: 403 when ADMIN_API_KEY is unset or empty, else 401 on a bad key."""
+    secret = settings.admin_api_key
+    expected = secret.get_secret_value() if secret is not None else ""
     if not expected:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

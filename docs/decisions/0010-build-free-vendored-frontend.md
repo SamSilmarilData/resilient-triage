@@ -50,7 +50,7 @@ self-hosted fonts, all served same-origin by the app, with no build step.
 - **Motion.** CSS transitions, WAAPI (`element.animate()`) and View Transitions, all gated on
   `prefers-reduced-motion`. Browsers without View Transitions simply don't animate.
 
-## Testing
+### Testing
 Two tiers. The Python tier always runs in `./scripts/check.sh`; the browser tier is opt-in
 locally and required in CI.
 
@@ -100,8 +100,8 @@ locally and required in CI.
   or `critical` violations, including contrast for the WCAG AA claim.
 
 **No JS lint or type-check** runs in CI, because Node, Deno and Bun are all out. To compensate,
-JS logic stays in the one reducer module, every JS file starts with `// @ts-check` and uses JSDoc
-types, and new JS logic needs a browser test (`CODING_STANDARDS.md`, "Frontend").
+JS logic stays in the one reducer module, every one of our own (non-vendored) JS files starts with
+`// @ts-check` and uses JSDoc types, and new JS logic needs a browser test (`CODING_STANDARDS.md`, "Frontend").
 Screenshot and visual-regression testing is not decided here (issue #101).
 
 ## Considered Options

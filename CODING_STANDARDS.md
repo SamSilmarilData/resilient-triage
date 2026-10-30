@@ -32,9 +32,8 @@ is exempt because prompt text goes to the LLM verbatim), formatting, and full ty
 ## Frontend
 The page is build-free and vendored (ADR-010). No JS lint or type-check runs in CI, so these
 rules stand in for one:
-- JS logic lives in the one reducer module (the trace-to-view reducer). Components only render
-  its output and wire events.
-- Every JS file starts with `// @ts-check` and uses JSDoc types.
+- JS logic lives in the one reducer module (the trace-to-view reducer).
+- Every one of our own (non-vendored) JS files starts with `// @ts-check` and uses JSDoc types.
 - New JS logic needs a browser test (`@pytest.mark.browser`, run by `./scripts/check.sh --browser`).
 - No third-party origins: the page loads scripts, styles, fonts and data from its own origin only.
 - No new vendored package, runtime or test-only, without approval.

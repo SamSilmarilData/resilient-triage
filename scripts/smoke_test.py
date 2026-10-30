@@ -5,6 +5,7 @@ Can run against an already-running server or automatically spawn a temporary loc
 
 import argparse
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -21,6 +22,11 @@ RESET = "\033[0m"
 # Step 7 must reach Cluster Sentinel, whose breaker step 6 opened.
 # tests/test_smoke_script.py checks that query analysis routes it there.
 OUTAGE_QUERY = "Kubernetes ingress for internal auth service returning 502 bad gateway across pods"
+
+ADMIN_KEY_HINT = (
+    "Admin routes need X-Admin-Key equal to the server's ADMIN_API_KEY (pass --admin-key or set "
+    "$ADMIN_API_KEY): they answer 403 while the server has no key and 401 when the key differs."
+)
 
 
 def print_step(name: str):
@@ -45,7 +51,7 @@ def is_server_running(base_url: str) -> bool:
 
 
 def run_battery(base_url: str, admin_key: str):
-    # Admin routes fail closed (403) without ADMIN_API_KEY, so every call sends the key.
+    # Every call sends the admin key (see ADMIN_KEY_HINT).
     client = httpx.Client(base_url=base_url, timeout=30.0, headers={"X-Admin-Key": admin_key})
 
     # 1. Health Probe
@@ -63,10 +69,7 @@ def run_battery(base_url: str, admin_key: str):
     for admin_path in ("/cache/clear", "/resilience/reset"):
         res_admin = client.post(admin_path)
         if res_admin.status_code in (401, 403):
-            print_fail(
-                f"{admin_path} returned HTTP {res_admin.status_code}: the server's ADMIN_API_KEY "
-                "is unset (403) or differs from --admin-key / $ADMIN_API_KEY (401)"
-            )
+            print_fail(f"{admin_path} returned HTTP {res_admin.status_code}. {ADMIN_KEY_HINT}")
 
     # 2. Triage Cache Miss (Live Inference)
     print_step("Step 2: Live Incident Triage Query (Cache MISS)")
@@ -195,12 +198,11 @@ def main():
     parser.add_argument(
         "--admin-key",
         default=os.environ.get("ADMIN_API_KEY"),
-        help="X-Admin-Key for admin routes (default: $ADMIN_API_KEY). Must match the server's "
-        "ADMIN_API_KEY; an ephemeral instance gets a random one when this is unset.",
+        help="X-Admin-Key for admin routes (default: $ADMIN_API_KEY); an ephemeral instance "
+        "gets a random one when this is unset.",
     )
     args = parser.parse_args()
 
-    import secrets
     import socket
     import tempfile
     import urllib.parse
@@ -212,10 +214,7 @@ def main():
     if is_server_running(target_url):
         print(f"{CYAN}Detected running server at {target_url}. Running tests directly.{RESET}")
         if not admin_key:
-            print_fail(
-                "Admin routes need a key: pass --admin-key or set ADMIN_API_KEY to the "
-                "running server's ADMIN_API_KEY"
-            )
+            print_fail(f"No admin key given. {ADMIN_KEY_HINT}")
     else:
         # The ephemeral instance gets the key in its environment, which wins over .env.
         admin_key = admin_key or secrets.token_urlsafe(32)

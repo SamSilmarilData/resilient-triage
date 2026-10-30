@@ -11,8 +11,10 @@ The UI rebuild (map issue #86) is a public explorable explanation, so strangers 
 concurrently and nothing one visitor does may change what another sees. It has two kinds of run
 (glossary): a **scenario run** (`POST /scenarios/{id}/stream`, empty body) replays a catalogued
 scenario whose model replies and Statuspage readings are scripted, and **free play** is today's
-`POST /triage` / `POST /triage/stream` with real Groq, real Statuspage and the shared Redis cache.
-There is no demo mode and no `DEMO_MODE` setting.
+`POST /triage` / `POST /triage/stream` with real Statuspage and the shared Redis cache. Free play
+uses real Groq when `GROQ_API_KEY` is set and today's keyless simulation otherwise, as the
+[#91 resolution](https://github.com/SamSilmarilData/resilient-triage/issues/91#issuecomment-6527237734)
+settled. There is no demo mode and no `DEMO_MODE` setting.
 
 Scenarios must show faults (a rate-limited model, Statuspage failing, Cluster Sentinel slow, Redis
 down, an already-tripped breaker), and each must repeat exactly whatever other visitors did. But
