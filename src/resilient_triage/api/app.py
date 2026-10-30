@@ -1,6 +1,7 @@
 """FastAPI application for Resilient Incident Triage Gateway."""
 
 import logging
+import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -9,9 +10,10 @@ from pathlib import Path
 from typing import Annotated, Any, assert_never, cast
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.security import APIKeyHeader
 
 from resilient_triage import __version__
 from resilient_triage.config import settings
@@ -37,16 +39,38 @@ RuntimeFactory = Callable[[], AppRuntime]
 router = APIRouter()
 
 
+# A security scheme, not a plain header, so /docs shows an "Authorize" button for it.
+# auto_error=False: verify_admin_key picks the status (403 unconfigured, 401 bad key).
+admin_key_header = APIKeyHeader(
+    name="X-Admin-Key",
+    scheme_name="AdminKey",
+    description="Operator key for mutating admin routes; must equal ADMIN_API_KEY.",
+    auto_error=False,
+)
+
+
 async def verify_admin_key(
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+    x_admin_key: Annotated[str | None, Security(admin_key_header)],
 ) -> None:
-    """Validate administrative authorization header if admin_api_key is configured."""
-    if settings.admin_api_key is not None:
-        if not x_admin_key or x_admin_key != settings.admin_api_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized: invalid or missing X-Admin-Key header.",
-            )
+    """Admit only the operator to an admin route; fail closed when no key is configured.
+
+    Raises:
+        HTTPException: 403 when ADMIN_API_KEY is unset or empty, whatever the caller sends;
+            401 when a key is configured and the header is missing or wrong.
+    """
+    expected = settings.admin_api_key
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: admin routes are disabled until ADMIN_API_KEY is configured.",
+        )
+    if not x_admin_key or not secrets.compare_digest(
+        x_admin_key.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid or missing X-Admin-Key header.",
+        )
 
 
 def get_runtime(request: Request) -> AppRuntime:

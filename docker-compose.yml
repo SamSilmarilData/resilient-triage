@@ -27,6 +27,8 @@ services:
       - CIRCUIT_BREAKER_RESET_TIMEOUT=30
       - CACHE_SIMILARITY_THRESHOLD=0.90
       - MAX_SELF_REPAIR_RETRIES=2
+      # From your shell or .env; unset leaves the admin routes failing closed (403).
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
     volumes:
       - ./src:/app/src
     depends_on:
