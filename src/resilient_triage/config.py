@@ -1,6 +1,6 @@
 """Application configuration module."""
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -167,7 +167,7 @@ class Settings(BaseSettings):
     )
 
     # Security & Administration
-    admin_api_key: str | None = Field(
+    admin_api_key: SecretStr | None = Field(
         default=None,
         description=(
             "Secret key the X-Admin-Key header must match on mutating admin routes "

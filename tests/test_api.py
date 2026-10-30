@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fakes import AppServer, fake_statuspage_http
 from langchain_core.messages import HumanMessage
+from pydantic import SecretStr
 
 from resilient_triage.api.app import create_app
 from resilient_triage.config import settings
@@ -628,7 +629,8 @@ async def test_admin_routes_fail_closed(
     expected_status: int,
 ):
     """Admin routes refuse every caller without ADMIN_API_KEY, and need the right key with one."""
-    monkeypatch.setattr(settings, "admin_api_key", configured_key)
+    secret = None if configured_key is None else SecretStr(configured_key)
+    monkeypatch.setattr(settings, "admin_api_key", secret)
     headers = {} if sent_key is None else {"X-Admin-Key": sent_key}
 
     resp = await anonymous_client.post(path, json=body, headers=headers)
@@ -644,7 +646,8 @@ async def test_openapi_declares_admin_key_security_scheme(client: httpx.AsyncCli
     (scheme_name,) = schemes
     scheme = schemes[scheme_name]
     assert (scheme["type"], scheme["in"], scheme["name"]) == ("apiKey", "header", "X-Admin-Key")
-    for path in ("/chaos/inject", "/resilience/reset", "/cache/clear"):
+    for route in ADMIN_ROUTES:
+        path = route.values[0]
         assert schema["paths"][path]["post"]["security"] == [{scheme_name: []}]
     assert "security" not in schema["paths"]["/triage"]["post"]
 

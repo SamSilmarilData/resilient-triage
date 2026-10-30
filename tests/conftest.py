@@ -15,11 +15,14 @@ import httpx
 import pytest
 import pytest_asyncio
 from fakes import AppServer, fake_statuspage_http
+from pydantic import SecretStr
 
 from resilient_triage.api.app import create_app
 from resilient_triage.config import Settings, settings
 from resilient_triage.llm import ModelAdapter, ScriptedAdapter
 from resilient_triage.runtime import AppRuntime, build_runtime
+
+ADMIN_TEST_KEY = "test-admin-key"
 
 
 @pytest.fixture(autouse=True)
@@ -29,13 +32,10 @@ def fast_retry_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.005)
 
 
-ADMIN_TEST_KEY = "test-admin-key"
-
-
 @pytest.fixture(autouse=True)
 def admin_key_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     """Configure an admin key: admin routes fail closed (403) without one (#107)."""
-    monkeypatch.setattr(settings, "admin_api_key", ADMIN_TEST_KEY)
+    monkeypatch.setattr(settings, "admin_api_key", SecretStr(ADMIN_TEST_KEY))
 
 
 def _is_local(host: object) -> bool:
@@ -105,14 +105,11 @@ async def _started_runtime(
 
 @asynccontextmanager
 async def _app_client(
-    rt: AppRuntime, *, as_operator: bool = True
+    rt: AppRuntime, *, send_admin_key: bool = True
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """Open an async test client for an app that owns `rt`, lifespan included.
-
-    As the operator it sends the test admin key on every request; otherwise it sends none.
-    """
+    """Open an async test client for an app that owns `rt`, lifespan included."""
     app = create_app(lambda: rt)
-    headers = {"X-Admin-Key": ADMIN_TEST_KEY} if as_operator else {}
+    headers = {"X-Admin-Key": ADMIN_TEST_KEY} if send_admin_key else {}
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers=headers
@@ -146,7 +143,7 @@ async def client(runtime: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
 @pytest_asyncio.fixture
 async def anonymous_client(runtime: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
     """Like `client`, but sends no X-Admin-Key header: a visitor, not the operator."""
-    async with _app_client(runtime, as_operator=False) as ac:
+    async with _app_client(runtime, send_admin_key=False) as ac:
         yield ac
 
 
