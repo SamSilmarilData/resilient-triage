@@ -29,5 +29,15 @@ is exempt because prompt text goes to the LLM verbatim), formatting, and full ty
 - Every external call (HTTP, Redis, LLM) is guarded by a breaker and/or retry, and has a
   degraded path that still yields a valid `IncidentTriageReport`.
 
+## Frontend
+The page is build-free and vendored (ADR-010). No JS lint or type-check runs in CI, so these
+rules stand in for one:
+- JS logic lives in the one reducer module (the trace-to-view reducer). Components only render
+  its output and wire events.
+- Every JS file starts with `// @ts-check` and uses JSDoc types.
+- New JS logic needs a browser test (`@pytest.mark.browser`, run by `./scripts/check.sh --browser`).
+- No third-party origins: the page loads scripts, styles, fonts and data from its own origin only.
+- No new vendored package, runtime or test-only, without approval.
+
 ## Changelog
 - User-visible changes get a `CHANGELOG.md` entry under `[Unreleased]`.
