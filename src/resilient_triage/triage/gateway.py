@@ -262,6 +262,7 @@ class TriageGateway:
             analysis = await self._analyze(query, scope, trace)
         finally:
             self._run_slots.release()
+        _raise_if_cancelled()  # a cancelled run caches nothing, even if the graph swallowed it
         await self._store(query, scope, analysis, trace)
         return analysis.report
 
@@ -338,6 +339,13 @@ async def _cancel_and_wait(task: "asyncio.Task[None]") -> None:
         except asyncio.CancelledError:
             cancelled = True
     if cancelled:
+        raise asyncio.CancelledError
+
+
+def _raise_if_cancelled() -> None:
+    """Raise CancelledError if the current task has a cancellation pending."""
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
         raise asyncio.CancelledError
 
 

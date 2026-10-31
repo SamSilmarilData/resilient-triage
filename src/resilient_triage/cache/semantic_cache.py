@@ -335,7 +335,8 @@ class SemanticCacheManager:
 
         Automatically selects TTL: healthy reports receive settings.cache_ttl_seconds (300s),
         while degraded reports receive settings.cache_degraded_ttl_seconds (60s) to allow
-        rapid re-evaluation once upstream systems recover.
+        rapid re-evaluation once upstream systems recover. A store cancelled while writing to
+        Redis evicts the entry from both stores before re-raising, so it leaves nothing behind.
 
         Args:
             query: Raw incident query string.
@@ -384,8 +385,13 @@ class SemanticCacheManager:
         redis = self._redis
         if redis is None:
             return
-        async with self._redis_call("store"):
-            await redis.put(entry, ttl=effective_ttl)
+        try:
+            async with self._redis_call("store"):
+                await redis.put(entry, ttl=effective_ttl)
+        except asyncio.CancelledError:
+            # A cancelled store leaves nothing behind, though Redis may already have the write.
+            await asyncio.shield(self._evict(doc_id))
+            raise
 
     async def clear(self) -> None:
         """Clear all in-memory and Redis cache entries."""
