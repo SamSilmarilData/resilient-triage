@@ -188,14 +188,7 @@ async def open_trace_stream(
 async def triage_incident_stream(
     events: Annotated[AsyncIterator[TraceEvent], Depends(open_trace_stream)],
 ) -> AsyncIterable[ServerSentEvent]:
-    """Triage an incident like POST /triage, streaming its execution trace as Server-Sent Events.
-
-    Takes the same `TriageRequest` body. Each event's SSE `event:` is its trace event kind and
-    its `data:` is the event as JSON. The stream always ends with one `trace_finished` carrying
-    the triage outcome and the response POST /triage would return (none when shed); the status
-    is 200 once it starts. A client disconnect cancels the run: it is counted as abandoned and
-    nothing is cached.
-    """
+    """Triage like POST /triage, streaming the execution trace as SSE; ends in trace_finished."""
     async for event in events:
         yield ServerSentEvent(event=event.kind, data=event)
 
