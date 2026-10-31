@@ -8,12 +8,14 @@ import importlib.util
 import io
 import json
 import mimetypes
+import re
 import shutil
 import tarfile
 import tomllib
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from types import ModuleType
+from urllib.parse import urljoin
 
 import httpx
 import pytest
@@ -529,3 +531,128 @@ def test_old_console_template_is_gone():
 
     assert not (STATIC_DIR.parent / "templates").exists()
     assert pyproject["tool"]["setuptools"]["package-data"]["resilient_triage.api"] == ["static/**"]
+
+
+# --- Import map and module closure (#116, ADR 0010) ---
+
+# A module specifier in `… from "x"` (import or re-export, minified `from"x"` included),
+# a side-effect `import "x"`, or a dynamic `import("x")`.
+_SPECIFIER = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)(["'])([^"'\n]+)\1""")
+
+
+def module_specifiers(source: str) -> list[str]:
+    """Every module specifier a JS module's static, re-export or dynamic imports name."""
+    return [match.group(2) for match in _SPECIFIER.finditer(source)]
+
+
+def test_module_specifiers_reads_every_import_shape():
+    """The scanner sees minified, re-export, side-effect and dynamic imports, and nothing else."""
+    source = "\n".join(
+        [
+            'import{options as n}from"preact";',
+            "import e from'htm';",
+            'export{h,render,Component}from"preact/hooks";',
+            'export*from"@preact/signals-core";',
+            'export * as ns from "./ns.mjs";',
+            "import {\n  a,\n  b,\n} from './multi.mjs';",
+            'import"./side.mjs";',
+            "import './side2.mjs';",
+            'const lazy = import("./lazy.mjs");',
+            "const lazier = import ( 'lazier' );",
+            "const here = import.meta.url;",
+            "const parts = Array.from(items); const from = 1;",
+        ]
+    )
+
+    assert module_specifiers(source) == [
+        "preact",
+        "htm",
+        "preact/hooks",
+        "@preact/signals-core",
+        "./ns.mjs",
+        "./multi.mjs",
+        "./side.mjs",
+        "./side2.mjs",
+        "./lazy.mjs",
+        "lazier",
+    ]
+
+
+def _manifest() -> dict:
+    return json.loads((VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
+
+
+def _import_map() -> dict:
+    maps = [text for attrs, text in _page().scripts if attrs.get("type") == "importmap"]
+    assert len(maps) == 1, "the page has exactly one import map"
+    return json.loads(maps[0])
+
+
+def test_import_map_matches_the_manifest():
+    """Each bare name in the manifest maps to its one same-origin vendored URL, and no more."""
+    expected = {
+        entry["specifier"]: f"/static/vendor/{p['name']}@{p['version']}/{entry['path']}"
+        for p in _manifest()["packages"]
+        for entry in p["files"]
+        if "specifier" in entry
+    }
+
+    assert _import_map() == {"imports": expected}
+
+
+def test_import_map_comes_before_any_module_script():
+    """A module script before the import map would resolve bare names without it."""
+    kinds = [attrs.get("type") for attrs, _ in _page().scripts]
+
+    assert kinds.index("importmap") < kinds.index("module")
+
+
+def _static_path(url: str) -> Path:
+    """The file under static/ that a same-origin /static/ URL names."""
+    assert url.startswith("/static/"), f"{url} is not a same-origin /static/ URL"
+    return STATIC_DIR / url.removeprefix("/static/")
+
+
+def _url_of(path: Path) -> str:
+    return "/static/" + path.relative_to(STATIC_DIR).as_posix()
+
+
+def _is_bare(specifier: str) -> bool:
+    return not specifier.startswith(("/", "./", "../")) and ":" not in specifier
+
+
+def test_every_module_import_resolves_to_a_file():
+    """Every import in our and vendored .mjs resolves to an existing static file; bare names
+    only through the import map, and vendored modules only by bare name (one Preact)."""
+    imports = _import_map()["imports"]
+    vendored = {_static_path(url).resolve() for url in imports.values()}
+    modules = sorted(STATIC_DIR.rglob("*.mjs"))
+    checked: list[str] = []
+
+    for module in modules:
+        for specifier in module_specifiers(module.read_text(encoding="utf-8")):
+            where = f"{_url_of(module)} imports {specifier!r}"
+            assert "standalone" not in specifier, f"{where}: htm/preact/standalone is banned"
+            if _is_bare(specifier):
+                assert specifier in imports, f"{where}: bare name missing from the import map"
+                target = _static_path(imports[specifier])
+            else:
+                url = urljoin(f"https://page.test{_url_of(module)}", specifier)
+                assert url.startswith("https://page.test/static/"), f"{where}: leaves /static/"
+                target = _static_path(url.removeprefix("https://page.test"))
+                assert target.resolve() not in vendored, f"{where}: import it by its bare name"
+            assert target.is_file(), f"{where}: {target} does not exist"
+            checked.append(specifier)
+
+    assert {module.name for module in modules} >= {"app.mjs", "preact.mjs", "signals.mjs"}
+    # The vendored files' own imports are part of the check, so it covers all six names.
+    assert set(imports) <= set(checked)
+
+
+def test_page_entry_module_is_type_checked():
+    """Our own JS opts into editor type checking (CODING_STANDARDS.md, Frontend)."""
+    ours = [p for p in STATIC_DIR.rglob("*.mjs") if VENDOR_DIR not in p.parents]
+
+    assert ours
+    for module in ours:
+        assert module.read_text(encoding="utf-8").startswith("// @ts-check\n"), module.name
