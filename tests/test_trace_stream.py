@@ -64,12 +64,17 @@ def without_per_run_values(value: Any) -> Any:
     return value
 
 
-async def stream(client: httpx.AsyncClient, body: dict[str, Any]) -> list[TraceEvent]:
-    """POST /triage/stream and return its parsed events, checking the SSE response headers."""
+async def stream_text(client: httpx.AsyncClient, body: dict[str, Any]) -> str:
+    """POST /triage/stream and return its raw body, checking the SSE response headers."""
     resp = await client.post("/triage/stream", json=body)
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
-    return parse_sse(resp.text)
+    return resp.text
+
+
+async def stream(client: httpx.AsyncClient, body: dict[str, Any]) -> list[TraceEvent]:
+    """POST /triage/stream and return its parsed events."""
+    return parse_sse(await stream_text(client, body))
 
 
 def finished(events: list[TraceEvent]) -> TraceFinished:
@@ -139,6 +144,24 @@ async def test_a_shed_stream_still_ends_with_trace_finished(serve_app: AppServer
     assert (last.outcome, last.response) == ("shed", None)
     slot = next(e for e in events if e.kind == "run_slot")
     assert slot.kind == "run_slot" and slot.acquired is False
+
+
+@pytest.mark.usefixtures("fast_pings")
+async def test_a_quiet_stream_sends_ping_comment_lines(serve_app: AppServer):
+    llm = BlockingAdapter()
+
+    async def release_after_a_quiet_spell() -> None:
+        await llm.started.wait()
+        await asyncio.sleep(0.05)  # 50 ping intervals with nothing recorded
+        llm.release.set()
+
+    async with serve_app(llm) as (_, ac):
+        releaser = asyncio.create_task(release_after_a_quiet_spell())
+        events = await stream_text(ac, {"query": QUERY})
+        await releaser
+
+    assert ": ping" in events.replace("\r\n", "\n").split("\n")
+    assert finished(parse_sse(events)).outcome == "analyzed"
 
 
 async def test_a_stream_past_the_run_deadline_records_it_then_finishes(serve_app: AppServer):
