@@ -13,14 +13,13 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from fakes import AppServer
-from langchain_core.messages import BaseMessage
+from fakes import AppServer, BlockingAdapter, finished, one_slot, parse_sse
 
 from resilient_triage.api.app import create_app
-from resilient_triage.config import Settings, settings
-from resilient_triage.llm import Completion, ProviderFailure, ScriptedAdapter
+from resilient_triage.config import Settings
+from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.runtime import AppRuntime
-from resilient_triage.trace.events import TraceEvent, TraceFinished, parse_trace_event
+from resilient_triage.trace.events import TraceEvent
 
 QUERY = "Payments API returning 503 for card checkouts"
 # Timings, the report timestamp and its generated incident id differ between any two runs;
@@ -33,25 +32,6 @@ def fast_pings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ping every millisecond, so pings interleave with events and the parser must skip them."""
     # Not autouse: the idle-disconnect tests want a stream that goes quiet.
     monkeypatch.setattr("fastapi.routing._PING_INTERVAL", 0.001)
-
-
-def parse_sse(body: str) -> list[TraceEvent]:
-    """Parse an SSE body into trace events, checking each `event:` name matches its kind."""
-    events: list[TraceEvent] = []
-    for block in body.replace("\r\n", "\n").split("\n\n"):
-        name: str | None = None
-        data: list[str] = []
-        for line in block.split("\n"):
-            if line.startswith("event: "):
-                name = line.removeprefix("event: ")
-            elif line.startswith("data: "):
-                data.append(line.removeprefix("data: "))
-        if not data:
-            continue  # a ping (comment-only block) or trailing blank
-        event = parse_trace_event("\n".join(data))
-        assert event.kind == name
-        events.append(event)
-    return events
 
 
 def without_per_run_values(value: Any) -> Any:
@@ -76,14 +56,6 @@ async def stream(client: httpx.AsyncClient, body: dict[str, Any]) -> list[TraceE
     return parse_sse(await stream_text(client, body))
 
 
-def finished(events: list[TraceEvent]) -> TraceFinished:
-    """The stream's one trace_finished, which must be its last event."""
-    assert [e.kind for e in events].count("trace_finished") == 1
-    last = events[-1]
-    assert isinstance(last, TraceFinished)
-    return last
-
-
 @pytest.mark.usefixtures("fast_pings")
 async def test_stream_ends_with_the_same_response_post_triage_returns(serve_app: AppServer):
     body = {"query": QUERY}
@@ -101,33 +73,6 @@ async def test_stream_ends_with_the_same_response_post_triage_returns(serve_app:
     assert without_per_run_values(streamed["report"]) == without_per_run_values(plain["report"])
     assert without_per_run_values(streamed["trace"]) == without_per_run_values(plain["trace"])
     assert streamed["trace"]["nodes"]
-
-
-class BlockingAdapter(ScriptedAdapter):
-    """A ScriptedAdapter whose first call waits until `release` is set; records a cancel."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.cancelled = False
-
-    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        if not self.started.is_set():
-            self.started.set()
-            try:
-                await self.release.wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
-        return await super().call(model, messages)
-
-
-def one_slot(**update: Any) -> Any:
-    """Settings with a single run slot and a short queue timeout, plus any overrides."""
-    return settings.model_copy(
-        update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.05, **update}
-    )
 
 
 async def test_a_shed_stream_still_ends_with_trace_finished(serve_app: AppServer):

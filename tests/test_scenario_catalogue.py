@@ -3,17 +3,15 @@
 import re
 
 import pytest
+from fakes import observed
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import settings
 from resilient_triage.graph.builder import route_labels, triage_graph
 from resilient_triage.llm import ScriptedReply
-from resilient_triage.scenarios import ExpectedOutcome, Scenario, ScenarioFactory
+from resilient_triage.scenarios import Scenario, ScenarioFactory
 from resilient_triage.scenarios.catalogue import CHAPTERS, SCENARIOS, get_scenario
-from resilient_triage.trace.events import CacheStore, RouteDecided, TraceEvent
 from resilient_triage.trace.recorder import ListTrace
-from resilient_triage.trace.summary import summarize
-from resilient_triage.triage.gateway import Shed, TriageOutcome
 from resilient_triage.triage.slots import RunSlotPool
 
 DISPLAY_ORDER = {
@@ -53,28 +51,6 @@ def test_a_scenario_is_found_by_its_id() -> None:
     assert get_scenario("no-such-scenario") is None
 
 
-def _observed(outcome: TriageOutcome, events: tuple[TraceEvent, ...]) -> ExpectedOutcome:
-    """What a scenario run showed, in the shape its expected outcome is declared."""
-    summary = summarize(events)
-    report = None if isinstance(outcome, Shed) else outcome.report
-    stores = [e.outcome for e in events if isinstance(e, CacheStore)]
-    reconciliation = summary.reconciliation
-    assert summary.outcome is not None
-    return ExpectedOutcome(
-        outcome=summary.outcome,
-        degradation=report.degradation_status if report else None,
-        nodes=tuple(visit.node for visit in summary.nodes),
-        routes=tuple((e.source, e.route) for e in events if isinstance(e, RouteDecided)),
-        model_calls=tuple((call.role, call.outcome) for call in summary.model_calls),
-        telemetry=tuple((read.source, read.outcome) for read in summary.telemetry),
-        breakers_tripped=tuple(report.circuit_breakers_tripped) if report else (),
-        approval_raised=tuple(reconciliation.approval_raised) if reconciliation else (),
-        confidence=report.confidence_score if report else None,
-        cache_store=stores[0] if stores else None,
-        deadline_exceeded=summary.deadline_exceeded,
-    )
-
-
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.id)
 async def test_every_scenario_run_shows_exactly_its_expected_outcome(scenario: Scenario) -> None:
     factory = ScenarioFactory(
@@ -84,9 +60,9 @@ async def test_every_scenario_run_shows_exactly_its_expected_outcome(scenario: S
     )
     trace = ListTrace()
 
-    outcome = await factory.build(scenario).triage(trace=trace)
+    await factory.build(scenario).triage(trace=trace)
 
-    assert _observed(outcome, trace.events) == scenario.expected_outcome
+    assert observed(trace.events) == scenario.expected_outcome
 
 
 def test_the_catalogue_covers_every_router_branch() -> None:

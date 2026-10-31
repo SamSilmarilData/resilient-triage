@@ -170,3 +170,35 @@ class ResilienceStatusResponse(BaseModel):
         default=None,
         description="Active LLM quota and rate limit telemetry snapshot",
     )
+
+
+class ScenarioView(BaseModel):
+    """What the page may see of a scenario: its copy, never its script or expected outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    chapter: str = Field(description="Id of the chapter the scenario is shown under")
+    title: str
+    caption: str
+    setup_notes: tuple[str, ...] = Field(
+        description="What is true before the run, in words: its setup, overrides and faults"
+    )
+
+
+class ScenarioChapterView(BaseModel):
+    """A chapter of the scenario catalogue, with its scenarios in display order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    title: str
+    scenarios: list[ScenarioView]
+
+
+class ScenarioCatalogue(BaseModel):
+    """GET /scenarios: the public catalogue, chapters and their scenarios in display order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    chapters: list[ScenarioChapterView]

@@ -19,6 +19,7 @@ from resilient_triage.scenarios.model import (
     Scenario,
     Setup,
 )
+from resilient_triage.schemas.api import ScenarioCatalogue, ScenarioChapterView
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 from resilient_triage.schemas.telemetry import (
     ChaosConfig,
@@ -422,3 +423,17 @@ _BY_ID = {scenario.id: scenario for scenario in SCENARIOS}
 def get_scenario(scenario_id: str) -> Scenario | None:
     """The catalogued scenario with this id, or None."""
     return _BY_ID.get(scenario_id)
+
+
+def public_catalogue() -> ScenarioCatalogue:
+    """The page's view of the catalogue: chapters in order, each with its scenarios in order."""
+    return ScenarioCatalogue(
+        chapters=[
+            ScenarioChapterView(
+                id=chapter.id,
+                title=chapter.title,
+                scenarios=[s.public_view() for s in SCENARIOS if s.chapter == chapter.id],
+            )
+            for chapter in CHAPTERS
+        ]
+    )

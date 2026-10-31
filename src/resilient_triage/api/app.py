@@ -20,12 +20,14 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from resilient_triage import __version__
 from resilient_triage.config import settings
 from resilient_triage.runtime import AppRuntime, build_runtime
+from resilient_triage.scenarios.catalogue import get_scenario, public_catalogue
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
     CircuitSnapshot,
     HealthResponse,
     LLMQuotaSnapshot,
     ResilienceStatusResponse,
+    ScenarioCatalogue,
     TriageRequest,
     TriageResponse,
 )
@@ -158,13 +160,22 @@ async def triage_incident(
             }
         case Analyzed(response=response):
             headers = {"X-Cache": "MISS", "X-Thread-ID": thread_id}
-        case Shed():
+        case Shed(retry_after_s=None):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
                     "Triage state machine is currently saturated. "
                     "Please retry with exponential backoff."
                 ),
+            )
+        case Shed(retry_after_s=retry_after_s):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Free-play run budget is spent for now; cached answers still work. "
+                    f"Retry in {retry_after_s} s."
+                ),
+                headers={"Retry-After": str(retry_after_s)},
             )
         case _:
             assert_never(outcome)
@@ -195,6 +206,38 @@ async def triage_incident_stream(
     events: Annotated[AsyncIterator[TraceEvent], Depends(open_trace_stream)],
 ) -> AsyncIterable[ServerSentEvent]:
     """Triage like POST /triage, streaming the execution trace as SSE; ends in trace_finished."""
+    async for event in events:
+        yield ServerSentEvent(event=event.kind, data=event)
+
+
+@router.get("/scenarios", response_model=ScenarioCatalogue)
+async def list_scenarios() -> ScenarioCatalogue:
+    """List the scenario catalogue's public view: chapters and scenarios in display order."""
+    return public_catalogue()
+
+
+async def open_scenario_stream(
+    scenario_id: str, runtime: RuntimeDep
+) -> AsyncIterator[AsyncIterator[TraceEvent]]:
+    """Start a scenario's run on private collaborators; 404 before any SSE on an unknown id."""
+    scenario = get_scenario(scenario_id)
+    if scenario is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No scenario {scenario_id!r}."
+        )
+    async with runtime.scenarios.build(scenario).stream() as events:
+        try:
+            yield events
+        except* anyio.BrokenResourceError:
+            # As for POST /triage/stream: the client is gone and the run is cancelled on exit.
+            logger.info("Scenario stream client disconnected with an event or ping unsent.")
+
+
+@router.post("/scenarios/{scenario_id}/stream", response_class=EventSourceResponse)
+async def stream_scenario(
+    events: Annotated[AsyncIterator[TraceEvent], Depends(open_scenario_stream)],
+) -> AsyncIterable[ServerSentEvent]:
+    """Run a catalogued scenario (empty body), streaming its trace as SSE like /triage/stream."""
     async for event in events:
         yield ServerSentEvent(event=event.kind, data=event)
 

@@ -9,9 +9,8 @@ private, runnable `ScenarioRun`; `public_view()` is all the page may see of it.
 import re
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel, ConfigDict
-
 from resilient_triage.llm import ScriptEntry
+from resilient_triage.schemas.api import ScenarioView
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
 from resilient_triage.trace.fields import (
@@ -89,18 +88,6 @@ class ExpectedOutcome:
     confidence: float | None = None  # the answer's confidence_score
     cache_store: StoreOutcome | None = None  # None when the run never reached the store
     deadline_exceeded: bool = False
-
-
-class ScenarioView(BaseModel):
-    """What the page may see of a scenario: its copy, never its script or expected outcome."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: str
-    chapter: str
-    title: str
-    caption: str
-    setup_notes: tuple[str, ...]
 
 
 @dataclass(frozen=True)

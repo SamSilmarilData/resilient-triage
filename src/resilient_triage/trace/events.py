@@ -32,6 +32,7 @@ from resilient_triage.trace.fields import (
     ReadOutcome,
     ReadPhase,
     ReconcileChanges,
+    ShedReason,
     StoreOutcome,
     TriageOutcomeKind,
 )
@@ -87,12 +88,20 @@ class CacheLookup(_TraceEvent):
 
 
 class RunSlot(_TraceEvent):
-    """The request waited for a run slot, and got one or was shed."""
+    """The request waited for a run slot, and got one or was shed (and why)."""
 
     kind: Literal["run_slot"] = "run_slot"
     acquired: bool
     waited_ms: Milliseconds
     capacity: int = Field(ge=1, description="Run slots in total")
+    reason: ShedReason | None = Field(
+        default=None, description="Why the request was shed; None when it got a slot"
+    )
+    retry_after_s: int | None = Field(
+        default=None,
+        ge=1,
+        description="Seconds until the free-play run budget admits a run; set on a budget shed",
+    )
 
 
 class NodeStarted(_TraceEvent):

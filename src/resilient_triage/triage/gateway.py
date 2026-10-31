@@ -35,7 +35,7 @@ from resilient_triage.trace.events import (
     TraceFinished,
     TraceStarted,
 )
-from resilient_triage.trace.fields import StoreOutcome, TriageOutcomeKind
+from resilient_triage.trace.fields import ShedReason, StoreOutcome, TriageOutcomeKind
 from resilient_triage.trace.recorder import (
     ListTrace,
     NullTrace,
@@ -45,6 +45,7 @@ from resilient_triage.trace.recorder import (
     record_event,
 )
 from resilient_triage.trace.summary import TraceSummary
+from resilient_triage.triage.budget import RunBudget
 from resilient_triage.triage.slots import RunSlotPool
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,10 @@ class Analyzed:
 
 @dataclass(frozen=True)
 class Shed:
-    """Refused: no run slot freed up in time."""
+    """Refused: no run slot freed up in time, or the run budget was spent."""
+
+    # Seconds until the run budget admits a run; None when shed for lack of a slot.
+    retry_after_s: int | None = None
 
 
 TriageOutcome = CacheHit | Analyzed | Shed
@@ -107,8 +111,8 @@ class _Analysis:
 
 
 # How the request path ended, before its response is built: a cache match, the run's report,
-# or None when shed.
-_Answer = CacheMatch | IncidentTriageReport | None
+# or how it was shed.
+_Answer = CacheMatch | IncidentTriageReport | Shed
 
 
 @dataclass(frozen=True)
@@ -132,10 +136,12 @@ class TriageGateway:
         settings: Settings,
         *,
         slots: RunSlotPool | None = None,
+        budget: RunBudget | None = None,
         scenario_id: str | None = None,
     ) -> None:
         # Without a slot pool the gateway builds its own from settings; a scenario run's
         # gateway is handed one, and names its scenario on every trace_started (ADR-009).
+        # With a budget, every graph run (a cache miss or force_refresh) must pass it first.
         self._cache = cache
         self._run_graph = run_graph
         self._settings = settings
@@ -143,6 +149,7 @@ class TriageGateway:
             capacity=settings.triage_max_concurrent_runs,
             queue_timeout_s=settings.triage_queue_timeout_s,
         )
+        self._budget = budget
         self._scenario_id = scenario_id
         self._metrics = TriageMetrics()
 
@@ -276,9 +283,11 @@ class TriageGateway:
             )
             if match:
                 return match
+        if self._budget is not None and not self._budget.admit():
+            return self._over_budget(self._budget, trace)
         if not await self._acquire_run_slot(trace):
             logger.warning("No run slot freed up in time; shed request.")
-            return None
+            return Shed()
         try:
             analysis = await self._analyze(query, scope, trace)
         finally:
@@ -287,14 +296,35 @@ class TriageGateway:
         await self._store(query, scope, analysis, trace)
         return analysis.report
 
+    def _over_budget(self, budget: RunBudget, trace: TraceRecorder) -> Shed:
+        """Shed a run the budget refused, recording why and when to retry, without queueing."""
+        retry_after_s = budget.retry_after_s()
+        logger.warning("Free-play run budget spent; shed request (retry in %ds).", retry_after_s)
+        capacity = self._run_slots.capacity
+        record_event(
+            trace,
+            lambda: RunSlot(
+                acquired=False,
+                waited_ms=0,
+                capacity=capacity,
+                reason="budget",
+                retry_after_s=retry_after_s,
+            ),
+        )
+        return Shed(retry_after_s=retry_after_s)
+
     async def _acquire_run_slot(self, trace: TraceRecorder) -> bool:
         """Wait up to the queue timeout for a run slot; record the wait and whether it came."""
         wait_started = time.monotonic()
         acquired = await self._run_slots.acquire()
         waited_ms = ms_since(wait_started)
         capacity = self._run_slots.capacity
+        reason: ShedReason | None = None if acquired else "capacity"
         record_event(
-            trace, lambda: RunSlot(acquired=acquired, waited_ms=waited_ms, capacity=capacity)
+            trace,
+            lambda: RunSlot(
+                acquired=acquired, waited_ms=waited_ms, capacity=capacity, reason=reason
+            ),
         )
         return acquired
 
@@ -367,8 +397,8 @@ def _raise_if_cancelled() -> None:
 
 def _outcome(answer: _Answer, started: float, trace: TraceRecorder) -> TriageOutcome:
     """Build the outcome and its response; the summary covers every event recorded so far."""
-    if answer is None:
-        return Shed()
+    if isinstance(answer, Shed):
+        return answer
     if isinstance(answer, CacheMatch):
         response = _response(answer.report, started, trace, similarity=answer.similarity)
         return CacheHit(response, similarity=answer.similarity)
