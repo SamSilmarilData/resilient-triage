@@ -26,6 +26,8 @@ ReadPhase = Literal["setup"]
 StoreOutcome = Literal["stored", "skipped_fallback", "failed"]
 NodeStatus = Literal["ok", "error", "cancelled"]
 TriageOutcomeKind = Literal["cache_hit", "analyzed", "shed"]
+# Why a request was shed: no run slot freed up in time, or the free-play run budget was spent.
+ShedReason = Literal["capacity", "budget"]
 
 
 class ReconcileChanges(BaseModel):

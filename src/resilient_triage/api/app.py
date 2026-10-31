@@ -160,13 +160,22 @@ async def triage_incident(
             }
         case Analyzed(response=response):
             headers = {"X-Cache": "MISS", "X-Thread-ID": thread_id}
-        case Shed():
+        case Shed(retry_after_s=None):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
                     "Triage state machine is currently saturated. "
                     "Please retry with exponential backoff."
                 ),
+            )
+        case Shed(retry_after_s=retry_after_s):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Free-play run budget is spent for now; cached answers still work. "
+                    f"Retry in {retry_after_s} s."
+                ),
+                headers={"Retry-After": str(retry_after_s)},
             )
         case _:
             assert_never(outcome)

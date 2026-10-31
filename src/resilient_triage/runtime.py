@@ -26,6 +26,7 @@ from resilient_triage.telemetry.statuspage import (
     new_statuspage_http_client,
 )
 from resilient_triage.trace.recorder import TraceRecorder
+from resilient_triage.triage.budget import RunBudget
 from resilient_triage.triage.gateway import TriageGateway
 from resilient_triage.triage.slots import RunSlotPool
 
@@ -96,7 +97,11 @@ class AppRuntime:
         self.llm = llm
         self.deps = deps
         self._http_clients = http_clients
-        self.triage_gateway = TriageGateway(cache, self.run_graph, settings)
+        # Only free play spends the run budget; scenario gateways get none (ADR-009).
+        self.free_play_budget = RunBudget(runs_per_minute=settings.free_play_runs_per_minute)
+        self.triage_gateway = TriageGateway(
+            cache, self.run_graph, settings, budget=self.free_play_budget
+        )
         # Scenario runs share one slot pool, separate from free play's, so neither sheds the
         # other; each run's other collaborators are private (ADR-009).
         self.scenario_slots = RunSlotPool(
