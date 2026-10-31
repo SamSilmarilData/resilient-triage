@@ -5,7 +5,9 @@ from typing import Any
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import settings
-from resilient_triage.scenarios import Scenario, ScenarioFactory, Setup
+from resilient_triage.llm import DEFAULT_REPORT_JSON
+from resilient_triage.scenarios import CacheSeed, Scenario, ScenarioFactory, Setup
+from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import StatuspageSummary
 from resilient_triage.trace.events import (
     ScenarioSetup,
@@ -14,9 +16,11 @@ from resilient_triage.trace.events import (
     TraceStarted,
 )
 from resilient_triage.trace.recorder import ListTrace
-from resilient_triage.triage.gateway import Analyzed
+from resilient_triage.triage.gateway import Analyzed, CacheHit
 from resilient_triage.triage.slots import RunSlotPool
 
+SCENARIO_QUERY = "GitHub Actions workflows failing with 503 errors"
+SEED_REPORT = IncidentTriageReport.model_validate_json(DEFAULT_REPORT_JSON)
 GITHUB_DEGRADED = StatuspageSummary(
     page_name="GitHub", indicator="major", description="Actions degraded"
 )
@@ -26,7 +30,7 @@ def _scenario(**changes: Any) -> Scenario:
     """A plain scenario (canned Statuspage, default replies), with `changes` applied."""
     base = Scenario(
         id="test-scenario",
-        query="GitHub Actions workflows failing with 503 errors",
+        query=SCENARIO_QUERY,
         scope=None,
         script=(),
         statuspage=GITHUB_DEGRADED,
@@ -82,3 +86,21 @@ async def test_pre_run_failures_open_the_private_breaker_at_exactly_fail_max() -
     )
     run_reads = [e for e in run if isinstance(e, TelemetryRead)]
     assert [(r.phase, r.outcome, r.attempts) for r in run_reads] == [(None, "tripped", 0)]
+
+
+async def test_a_seeded_scenario_is_answered_from_its_private_cache() -> None:
+    trace = ListTrace()
+    seed = CacheSeed(query=SCENARIO_QUERY, report=SEED_REPORT)
+    run = _factory().build(_scenario(setup=Setup(seeds=(seed,)), expected_outcome="cache_hit"))
+
+    outcome = await run.triage(trace=trace)
+
+    assert isinstance(outcome, CacheHit)
+    assert outcome.report == SEED_REPORT
+    assert [(e.kind, getattr(e, "step", None)) for e in trace.events] == [
+        ("scenario_setup", "seed_cache"),
+        ("trace_started", None),
+        ("cache_lookup", None),
+        ("trace_finished", None),
+    ]
+    assert isinstance(trace.events[0], ScenarioSetup) and trace.events[0].count == 1
