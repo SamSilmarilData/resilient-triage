@@ -209,6 +209,15 @@ async def test_a_run_deadline_override_cuts_off_only_that_run() -> None:
     assert settings.triage_run_deadline_s != 0.1  # the shared setting is untouched
 
 
+async def test_a_run_deadline_override_is_shown_as_scenario_setup() -> None:
+    trace = ListTrace()
+
+    await _factory().build(_scenario(overrides=Overrides(run_deadline_s=3))).triage(trace=trace)
+
+    assert _kinds(trace.events)[:2] == ["scenario_setup", "trace_started"]
+    assert trace.events[0] == ScenarioSetup(step="set_run_deadline", count=1, deadline_s=3)
+
+
 async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
     runtime: AppRuntime,
 ) -> None:
