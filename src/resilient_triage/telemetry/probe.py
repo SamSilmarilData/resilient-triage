@@ -11,7 +11,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Literal, Protocol, TypeVar
+from typing import ClassVar, Protocol, TypeVar
 
 from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
@@ -23,8 +23,8 @@ from resilient_triage.resilience.retry import with_retry
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.telemetry import SIGNAL_STATUS_CIRCUIT_OPEN, SIGNAL_STATUS_UNAVAILABLE
 from resilient_triage.trace.events import TelemetryRead
-from resilient_triage.trace.fields import BreakerState, ReadOutcome
-from resilient_triage.trace.recorder import NullTrace, TraceRecorder, record_event
+from resilient_triage.trace.fields import BreakerState, ReadOutcome, ReadPhase
+from resilient_triage.trace.recorder import NullTrace, TraceRecorder, ms_since, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -168,13 +168,11 @@ class TelemetryProbe:
         scope: str | None,
         *,
         trace: TraceRecorder | None = None,
-        phase: Literal["setup"] | None = None,
+        phase: ReadPhase | None = None,
     ) -> TelemetryReading:
-        """Read every targeted source; never raises except CancelledError.
-
-        Each source read is recorded on trace as one `telemetry_read` (ADR-008), marked with
-        phase ("setup" for a scenario's pre-run read); with no trace, nothing is recorded.
-        """
+        """Read every targeted source, recording each on `trace`; raises only CancelledError."""
+        # Each source read is one `telemetry_read` (ADR-008), marked with phase ("setup" for a
+        # scenario's pre-run read); with no trace, nothing is recorded.
         targeted = [source for source in self._sources if source.id in targets]
         recorder = trace or NullTrace()
         outcomes = await asyncio.gather(
@@ -217,7 +215,7 @@ class TelemetryProbe:
         query: str,
         scope: str | None,
         trace: TraceRecorder,
-        phase: Literal["setup"] | None,
+        phase: ReadPhase | None,
     ) -> _Outcome:
         """Read one source, recording a telemetry_read: attempts, outcome and breaker states."""
         breaker = self._source_breakers[source.id]
@@ -232,7 +230,7 @@ class TelemetryProbe:
 
         started = time.monotonic()
         outcome = await self._read(source, query, scope, read_once)
-        duration_ms = round((time.monotonic() - started) * 1000, 3)
+        duration_ms = ms_since(started)
         read_outcome: ReadOutcome
         match outcome:
             case _Read():

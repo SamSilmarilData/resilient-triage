@@ -404,3 +404,75 @@ async def test_no_event_but_trace_finished_carries_the_query_or_model_output(ser
     assert all(SENTINEL not in e.model_dump_json() for e in trace.events[:-1])
     assert outcome.response.trace is not None
     assert SENTINEL not in outcome.response.trace.model_dump_json()
+
+
+class RaisingTrace:
+    """A recorder that breaks the never-raises contract on every event."""
+
+    def record(self, event: TraceEvent) -> None:
+        raise RuntimeError("recorder down")
+
+
+def _comparable(outcome: CacheHit | Analyzed | Shed) -> tuple[Any, ...]:
+    """An outcome's type and response, less timings, generated ids and the trace summary."""
+    if isinstance(outcome, Shed):
+        return (Shed,)
+    response = outcome.response.model_dump(
+        exclude={
+            "execution_time_ms": True,
+            "trace": True,
+            "report": {"incident_id": True, "timestamp": True},
+        }
+    )
+    return (type(outcome), response)
+
+
+async def _gateway_outcome(scenario: str, trace: TraceRecorder) -> CacheHit | Analyzed | Shed:
+    """Run one request-path scenario on a fresh in-memory cache, recording on `trace`."""
+    manager = SemanticCacheManager(
+        redis_url=UNREACHABLE_REDIS, embedding_provider=DeterministicEmbeddingProvider()
+    )
+    await manager.initialize()
+    try:
+        if scenario == "shed":
+            runner = FakeRunner(sleep_s=10.0)
+            one_slot = _settings(triage_max_concurrent_runs=1, triage_queue_timeout_s=0.02)
+            gateway = TriageGateway(manager, runner, one_slot)
+            first = asyncio.create_task(gateway.triage(QUERY, None))
+            await runner.started.wait()
+            try:
+                return await gateway.triage(OTHER_QUERY, None, trace=trace)
+            finally:
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+        if scenario == "deadline":
+            gateway = TriageGateway(
+                manager, FakeRunner(sleep_s=10.0), _settings(triage_run_deadline_s=0.05)
+            )
+            return await gateway.triage(QUERY, None, trace=trace)
+        gateway = TriageGateway(manager, FakeRunner(), settings)
+        if scenario == "hit":
+            await gateway.triage(QUERY, "billing")
+            return await gateway.triage(QUERY, "billing", trace=trace)
+        return await gateway.triage(QUERY, None, trace=trace)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_type"),
+    [("hit", CacheHit), ("analyzed", Analyzed), ("shed", Shed), ("deadline", Analyzed)],
+)
+async def test_a_raising_recorder_does_not_change_the_outcome(
+    scenario: str, expected_type: type
+) -> None:
+    expected = await _gateway_outcome(scenario, NullTrace())
+
+    actual = await _gateway_outcome(scenario, RaisingTrace())
+
+    assert isinstance(actual, expected_type)
+    assert _comparable(actual) == _comparable(expected)
+    if isinstance(actual, CacheHit):
+        assert isinstance(expected, CacheHit)
+        assert actual.similarity == expected.similarity

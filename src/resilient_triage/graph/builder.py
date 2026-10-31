@@ -5,6 +5,7 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from langgraph.graph import END, START, StateGraph
@@ -35,9 +36,17 @@ from resilient_triage.trace.events import (
     RouteDecided,
 )
 from resilient_triage.trace.fields import NodeStatus
-from resilient_triage.trace.recorder import TraceRecorder, record_event
+from resilient_triage.trace.recorder import TraceRecorder, ms_since, record_event
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _TraceHooks:
+    """A node's trace extras: an event recorded on success, and node_finished's confidence."""
+
+    on_ok: Callable[[TraceRecorder, TriageState, Mapping[str, Any]], None] | None = None
+    confidence: Callable[[Mapping[str, Any]], float | None] | None = None
 
 
 class _TracedNode(Protocol):
@@ -141,8 +150,13 @@ def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageSt
         "fallback_report": fallback_report_node,
         "finalize_report": finalize_node,
     }
+    # Per-node trace extras, beyond route_decided/node_started/node_finished.
+    hooks: dict[str, _TraceHooks] = {
+        "validate_report": _TraceHooks(confidence=_report_confidence),
+        "finalize_report": _TraceHooks(on_ok=_record_reconciled),
+    }
     for name, node in nodes.items():
-        graph.add_node(name, _traced(name, node, routes))
+        graph.add_node(name, _traced(name, node, routes, hooks.get(name, _TraceHooks())))
 
     # 2. Main flow edges
     graph.add_edge(START, "analyze_query")
@@ -200,12 +214,10 @@ def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageSt
 
 
 def route_labels(graph: CompiledStateGraph[Any, Any, Any, Any]) -> dict[tuple[str, str], str]:
-    """Map each conditional (source, target) node pair to its router key, from get_graph().
-
-    Raises ValueError if a pair has two keys: the trace derives a route from the pair alone
-    (ADR-008), so every pair must name exactly one. get_graph() draws one edge per pair and
-    keeps only the first key, so the check reads every key from the builder's path maps.
-    """
+    """Map each conditional (source, target) node pair to its router key, from get_graph()."""
+    # Raises ValueError if a pair has two keys: the trace derives a route from the pair alone
+    # (ADR-008), so every pair must name exactly one. get_graph() draws one edge per pair and
+    # keeps only the first key, so the check reads every key from the builder's path maps.
     keys: dict[tuple[str, str], set[str]] = {}
     for source, branches in graph.builder.branches.items():
         for branch in branches.values():
@@ -226,14 +238,15 @@ def route_labels(graph: CompiledStateGraph[Any, Any, Any, Any]) -> dict[tuple[st
 
 
 def _traced(
-    name: str, node: Callable[..., Any], routes: Mapping[tuple[str, str], str]
+    name: str,
+    node: Callable[..., Any],
+    routes: Mapping[tuple[str, str], str],
+    hooks: _TraceHooks,
 ) -> _TracedNode:
-    """Wrap a node to record route_decided (if a router chose it), node_started, node_finished.
-
-    The node's result or exception passes through unchanged (a cancelled node finishes with
-    status "cancelled", a raising one with "error"); the wrapper only adds `previous_node`
-    to the update, so the next node can derive the route from the pair. Routers stay pure.
-    """
+    """Wrap a node to record route_decided (if a router chose it), node_started, node_finished."""
+    # The node's result or exception passes through unchanged (a cancelled node finishes with
+    # status "cancelled", a raising one with "error"); the wrapper only adds `previous_node`
+    # to the update, so the next node can derive the route from the pair. Routers stay pure.
     takes_runtime = "runtime" in inspect.signature(node).parameters
 
     async def traced_node(state: TriageState, *, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
@@ -251,20 +264,21 @@ def _traced(
             if inspect.isawaitable(result):
                 result = await result
             status = "ok"
-            if name == "finalize_report":
-                _record_reconciled(trace, state, result)
+            if hooks.on_ok is not None:
+                hooks.on_ok(trace, state, result)
         except asyncio.CancelledError:
             status = "cancelled"
             raise
         finally:
-            duration_ms = round((time.monotonic() - started) * 1000, 3)
+            duration_ms = ms_since(started)
+            confidence = hooks.confidence
             record_event(
                 trace,
                 lambda: NodeFinished(
                     node=name,
                     duration_ms=duration_ms,
                     status=status,
-                    confidence=_router_confidence(name, result),
+                    confidence=confidence(result) if confidence is not None else None,
                 ),
             )
         return {**result, "previous_node": name}
@@ -272,18 +286,16 @@ def _traced(
     return traced_node
 
 
-def _router_confidence(name: str, update: Mapping[str, Any]) -> float | None:
-    """validate_report's output report confidence: what route_after_validation reads."""
-    report = update.get("final_report") if name == "validate_report" else None
+def _report_confidence(update: Mapping[str, Any]) -> float | None:
+    """The output report's confidence: what route_after_validation reads after validate_report."""
+    report = update.get("final_report")
     return report.confidence_score if report is not None else None
 
 
 def _record_reconciled(trace: TraceRecorder, state: TriageState, update: Mapping[str, Any]) -> None:
-    """Record what finalize_report's reconcile() changed, if it had a report to reconcile.
-
-    finalize_report stays a pure function of state, so its caller (this wrapper) records
-    the event from the node's input and output reports.
-    """
+    """Record what finalize_report's reconcile() changed, if it had a report to reconcile."""
+    # finalize_report stays a pure function of state, so its caller (the wrapper) records
+    # the event from the node's input and output reports.
     before, after = state.get("final_report"), update.get("final_report")
     if before is not None and after is not None:
         record_event(trace, lambda: Reconciled.between(before, after))

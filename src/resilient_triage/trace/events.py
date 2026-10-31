@@ -30,7 +30,9 @@ from resilient_triage.trace.fields import (
     ModelRole,
     NodeStatus,
     ReadOutcome,
+    ReadPhase,
     ReconcileChanges,
+    StoreOutcome,
     TriageOutcomeKind,
 )
 
@@ -161,7 +163,7 @@ class TelemetryRead(_TraceEvent):
 
     kind: Literal["telemetry_read"] = "telemetry_read"
     source: Identifier
-    phase: Literal["setup"] | None = Field(
+    phase: ReadPhase | None = Field(
         default=None, description="'setup' for a scenario's pre-run read, else None"
     )
     outcome: ReadOutcome
@@ -240,7 +242,7 @@ class CacheStore(_TraceEvent):
 
     kind: Literal["cache_store"] = "cache_store"
     backend: CacheBackend
-    outcome: Literal["stored", "skipped_fallback", "failed"]
+    outcome: StoreOutcome
     duration_ms: Milliseconds
 
 

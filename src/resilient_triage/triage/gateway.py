@@ -9,9 +9,9 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Protocol, assert_never, cast
+from typing import Any, Protocol, assert_never, cast
 
-from resilient_triage.cache.semantic_cache import SemanticCacheManager
+from resilient_triage.cache.semantic_cache import CacheMatch, SemanticCacheManager
 from resilient_triage.config import Settings
 from resilient_triage.graph.nodes.fallback_report import (
     build_fallback_report,
@@ -30,8 +30,14 @@ from resilient_triage.trace.events import (
     TraceFinished,
     TraceStarted,
 )
-from resilient_triage.trace.fields import CacheBackend, TriageOutcomeKind
-from resilient_triage.trace.recorder import ListTrace, NullTrace, TraceRecorder, record_event
+from resilient_triage.trace.fields import StoreOutcome, TriageOutcomeKind
+from resilient_triage.trace.recorder import (
+    ListTrace,
+    NullTrace,
+    TraceRecorder,
+    ms_since,
+    record_event,
+)
 from resilient_triage.trace.summary import TraceSummary
 
 logger = logging.getLogger(__name__)
@@ -42,8 +48,6 @@ _GRAPH_EXCEPTION_REASON = (
 _DEADLINE_REASON = (
     "Run deadline exceeded before analysis finished. Safe heuristic fallback engaged."
 )
-
-StoreOutcome = Literal["stored", "skipped_fallback", "failed"]
 
 
 class GraphRunner(Protocol):
@@ -59,16 +63,12 @@ class CacheHit:
     """Answered from the semantic cache."""
 
     response: TriageResponse
+    similarity: float  # cosine similarity of the matched cache entry
 
     @property
     def report(self) -> IncidentTriageReport:
         """The cached report."""
         return self.response.report
-
-    @property
-    def similarity(self) -> float:
-        """Cosine similarity of the matched cache entry."""
-        return self.response.cache_similarity or 0.0
 
 
 @dataclass(frozen=True)
@@ -99,13 +99,9 @@ class _Analysis:
     fell_back: bool
 
 
-@dataclass(frozen=True)
-class _Answer:
-    """How the request path ended, before its response is built; no report when shed."""
-
-    kind: TriageOutcomeKind
-    report: IncidentTriageReport | None = None
-    similarity: float | None = None
+# How the request path ended, before its response is built: a cache match, the run's report,
+# or None when shed.
+_Answer = CacheMatch | IncidentTriageReport | None
 
 
 @dataclass(frozen=True)
@@ -142,11 +138,9 @@ class TriageGateway:
         force_refresh: bool = False,
         trace: TraceRecorder | None = None,
     ) -> TriageOutcome:
-        """Return how this request ended, counting it and recording its trace on `trace`.
-
-        Unless cancelled, a request ends in exactly one `trace_finished` carrying the
-        outcome's response (None when shed). A cancellation propagates, unrecorded.
-        """
+        """Return how this request ended, counting it and recording its trace on `trace`."""
+        # Unless cancelled, a request ends in exactly one `trace_finished` carrying the
+        # outcome's response (None when shed). A cancellation propagates, unrecorded.
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
         started = time.monotonic()
         record_event(
@@ -156,7 +150,8 @@ class TriageGateway:
         outcome = _outcome(answer, started, recorder)
         self._count(outcome)
         response = None if isinstance(outcome, Shed) else outcome.response
-        record_event(recorder, lambda: TraceFinished(outcome=answer.kind, response=response))
+        kind = _kind(outcome)
+        record_event(recorder, lambda: TraceFinished(outcome=kind, response=response))
         return outcome
 
     def _count(self, outcome: TriageOutcome) -> None:
@@ -178,11 +173,11 @@ class TriageGateway:
         if not force_refresh:
             lookup_started = time.monotonic()
             match = await self._cache.lookup(query=query, service_filter=scope)
-            lookup_ms = _ms_since(lookup_started)
+            lookup_ms = ms_since(lookup_started)
             record_event(
                 trace,
                 lambda: CacheLookup(
-                    backend=self._backend(),
+                    backend=self._cache.driver,
                     hit=match is not None,
                     similarity=match.similarity if match else None,
                     threshold=self._cache.similarity_threshold,
@@ -190,16 +185,16 @@ class TriageGateway:
                 ),
             )
             if match:
-                return _Answer("cache_hit", match.report, similarity=match.similarity)
+                return match
         if not await self._acquire_run_slot(trace):
             logger.warning("No run slot freed up in time; shed request.")
-            return _Answer("shed")
+            return None
         try:
             analysis = await self._analyze(query, scope, trace)
         finally:
             self._run_slots.release()
         await self._store(query, scope, analysis, trace)
-        return _Answer("analyzed", analysis.report)
+        return analysis.report
 
     async def _acquire_run_slot(self, trace: TraceRecorder) -> bool:
         """Wait up to the queue timeout for a run slot; record the wait and whether it came."""
@@ -211,7 +206,7 @@ class TriageGateway:
             acquired = True
         except TimeoutError:
             acquired = False
-        waited_ms = _ms_since(wait_started)
+        waited_ms = ms_since(wait_started)
         capacity = self._settings.triage_max_concurrent_runs
         record_event(
             trace, lambda: RunSlot(acquired=acquired, waited_ms=waited_ms, capacity=capacity)
@@ -231,15 +226,11 @@ class TriageGateway:
             except Exception:
                 logger.exception("Caching the run's report failed; answering it uncached.")
                 stored = "failed"
-        store_ms = _ms_since(store_started)
+        store_ms = ms_since(store_started)
         record_event(
             trace,
-            lambda: CacheStore(backend=self._backend(), outcome=stored, duration_ms=store_ms),
+            lambda: CacheStore(backend=self._cache.driver, outcome=stored, duration_ms=store_ms),
         )
-
-    def _backend(self) -> CacheBackend:
-        """The cache's active driver; an unknown name fails the event, which is then dropped."""
-        return cast(CacheBackend, self._cache.driver)
 
     async def _analyze(self, query: str, scope: str | None, trace: TraceRecorder) -> _Analysis:
         """Run the graph; return its report, or a synthesis fallback, and whether it fell back."""
@@ -268,16 +259,38 @@ class TriageGateway:
 
 def _outcome(answer: _Answer, started: float, trace: TraceRecorder) -> TriageOutcome:
     """Build the outcome and its response; the summary covers every event recorded so far."""
-    if answer.report is None:
+    if answer is None:
         return Shed()
-    response = TriageResponse(
-        report=answer.report,
-        cached=answer.kind == "cache_hit",
-        cache_similarity=answer.similarity,
-        execution_time_ms=round(_ms_since(started), 2),
+    if isinstance(answer, CacheMatch):
+        response = _response(answer.report, started, trace, similarity=answer.similarity)
+        return CacheHit(response, similarity=answer.similarity)
+    return Analyzed(_response(answer, started, trace, similarity=None))
+
+
+def _response(
+    report: IncidentTriageReport, started: float, trace: TraceRecorder, *, similarity: float | None
+) -> TriageResponse:
+    """The response for a report; cached exactly when it carries a cache similarity."""
+    return TriageResponse(
+        report=report,
+        cached=similarity is not None,
+        cache_similarity=similarity,
+        execution_time_ms=round(ms_since(started), 2),
         trace=_summary(trace),
     )
-    return CacheHit(response) if answer.kind == "cache_hit" else Analyzed(response)
+
+
+def _kind(outcome: TriageOutcome) -> TriageOutcomeKind:
+    """The trace's name for an outcome."""
+    match outcome:
+        case CacheHit():
+            return "cache_hit"
+        case Analyzed():
+            return "analyzed"
+        case Shed():
+            return "shed"
+        case _:
+            assert_never(outcome)
 
 
 def _summary(trace: TraceRecorder) -> TraceSummary | None:
@@ -291,11 +304,6 @@ def _summary(trace: TraceRecorder) -> TraceSummary | None:
         return None
 
 
-def _ms_since(started: float) -> float:
-    """Milliseconds since `started`, rounded to microseconds like the recorder's t_ms."""
-    return round(max((time.monotonic() - started) * 1000.0, 0.0), 3)
-
-
 def _synthesis_fallback(
     query: str, state: dict[str, Any], trace: TraceRecorder
 ) -> IncidentTriageReport:
@@ -304,9 +312,7 @@ def _synthesis_fallback(
     run_state = cast(TriageState, state)
     report = fallback_report_from_state(query, run_state)
     evidence = DegradationEvidence.from_state(run_state)
-    reconciled = reconcile(report, replace(evidence, synthesis_fell_back=True))
-    record_event(trace, lambda: Reconciled.between(report, reconciled))
-    return reconciled
+    return _reconcile(report, replace(evidence, synthesis_fell_back=True), trace)
 
 
 def _reconciled_fallback(query: str, reason: str, trace: TraceRecorder) -> IncidentTriageReport:
@@ -315,6 +321,13 @@ def _reconciled_fallback(query: str, reason: str, trace: TraceRecorder) -> Incid
     evidence = DegradationEvidence(
         tripped_breakers=frozenset(), unavailable_sources=frozenset(), synthesis_fell_back=True
     )
+    return _reconcile(report, evidence, trace)
+
+
+def _reconcile(
+    report: IncidentTriageReport, evidence: DegradationEvidence, trace: TraceRecorder
+) -> IncidentTriageReport:
+    """Reconcile a synthesis fallback outside the graph and record what reconcile changed."""
     reconciled = reconcile(report, evidence)
     record_event(trace, lambda: Reconciled.between(report, reconciled))
     return reconciled

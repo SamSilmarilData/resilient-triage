@@ -112,11 +112,9 @@ class AppRuntime:
             logger.warning("Embedding pre-warmup warning: %s", exc)
 
     async def run_graph(self, run_input: TriageState, /, *, trace: TraceRecorder) -> dict[str, Any]:
-        """Run the triage graph recording on `trace` (the gateway's runner).
-
-        The run's context is a per-run copy of this runtime's deps with `trace` swapped in;
-        the shared deps are never mutated, so concurrent runs each see only their own trace.
-        """
+        """Run the triage graph recording on `trace` (the gateway's runner)."""
+        # The run's context is a per-run copy of this runtime's deps with `trace` swapped in;
+        # the shared deps are never mutated, so concurrent runs each see only their own trace.
         return await triage_graph.ainvoke(run_input, context=replace(self.deps, trace=trace))
 
     async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:

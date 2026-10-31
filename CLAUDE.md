@@ -44,6 +44,8 @@ Statuspage, or the LLM is down — degrade instead.
 - `cache/semantic_cache.py` — `SemanticCacheManager` (Redis ↔ in-memory failover). `cache/embeddings.py` — providers.
 - `resilience/` — `CircuitBreakerRegistry`, retry decorators. `telemetry/` — Statuspage probe, `ChaosManager`.
 - `schemas/` — `incident.py` (report contract), `state.py` (`TriageState`), `api.py`, `telemetry.py`.
+- `trace/` — execution trace (ADR-008): `events.py` (trace event union), `recorder.py` (`ListTrace`/`NullTrace`,
+  `record_event`, import-leaf), `summary.py` (`summarize`), `fields.py` (shared Literals). Nodes record on `TriageDeps.trace`.
 - `config.py` — single `settings` object; every tunable is a `Field(..., description=...)` with bounds.
 
 Deeper docs (load only the one relevant to the task): `docs/architecture.md`, `docs/resilience.md`,

@@ -85,3 +85,9 @@ that is the trace's only source.
   cover it automatically, and a test fails if it creates an ambiguous (node, node) pair.
 - The full event table (each kind's fields) is documented in `docs/api.md` when it is built, not
   here.
+
+## Implementation notes
+- **Route pairs.** The (node, node) pair is read from `TriageState.previous_node`, a key the
+  node wrapper writes into each update. Routers stay pure and no state is diffed.
+- **`telemetry_read.attempts`** is counted inside the retried call, not in tenacity's
+  `before_sleep`, so it stays accurate when the run deadline expires mid-backoff.
