@@ -91,6 +91,17 @@ jobs:
         run: |
           docker build -t resilient-triage:ci .
 
+      # The image's non-editable install (site-packages, not /app/src) must carry every
+      # vendored file with its manifest hash, and the image must not run as root.
+      - name: Verify Installed Static Files & Non-Root User
+        run: |
+          docker run --rm --entrypoint python resilient-triage:ci scripts/vendor.py verify --installed
+          uid="$(docker run --rm --entrypoint id resilient-triage:ci -u)"
+          if [ "$uid" = "0" ]; then
+            echo "::error::The image runs as root"
+            exit 1
+          fi
+
       - name: Verify Container Boot & Health
         run: |
           docker run -d --name test-app -p 8000:8000 -e ADMIN_API_KEY resilient-triage:ci

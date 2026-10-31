@@ -4,6 +4,7 @@ Can run against an already-running server or automatically spawn a temporary loc
 """
 
 import argparse
+import hashlib
 import os
 import secrets
 import subprocess
@@ -48,6 +49,33 @@ def is_server_running(base_url: str) -> bool:
         return r.status_code == 200
     except Exception:
         return False
+
+
+VENDOR_TYPES = {".mjs": "text/javascript", ".woff2": "font/woff2"}
+IMMUTABLE = "public, max-age=31536000, immutable"
+
+
+def check_vendored_assets(client: httpx.Client):
+    """Fetch every file the served manifest lists and check its sha256, type and cache header."""
+    res = client.get("/static/vendor/manifest.json")
+    if res.status_code != 200:
+        print_fail(f"/static/vendor/manifest.json returned HTTP {res.status_code}")
+    count = 0
+    for package in res.json()["packages"]:
+        for entry in package["files"]:
+            path = f"/static/vendor/{package['name']}@{package['version']}/{entry['path']}"
+            asset = client.get(path)
+            if asset.status_code != 200:
+                print_fail(f"{path} returned HTTP {asset.status_code}")
+            if hashlib.sha256(asset.content).hexdigest() != entry["sha256"]:
+                print_fail(f"{path} does not match its manifest sha256")
+            expected = VENDOR_TYPES.get(os.path.splitext(path)[1])
+            if expected and not asset.headers.get("content-type", "").startswith(expected):
+                print_fail(f"{path} served as {asset.headers.get('content-type')}, not {expected}")
+            if asset.headers.get("cache-control") != IMMUTABLE:
+                print_fail(f"{path} Cache-Control is {asset.headers.get('cache-control')!r}")
+            count += 1
+    print_pass(f"{count} vendored files match the manifest, typed and cached as immutable")
 
 
 def run_battery(base_url: str, admin_key: str):
@@ -184,6 +212,10 @@ def run_battery(base_url: str, admin_key: str):
     if res_clear.status_code != 200:
         print_fail("Failed to clear cache")
     print_pass("Semantic cache memory successfully flushed")
+
+    # 10. Vendored frontend assets, served from the installed package (#115)
+    print_step("Step 10: Vendored Static Assets (hashes, types, cache headers)")
+    check_vendored_assets(client)
 
     print(
         f"\n{BOLD}{GREEN}========================================================================"
