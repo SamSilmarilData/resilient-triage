@@ -9,13 +9,23 @@ from typing import Any
 
 import pytest
 from fakes import make_triage_deps
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from resilient_triage.graph.builder import build_triage_graph, route_labels
 from resilient_triage.graph.deps import TriageDeps
-from resilient_triage.llm import DEFAULT_REPORT_JSON, ScriptedAdapter, Unavailable
+from resilient_triage.llm import (
+    DEFAULT_REPORT_JSON,
+    LLMGateway,
+    RateLimited,
+    ScriptedAdapter,
+    Unavailable,
+)
 from resilient_triage.schemas.state import TriageState
+from resilient_triage.trace.events import ModelCall
 from resilient_triage.trace.recorder import ListTrace
+
+MESSAGES: list[BaseMessage] = [HumanMessage(content="Is checkout down?")]
 
 HEALTHY_QUERY = "GitHub Actions jobs are queued indefinitely"
 
@@ -179,6 +189,59 @@ async def test_a_recorder_that_raises_does_not_change_the_run_result(script: lis
 
     assert raising.calls > 0
     assert _comparable(traced) == _comparable(untraced)
+
+
+def _llm(script: list[Any]) -> LLMGateway:
+    return LLMGateway(
+        ScriptedAdapter(script), primary="primary-m", fallback="fallback-m", label="t"
+    )
+
+
+async def test_each_adapter_attempt_is_one_model_call() -> None:
+    gateway = _llm([Unavailable(detail="503"), Unavailable(detail="503"), DEFAULT_REPORT_JSON])
+    trace = ListTrace()
+
+    await gateway.complete(MESSAGES, trace=trace)
+
+    calls = [(e.model, e.role, e.outcome) for e in trace.events if isinstance(e, ModelCall)]
+    assert calls == [
+        ("primary-m", "primary", "unavailable"),
+        ("primary-m", "primary", "unavailable"),
+        ("fallback-m", "fallback", "completion"),
+    ]
+
+
+async def test_a_rate_limited_model_call_keeps_its_scope_and_retry_after() -> None:
+    gateway = _llm([RateLimited(retry_after_s=7.0, scope="minute", detail="429")])
+    trace = ListTrace()
+
+    await gateway.complete(MESSAGES, trace=trace)
+    await gateway.complete(MESSAGES, trace=trace)  # the primary cools down: fallback only
+
+    calls = [
+        (e.role, e.outcome, e.rate_limit_scope, e.retry_after_s)
+        for e in trace.events
+        if isinstance(e, ModelCall)
+    ]
+    assert calls == [
+        ("primary", "rate_limited", "minute", 7.0),
+        ("fallback", "completion", None, None),
+        ("fallback", "completion", None, None),
+    ]
+
+
+async def test_an_adapter_that_raises_is_one_unavailable_model_call() -> None:
+    class Exploding(ScriptedAdapter):
+        async def call(self, model: str, messages: Any) -> Any:
+            raise RuntimeError("socket gone")
+
+    gateway = LLMGateway(Exploding(), primary="primary-m", fallback="fallback-m", label="t")
+    trace = ListTrace()
+
+    result = await gateway.complete(MESSAGES, trace=trace)
+
+    assert isinstance(result, Unavailable)
+    assert [(e.kind, e.outcome) for e in trace.events] == [("model_call", "unavailable")]
 
 
 async def test_the_shared_deps_keep_their_null_trace() -> None:
