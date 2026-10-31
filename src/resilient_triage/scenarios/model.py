@@ -8,7 +8,7 @@ the page shows. `ScenarioFactory` turns one into a private, runnable `ScenarioRu
 import re
 from dataclasses import dataclass, field
 
-from resilient_triage.llm import ProviderFailure
+from resilient_triage.llm import ScriptEntry
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import StatuspageSummary
 from resilient_triage.trace.fields import TriageOutcomeKind
@@ -70,8 +70,9 @@ class Scenario:
     id: str
     query: str
     scope: str | None
-    # The model's replies in call order; once they run out, the default valid report.
-    script: tuple[str | ProviderFailure, ...]
+    # The model's replies in call order, each with an optional delay (a ScriptedReply);
+    # once they run out, the default valid report.
+    script: tuple[ScriptEntry, ...]
     # What Statuspage reads; None means every Statuspage read fails (an unavailable source).
     statuspage: StatuspageSummary | None
     caption: str

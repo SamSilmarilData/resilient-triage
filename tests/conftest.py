@@ -5,6 +5,7 @@ take the `runtime` fixture, a fresh AppRuntime per test, so there are no module-
 singletons to reset.
 """
 
+import asyncio
 import ipaddress
 import socket
 from collections.abc import AsyncIterator, Iterator
@@ -19,7 +20,7 @@ from pydantic import SecretStr
 
 from resilient_triage.api.app import create_app
 from resilient_triage.config import Settings, settings
-from resilient_triage.llm import ModelAdapter, ScriptedAdapter
+from resilient_triage.llm import ModelAdapter, ScriptedAdapter, scripted
 from resilient_triage.runtime import AppRuntime, build_runtime
 
 ADMIN_TEST_KEY = "test-admin-key"
@@ -30,6 +31,27 @@ def fast_retry_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Compress retry wait intervals so retry tests don't sleep."""
     monkeypatch.setattr(settings, "retry_min_wait_seconds", 0.001)
     monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.005)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register this suite's markers."""
+    config.addinivalue_line(
+        "markers", "real_scripted_delays: keep ScriptedReply delays (opts out of the zeroing)"
+    )
+
+
+@pytest.fixture(autouse=True)
+def instant_scripted_delays(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero every ScriptedReply delay, unless the test is marked real_scripted_delays."""
+    if request.node.get_closest_marker("real_scripted_delays") is not None:
+        return
+
+    async def no_delay(_delay_s: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(scripted, "sleep", no_delay)
 
 
 @pytest.fixture(autouse=True)
