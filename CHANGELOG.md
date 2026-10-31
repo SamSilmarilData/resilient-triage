@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`POST /triage` returns a trace summary** (#110, ADR-008): the response has a new optional `trace` field, a small structured `TraceSummary` of how the request was handled: node path with durations, router keys taken, model calls and failovers, per-source telemetry outcomes, repair and refine rounds, reconciliation changes, degradation, whether the run deadline passed, and timings (total, cache lookup, slot wait, run, model). It never carries the event list or free text. `IncidentTriageReport`, headers, caching and `/metrics` counts are unchanged; clients that ignore unknown fields are unaffected. See `docs/api.md`.
+
 ### Changed
+- **A failing cache store no longer fails `POST /triage`**: if storing the run's report raises, the Triage gateway logs it and still answers 200 with the report.
+- **`resilient_triage.schemas` no longer re-exports its models**: import them from `schemas.api`, `schemas.incident`, `schemas.state` or `schemas.telemetry`.
 - **Breaking: admin routes fail closed** (#107): `POST /chaos/inject`, `/resilience/reset` and `/cache/clear` now answer `403` when `ADMIN_API_KEY` is unset or empty, where they used to admit everyone. With a key set, a missing or wrong `X-Admin-Key` still gets `401`, and the key is compared in constant time. **Set `ADMIN_API_KEY`** (in `.env` locally; `.env.example` has a placeholder) to keep using them. The header is now a `fastapi.security.APIKeyHeader` security scheme (`AdminKey`), so `/docs` has an **Authorize** button. `scripts/smoke_test.py` sends `ADMIN_API_KEY` (or `--admin-key`) and gives a server it launches a random key; `docker-compose.yml` passes `ADMIN_API_KEY` through. The old page's chaos buttons send no key, so they get `403` when no key is configured and `401` when one is, until the page shell replaces that page.
 
 ## [2.0.0] - 2026-10-30 — Deep Modules: Gateways, Guarded Probe & One Runtime

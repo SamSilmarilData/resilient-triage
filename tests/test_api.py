@@ -15,9 +15,11 @@ from resilient_triage.api.app import create_app
 from resilient_triage.config import settings
 from resilient_triage.llm import RateLimited, ScriptedAdapter, build_llm_gateway
 from resilient_triage.runtime import AppRuntime, build_runtime
+from resilient_triage.schemas.api import TriageResponse
 from resilient_triage.schemas.incident import SeverityLevel
 from resilient_triage.telemetry.chaos import ClusterSentinelSource
 from resilient_triage.telemetry.statuspage import StatuspageSource
+from resilient_triage.trace.summary import TraceSummary
 
 
 @pytest.mark.asyncio
@@ -88,6 +90,28 @@ async def test_triage_semantic_cache_hit_under_20ms(client: httpx.AsyncClient):
     assert data2["cache_similarity"] >= 0.85
     # Strict sub-20ms validation for semantic cache hit
     assert data2["execution_time_ms"] < 20.0
+
+
+async def test_triage_response_carries_a_valid_trace_summary(client: httpx.AsyncClient):
+    """POST /triage returns its trace summary (structured, never the event list)."""
+    q = "GitHub Actions queue is stalling with 504 gateway timeout"
+
+    miss = (await client.post("/triage", json={"query": q})).json()
+    hit = (await client.post("/triage", json={"query": q})).json()
+
+    TriageResponse.model_validate(miss)
+    miss_trace = TraceSummary.model_validate(miss["trace"])
+    assert miss_trace.outcome == "analyzed"
+    assert [visit.node for visit in miss_trace.nodes][0] == "analyze_query"
+    assert miss_trace.nodes[-1].node == "finalize_report"
+    assert miss_trace.model_calls
+    assert miss_trace.degradation == miss["report"]["degradation_status"]
+    assert miss_trace.timings.cache_lookup_ms is not None
+    assert miss_trace.timings.slot_wait_ms is not None
+
+    hit_trace = TraceSummary.model_validate(hit["trace"])
+    assert (hit_trace.outcome, hit_trace.nodes, hit_trace.model_calls) == ("cache_hit", [], [])
+    assert "events" not in miss["trace"]
 
 
 @pytest.mark.asyncio

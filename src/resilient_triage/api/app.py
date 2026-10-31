@@ -28,6 +28,7 @@ from resilient_triage.schemas.api import (
     TriageResponse,
 )
 from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
+from resilient_triage.trace.recorder import ListTrace
 from resilient_triage.triage.gateway import Analyzed, CacheHit, Shed
 
 logger = logging.getLogger(__name__)
@@ -138,29 +139,21 @@ async def triage_incident(
       - X-Thread-ID: Correlation id, the caller's or a new uuid4, echoed back
     """
     thread_id = request.headers.get("X-Thread-ID") or str(uuid.uuid4())
-    start_req = time.monotonic()
     outcome = await runtime.triage_gateway.triage(
-        payload.query, payload.service_filter, force_refresh=payload.force_refresh
+        payload.query,
+        payload.service_filter,
+        force_refresh=payload.force_refresh,
+        trace=ListTrace(),
     )
-    elapsed_ms = round((time.monotonic() - start_req) * 1000.0, 2)
 
     match outcome:
-        case CacheHit(report=report, similarity=similarity):
-            response = TriageResponse(
-                report=report,
-                cached=True,
-                cache_similarity=similarity,
-                execution_time_ms=elapsed_ms,
-            )
+        case CacheHit(response=response):
             headers = {
                 "X-Cache": "HIT",
-                "X-Cache-Similarity": str(similarity),
+                "X-Cache-Similarity": str(outcome.similarity),
                 "X-Thread-ID": thread_id,
             }
-        case Analyzed(report=report):
-            response = TriageResponse(
-                report=report, cached=False, cache_similarity=None, execution_time_ms=elapsed_ms
-            )
+        case Analyzed(response=response):
             headers = {"X-Cache": "MISS", "X-Thread-ID": thread_id}
         case Shed():
             raise HTTPException(

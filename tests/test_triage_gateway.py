@@ -41,7 +41,7 @@ class ReturningGraph:
         self.state = state
         self.calls: list[dict[str, Any]] = []
 
-    async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(self, input: dict[str, Any], *, trace: Any = None) -> dict[str, Any]:
         self.calls.append(input)
         return self.state
 
@@ -53,7 +53,7 @@ class BlockingGraph:
         self.release = asyncio.Event()
         self.started = asyncio.Event()
 
-    async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(self, input: dict[str, Any], *, trace: Any = None) -> dict[str, Any]:
         self.started.set()
         await self.release.wait()
         return {"final_report": _report(f"Answer for {input['query']}")}
@@ -65,7 +65,7 @@ class RaisingGraph:
     def __init__(self, exc: BaseException) -> None:
         self.exc = exc
 
-    async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(self, input: dict[str, Any], *, trace: Any = None) -> dict[str, Any]:
         raise self.exc
 
 
@@ -258,7 +258,8 @@ async def test_a_synthesis_fallback_is_answered_but_not_stored(cache):
 
     outcome = await gateway.triage(QUERY, None)
 
-    assert outcome == Analyzed(report=fallback)
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report == fallback
     assert await cache.lookup(QUERY) is None
     assert gateway.metrics == TriageMetrics(hit=0, miss=1, saturated=0)
 
@@ -306,7 +307,7 @@ class SleepingGraph:
         self.seconds = seconds
         self.started = asyncio.Event()
 
-    async def ainvoke(self, input: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(self, input: dict[str, Any], *, trace: Any = None) -> dict[str, Any]:
         self.started.set()
         await asyncio.sleep(self.seconds)
         return {"final_report": _report(f"Answer for {input['query']}")}

@@ -6,7 +6,7 @@ carries. Structured only: prose renderings belong to the frontend (ADR-008).
 """
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -172,13 +172,22 @@ def summarize(events: Sequence["TraceEvent"]) -> TraceSummary:
         degradation=degradation,
         deadline_exceeded=deadline_exceeded,
         timings=SummaryTimings(
-            total_ms=max(last_ms - origin_ms, 0.0),
-            cache_lookup_ms=cache_lookup_ms,
-            slot_wait_ms=slot_wait_ms,
-            run_ms=run_ms,
-            model_ms=sum(call.duration_ms for call in model_calls),
+            total_ms=_round_ms(max(last_ms - origin_ms, 0.0)),
+            cache_lookup_ms=_round_ms(cache_lookup_ms),
+            slot_wait_ms=_round_ms(slot_wait_ms),
+            run_ms=_round_ms(run_ms),
+            model_ms=_round_ms(sum(call.duration_ms for call in model_calls)),
         ),
     )
+
+
+@overload
+def _round_ms(ms: float) -> float: ...
+@overload
+def _round_ms(ms: None) -> None: ...
+def _round_ms(ms: float | None) -> float | None:
+    """Round to microseconds, as the recorder stamps t_ms, dropping float noise."""
+    return None if ms is None else round(ms, 3)
 
 
 def _finish_visit(

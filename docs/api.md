@@ -108,9 +108,77 @@ Executes autonomous incident triage. Checks Redis semantic cache for similarity 
   },
   "cached": false,
   "cache_similarity": null,
-  "execution_time_ms": 1296.74
+  "execution_time_ms": 1296.74,
+  "trace": {
+    "scenario_id": null,
+    "outcome": "analyzed",
+    "nodes": [
+      {"node": "analyze_query", "duration_ms": 0.014, "status": "ok"},
+      {"node": "collect_telemetry", "duration_ms": 182.4, "status": "ok"},
+      {"node": "synthesize_telemetry", "duration_ms": 0.018, "status": "ok"},
+      {"node": "generate_report", "duration_ms": 1090.2, "status": "ok"},
+      {"node": "validate_report", "duration_ms": 0.041, "status": "ok"},
+      {"node": "finalize_report", "duration_ms": 0.026, "status": "ok"}
+    ],
+    "routes": ["synthesize", "validate", "finalize"],
+    "model_calls": [
+      {"model": "qwen/qwen3.8-27b", "role": "primary", "outcome": "rate_limited", "duration_ms": 41.0},
+      {"model": "llama-3.1-8b-instant", "role": "fallback", "outcome": "completion", "duration_ms": 1048.9}
+    ],
+    "failovers": 1,
+    "telemetry": [{"source": "chaos", "outcome": "read", "attempts": 1}],
+    "repair_rounds": 0,
+    "refine_rounds": 0,
+    "reconciliation": {
+      "degradation_before": "HEALTHY", "degradation_after": "HEALTHY",
+      "breakers_changed": false, "breakers_after": [], "approval_raised": [0]
+    },
+    "degradation": "HEALTHY",
+    "deadline_exceeded": false,
+    "timings": {
+      "total_ms": 1296.5, "cache_lookup_ms": 4.1, "slot_wait_ms": 0.007,
+      "run_ms": 1281.3, "model_ms": 1089.9
+    }
+  }
 }
 ```
+
+`trace` is the request's **trace summary** (`TraceSummary`, ADR-008): a small, structured digest of its execution trace, never the event list and never free text (every string is an id or a fixed value). It is `summarize()` of the events the Triage gateway recorded before `trace_finished`:
+
+| Field | Meaning |
+| :--- | :--- |
+| `scenario_id` | Catalogue scenario id for a scenario run; `null` for `POST /triage`. |
+| `outcome` | `cache_hit` or `analyzed` (a shed request gets a 503, with no body summary). |
+| `nodes` | Graph node visits in order, each with `duration_ms` and `status` (`ok` / `error` / `cancelled`). Empty on a cache hit. |
+| `routes` | Router keys taken, in order (e.g. `compensate`, `repair`, `refine`, `finalize`). |
+| `model_calls` | One entry per model attempt: `model`, `role` (`primary` / `fallback`), `outcome`, `duration_ms`. |
+| `failovers` | Calls made to the fallback model, failed ones included. |
+| `telemetry` | One entry per run-time source read: `source`, `outcome` (`read` / `tripped` / `unavailable`), `attempts`. |
+| `repair_rounds`, `refine_rounds` | Visits to `self_repair` and `refine_reflection`. |
+| `reconciliation` | What report reconciliation changed (`degradation_before`/`after`, `breakers_changed`, `breakers_after`, `approval_raised` action indexes). `null` on a cache hit. |
+| `degradation` | The answer's reconciled degradation status; `null` on a cache hit (the cached report carries its own). |
+| `deadline_exceeded` | `true` when the run deadline passed and a synthesis fallback answered. |
+| `timings` | Milliseconds from `trace_started`, rounded to microseconds: `total_ms` (to the last event before `trace_finished`), `cache_lookup_ms`, `slot_wait_ms`, `run_ms` (first node start to last node finish), `model_ms` (sum of model calls). `null` where the step did not happen. |
+
+#### Execution trace events
+The summary is derived from the request's trace events. `POST /triage` returns only the summary; the event stream itself is for `POST /triage/stream` (#111), where every stream ends in `trace_finished` carrying the same `TriageResponse` this route returns. Every event has `kind`, `seq` (0, 1, …) and `t_ms` (monotonic ms since the recorder was created). A cache hit is `trace_started`, `cache_lookup`, `trace_finished`; a run deadline records `deadline_exceeded`, then the reconciled fallback (`reconciled`), `cache_store` (`skipped_fallback`) and `trace_finished`.
+
+| `kind` | Fields (besides `seq`, `t_ms`) |
+|---|---|
+| `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source`), `count`, `source` |
+| `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh` |
+| `cache_lookup` | `backend`, `hit`, `similarity`, `threshold`, `duration_ms` |
+| `run_slot` | `acquired`, `waited_ms`, `capacity` |
+| `node_started` | `node` |
+| `node_finished` | `node`, `duration_ms`, `status` (`ok` / `error` / `cancelled`), `confidence` (validate_report only) |
+| `route_decided` | `source`, `target`, `route` (the router key) |
+| `model_call` | `model`, `role` (`primary` / `fallback`), `outcome`, `rate_limit_scope`, `retry_after_s`, `duration_ms` |
+| `telemetry_read` | `source`, `phase` (`setup` or none), `outcome` (`read` / `tripped` / `unavailable`), `attempts`, `breaker_before`, `breaker_after`, `signals`, `duration_ms` |
+| `validation_failed` | `attempt`, `error_count`, `fields` (declared report fields), `error_types` (Pydantic types) |
+| `reconciled` | `changes`: `degradation_before`/`after`, `breakers_changed`, `breakers_after`, `approval_raised` (action indexes) |
+| `deadline_exceeded` | `deadline_s` |
+| `cache_store` | `backend`, `outcome` (`stored` / `skipped_fallback` / `failed`), `duration_ms` |
+| `trace_finished` | `outcome` (`cache_hit` / `analyzed` / `shed`), `response` (`TriageResponse`, none when shed) |
 
 #### Example cURL
 ```bash

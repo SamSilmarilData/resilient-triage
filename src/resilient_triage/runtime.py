@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
 import httpx
@@ -24,6 +24,7 @@ from resilient_triage.telemetry.statuspage import (
     StatuspageSource,
     new_statuspage_http_client,
 )
+from resilient_triage.trace.recorder import TraceRecorder
 from resilient_triage.triage.gateway import TriageGateway
 
 # Re-exported: the run-context contract lives in graph.deps so nodes avoid an import cycle.
@@ -110,9 +111,13 @@ class AppRuntime:
         except Exception as exc:
             logger.warning("Embedding pre-warmup warning: %s", exc)
 
-    async def run_graph(self, run_input: TriageState) -> dict[str, Any]:
-        """Run the triage graph with this runtime's deps as its context (the gateway's runner)."""
-        return await triage_graph.ainvoke(run_input, context=self.deps)
+    async def run_graph(self, run_input: TriageState, /, *, trace: TraceRecorder) -> dict[str, Any]:
+        """Run the triage graph recording on `trace` (the gateway's runner).
+
+        The run's context is a per-run copy of this runtime's deps with `trace` swapped in;
+        the shared deps are never mutated, so concurrent runs each see only their own trace.
+        """
+        return await triage_graph.ainvoke(run_input, context=replace(self.deps, trace=trace))
 
     async def probe_cluster_sentinel(self) -> ChaosTelemetryResponse:
         """Probe Cluster Sentinel through its breaker, deadline and retry; raises on failure."""

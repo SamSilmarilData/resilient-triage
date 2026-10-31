@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig
+from resilient_triage.trace.summary import TraceSummary
 
 
 class TriageRequest(BaseModel):
@@ -49,6 +50,14 @@ class TriageResponse(BaseModel):
     execution_time_ms: float = Field(
         ...,
         description="Total round-trip time in milliseconds (sub-20ms target for cache hits)",
+    )
+    trace: TraceSummary | None = Field(
+        default=None,
+        description=(
+            "Structured summary of this request's execution trace (ADR-008): node path, "
+            "routes, model calls, telemetry reads, reconciliation and timings. Never the "
+            "event list. None when the request was not traced."
+        ),
     )
 
 
