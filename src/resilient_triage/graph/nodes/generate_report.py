@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 
 async def generate_report_node(state: TriageState, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
     """Call LLM with accumulated messages to generate candidate triage JSON."""
-    result = await runtime.context.llm.complete(state.get("messages", []))
+    result = await runtime.context.llm.complete(
+        state.get("messages", []), trace=runtime.context.trace
+    )
     if isinstance(result, Completion):
         return {
             "candidate_report_raw": result.text,
