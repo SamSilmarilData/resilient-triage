@@ -1,6 +1,6 @@
 """Hand-built fakes for TriageDeps, so graph nodes run without the app or the network."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
@@ -11,10 +11,18 @@ from resilient_triage.config import settings
 from resilient_triage.llm import ModelAdapter, ScriptedAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.runtime import AppRuntime, TriageDeps
+from resilient_triage.scenarios import ExpectedOutcome
 from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
 from resilient_triage.telemetry.probe import TelemetryProbe
 from resilient_triage.telemetry.statuspage import StatuspageSource
-from resilient_triage.trace.events import TraceEvent, TraceFinished, parse_trace_event
+from resilient_triage.trace.events import (
+    CacheStore,
+    RouteDecided,
+    TraceEvent,
+    TraceFinished,
+    parse_trace_event,
+)
+from resilient_triage.trace.summary import summarize
 
 AppServer = Callable[..., AbstractAsyncContextManager[tuple[AppRuntime, httpx.AsyncClient]]]
 """The conftest `serve_app` factory: (llm_adapter, app_settings=settings) -> (runtime, client)."""
@@ -109,3 +117,27 @@ def finished(events: list[TraceEvent]) -> TraceFinished:
     last = events[-1]
     assert isinstance(last, TraceFinished)
     return last
+
+
+def observed(events: Sequence[TraceEvent]) -> ExpectedOutcome:
+    """What a scenario run's trace showed, in the shape its expected outcome is declared."""
+    summary = summarize(events)
+    last = events[-1]
+    assert isinstance(last, TraceFinished)
+    report = last.response.report if last.response is not None else None
+    stores = [e.outcome for e in events if isinstance(e, CacheStore)]
+    reconciliation = summary.reconciliation
+    assert summary.outcome is not None
+    return ExpectedOutcome(
+        outcome=summary.outcome,
+        degradation=report.degradation_status if report else None,
+        nodes=tuple(visit.node for visit in summary.nodes),
+        routes=tuple((e.source, e.route) for e in events if isinstance(e, RouteDecided)),
+        model_calls=tuple((call.role, call.outcome) for call in summary.model_calls),
+        telemetry=tuple((read.source, read.outcome) for read in summary.telemetry),
+        breakers_tripped=tuple(report.circuit_breakers_tripped) if report else (),
+        approval_raised=tuple(reconciliation.approval_raised) if reconciliation else (),
+        confidence=report.confidence_score if report else None,
+        cache_store=stores[0] if stores else None,
+        deadline_exceeded=summary.deadline_exceeded,
+    )
