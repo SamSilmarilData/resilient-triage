@@ -1,10 +1,15 @@
 """LangGraph cyclic state machine construction and compilation."""
 
+import asyncio
+import inspect
 import logging
-from typing import Literal
+import time
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Literal, Protocol
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 
 from resilient_triage.config import settings
 from resilient_triage.graph.deps import TriageDeps
@@ -23,8 +28,19 @@ from resilient_triage.graph.nodes import (
 )
 from resilient_triage.graph.nodes.validate_report import self_repair_exhausted
 from resilient_triage.schemas.state import TriageState
+from resilient_triage.trace.events import NodeFinished, NodeStarted, RouteDecided
+from resilient_triage.trace.fields import NodeStatus
+from resilient_triage.trace.recorder import record_event
 
 logger = logging.getLogger(__name__)
+
+
+class _TracedNode(Protocol):
+    """A graph node as LangGraph calls it: the state, and the run's Runtime by keyword."""
+
+    def __call__(
+        self, state: TriageState, *, runtime: Runtime[TriageDeps]
+    ) -> Awaitable[dict[str, Any]]: ...
 
 
 def route_after_telemetry(state: TriageState) -> Literal["compensate", "synthesize"]:
@@ -103,19 +119,25 @@ def route_after_validation(
 def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageState, TriageState]:
     """Compile the triage graph with no checkpointer: run state lives only in ainvoke (ADR-007)."""
     graph = StateGraph(TriageState, context_schema=TriageDeps)
+    # Filled from get_graph() once compiled; each traced node reads it at run time.
+    routes: dict[tuple[str, str], str] = {}
 
-    # 1. Register nodes
-    graph.add_node("analyze_query", analyze_query_node)
-    graph.add_node("collect_telemetry", collect_telemetry_node)
-    graph.add_node("compensate_blindspots", compensate_blindspots_node)
-    graph.add_node("degraded_fallback", degraded_fallback_node)
-    graph.add_node("synthesize_telemetry", synthesize_telemetry_node)
-    graph.add_node("generate_report", generate_report_node)
-    graph.add_node("validate_report", validate_report_node)
-    graph.add_node("self_repair", self_repair_node)
-    graph.add_node("refine_reflection", refine_reflection_node)
-    graph.add_node("fallback_report", fallback_report_node)
-    graph.add_node("finalize_report", finalize_node)
+    # 1. Register nodes, each wrapped to record its trace events (ADR-008)
+    nodes: dict[str, Callable[..., Any]] = {
+        "analyze_query": analyze_query_node,
+        "collect_telemetry": collect_telemetry_node,
+        "compensate_blindspots": compensate_blindspots_node,
+        "degraded_fallback": degraded_fallback_node,
+        "synthesize_telemetry": synthesize_telemetry_node,
+        "generate_report": generate_report_node,
+        "validate_report": validate_report_node,
+        "self_repair": self_repair_node,
+        "refine_reflection": refine_reflection_node,
+        "fallback_report": fallback_report_node,
+        "finalize_report": finalize_node,
+    }
+    for name, node in nodes.items():
+        graph.add_node(name, _traced(name, node, routes))
 
     # 2. Main flow edges
     graph.add_edge(START, "analyze_query")
@@ -167,7 +189,66 @@ def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageSt
     graph.add_edge("fallback_report", "finalize_report")
     graph.add_edge("finalize_report", END)
 
-    return graph.compile()
+    compiled = graph.compile()
+    routes.update(route_labels(compiled))
+    return compiled
+
+
+def route_labels(graph: CompiledStateGraph[Any, Any, Any, Any]) -> dict[tuple[str, str], str]:
+    """Map each conditional (source, target) node pair to its router key, from get_graph().
+
+    Raises ValueError if a pair has two keys: the trace derives a route from the pair alone
+    (ADR-008), so every pair must name exactly one.
+    """
+    labels: dict[tuple[str, str], str] = {}
+    for edge in graph.get_graph().edges:
+        if not edge.conditional:
+            continue
+        # get_graph() leaves the label out when the router key is the target's own name.
+        label = str(edge.data) if edge.data is not None else edge.target
+        pair = (edge.source, edge.target)
+        if labels.get(pair, label) != label:
+            raise ValueError(f"Node pair {pair} is ambiguous: {labels[pair]!r} or {label!r}")
+        labels[pair] = label
+    return labels
+
+
+def _traced(
+    name: str, node: Callable[..., Any], routes: Mapping[tuple[str, str], str]
+) -> _TracedNode:
+    """Wrap a node to record route_decided (if a router chose it), node_started, node_finished.
+
+    The node's result or exception passes through unchanged (a cancelled node finishes with
+    status "cancelled", a raising one with "error"); the wrapper only adds `previous_node`
+    to the update, so the next node can derive the route from the pair. Routers stay pure.
+    """
+    takes_runtime = "runtime" in inspect.signature(node).parameters
+
+    async def traced_node(state: TriageState, *, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
+        trace = runtime.context.trace
+        previous = state.get("previous_node")
+        route = routes.get((previous, name)) if previous is not None else None
+        if previous is not None and route is not None:
+            record_event(trace, lambda: RouteDecided(source=previous, target=name, route=route))
+        record_event(trace, lambda: NodeStarted(node=name))
+        started = time.monotonic()
+        status: NodeStatus = "error"
+        try:
+            result = node(state, runtime) if takes_runtime else node(state)
+            if inspect.isawaitable(result):
+                result = await result
+            status = "ok"
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        finally:
+            duration_ms = round((time.monotonic() - started) * 1000, 3)
+            record_event(
+                trace, lambda: NodeFinished(node=name, duration_ms=duration_ms, status=status)
+            )
+        return {**result, "previous_node": name}
+
+    return traced_node
 
 
 triage_graph = build_triage_graph()
