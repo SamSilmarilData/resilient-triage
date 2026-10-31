@@ -76,6 +76,9 @@ The page is build-free (ADR-010): native ES modules, one stylesheet and self-hos
 
 - **Serving** (`api/static_assets.py`): `create_app` mounts `StaticAssets` at `/static`, one instance per app. It is Starlette's `StaticFiles` with a fixed media-type table, so `.mjs` is `text/javascript` and `.woff2` is `font/woff2` whatever the host's MIME database holds (the global `mimetypes` registry is not touched), and a `Cache-Control` on every file: `immutable` for a year under `vendor/`, whose paths carry versions, and `no-cache` (revalidate) for everything else. Headers per path are in [api.md](api.md#11-get-staticpath).
 - **Vendored packages** (`static/vendor/`): Preact 10.29.8 (+ hooks), htm 3.1.1 (+ `htm/preact`), `@preact/signals` 2.11.4, `@preact/signals-core` 1.14.5, and the Inter and JetBrains Mono variable woff2 Latin subsets (Fontsource 5.3.0), each at `<npm name>@<version>/<path in the package>` with its LICENSE. The JavaScript files are each package's `.mjs` export; the manifest gives each its bare import `specifier` (`preact`, `preact/hooks`, `htm`, `htm/preact`, `@preact/signals`, `@preact/signals-core`), from which the page's import map is written. `htm/preact/standalone` is never vendored.
+- **The page shell** (`static/index.html`, `app.mjs`, `styles.css`): `GET /` serves `index.html` (`Cache-Control: no-cache`). Its prose (the hook, the free-play intro, "how it's built"), landmarks and a `<noscript>` note are static HTML, so they render before any script runs and survive a failed `/scenarios` (Deferred UI questions, #101). One import map gives each bare name one same-origin URL, written from the manifest's `specifier`s. `app.mjs` (Preact, htm and Signals, `// @ts-check`) renders the three mount points (the live-trace column, the chapters, free play) with empty states, removes their `aria-busy`, then sets `data-shell="ready"` on `<html>`, the DOM state browser tests wait on. `styles.css` is one hand-written stylesheet: an `@layer` order, OKLCH tokens on `:root`, a dark theme by `prefers-color-scheme` overridden by `<html data-theme="light|dark">`, native nesting, `prefers-reduced-motion` honoured, and the vendored fonts (`Inter Variable`, `JetBrains Mono Variable`) with `font-display: swap`. The vendored Latin subsets have no arrow glyphs, so copy avoids them. The live-trace column is pinned beside the chapters from 60rem and inline above them below that.
+- **Graph layout** (`static/graph-layout.json`): one hand-placed top-to-bottom layout of `triage_graph.get_graph()` used at every width: node centres and widths in SVG units, `__start__`/`__end__` as terminals, each edge an orthogonal polyline, and each conditional edge keyed by its router label (`route`, as in `route_decided`, ADR-008) with a label position. It is 360 units wide, so at 375 px its 12-unit node labels still render at about 11 px. `tests/test_graph_layout.py` compares it with `get_graph()` both ways (a missing or stale node or edge fails) and checks the placement: boxes fit their names and don't overlap, edges run border to border through no other node, labels clear nodes and each other.
+- **Static checks** (`tests/test_static_assets.py`): the import map equals the manifest's specifiers; every specifier in our and the vendored `.mjs` (minified `from"x"`, `export … from`, side-effect and dynamic `import()`) resolves to a shipped file, bare names only through the import map and vendored modules only by bare name, so there is one Preact, and `htm/preact/standalone` is never named; nothing the HTML or CSS fetches is on another origin (an `<a href>` is navigation, not a request); and the theme tokens reach WCAG AA contrast (4.5:1 text, 3:1 focus ring) on every surface in both themes.
 - **Manifest and `scripts/vendor.py`**: `static/vendor/manifest.json` pins each package's npm tarball URL and integrity and each file's sha256. `vendor.py verify` (stdlib only, offline) checks every file against it, that each package lists its license file, and that no unlisted file sits under `vendor/`; `tests/test_static_assets.py` runs the same check. `vendor.py update` is the only step that touches the network and is run by hand (see [deployment](deployment.md#vendored-frontend-files)).
 
 ---
@@ -201,10 +204,6 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
    - Added an `OrderedDict` LRU cache to both `FastEmbedProvider` and `DeterministicEmbeddingProvider`.
    - All quick presets (`Actions 503`, `Stripe Timeout`, `Postgres Pool`) are pre-warmed during FastAPI startup (`lifespan`).
    - Lookups, stores, and preset re-runs execute in **0.001ms** instead of 100–250ms on shared vCPU environments.
-4. **Responsive Dual-Metric Observability**:
-   - The SRE Command Center UI separates **Server Execution Time** (`data.execution_time_ms`) from **Internet WAN Network RTT** (`elapsed - serverMs`).
-   - Recruiter/reviewer consoles display: `Server: 1.16ms (Redis HNSW) • Net RTT: 78ms (79ms total)`.
-   - Audit log ticker records `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
 
 ---
 
@@ -219,13 +218,4 @@ During real-world cloud deployment evaluations (e.g. Render Singapore), external
   - Each `complete()` makes at most 3 calls. The full policy is in the [resilience guide](resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns).
 - **Diagnostic Logging**:
   - Every failed call logs its model and failure kind at `WARNING`, and the provider's error message is kept as the snapshot's `last_error`.
-
----
-
-### 9. Unified Interactive State Management
-- **Demo State Reset**: `resetDemoState(full=true)` restores circuit breakers, clears chaos injections, resets visual topology cards, wipes previous report cards, clears thread IDs, and purges the live audit stream.
-- **Fine-Tuned Stories**:
-  - **Story 1 (Cold Triage)**: Enforces `force_refresh=True` on Gateway 503 incident to demonstrate live AI synthesis.
-  - **Story 2 (Instant Semantic Recall)**: Submits synonymous query (`Internal API gateway cluster...`), achieving **94.2% cosine similarity hit** in $<20\text{ms}$.
-  - **Story 3 (Chaos Outage & Fallback)**: Injects 503s, trips circuit breaker to `OPEN`, and forces live degraded routing with circuit breaker annotation.
 

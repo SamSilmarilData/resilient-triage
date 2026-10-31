@@ -40,7 +40,7 @@ git push space main
    - Optionally, a second secret `ADMIN_API_KEY` (a long random string) to enable the admin routes for yourself. Without it they answer `403` (see [Admin key](#admin-key)).
 3. Your Space will build and deploy automatically!
 4. **Embedded Redis boots automatically**: The container initializes `redis-server` on port 6379, and `GET /health` reports `"redis_connected": true`!
-5. Anyone visiting `https://<YOUR_USERNAME>-resilient-triage.hf.space` gets the full SRE Command Center UI with live SOTA 27B inference in ~1.5s, live Redis vector caching, and zero logins or keys required!
+5. Anyone visiting `https://<YOUR_USERNAME>-resilient-triage.hf.space` gets the explorable page with live SOTA 27B inference in ~1.5s, live Redis vector caching, and zero logins or keys required!
 
 ---
 
@@ -98,7 +98,7 @@ cp .env.example .env
 ./scripts/run_local.sh
 ```
 
-- SRE Command Center UI: `http://127.0.0.1:8000`
+- Explorable page: `http://127.0.0.1:8000`
 - Interactive API Docs: `http://127.0.0.1:8000/docs`
 - Health Endpoint: `http://127.0.0.1:8000/health`
 
