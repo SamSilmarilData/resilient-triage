@@ -39,6 +39,30 @@ Each app instance owns one `AppRuntime` (`runtime.py`), built by `build_runtime(
 
 The gateway is the only code on the request path that writes to the semantic cache: graph nodes get a read-only `CacheReader` (`TriageDeps.history`) and `finalize` only reconciles. It also counts outcomes (`TriageGateway.metrics`: `hit`, `miss`, `saturated`), which `/metrics` exports as `resilient_triage_requests_total{cache=...}`.
 
+### Execution trace
+An execution trace records what happened while one triage request was handled (ADR-008). `src/resilient_triage/trace/` holds its parts; recording is not wired into the gateway or graph yet (#109, #110).
+
+- **Trace events** (`trace/events.py`): frozen Pydantic models in one discriminated union on `kind` (`parse_trace_event()` validates one; an unknown `kind` is rejected). Every event has `seq` (0, 1, …) and `t_ms` (monotonic ms since the recorder was created, so scenario setup comes before `trace_started`). Fields are ids, Literals, enums, counts and timings only; every string field is a Literal or matches the `Identifier` pattern (`trace/fields.py`), so no query text, prompt, model output, signal snippet or Pydantic `input` fits. The report travels once, in `trace_finished`. `ModelCall.from_result`, `ValidationFailed.from_error` and `Reconciled.between` project domain objects to events and drop their text.
+- **Recorders** (`trace/recorder.py`): the `TraceRecorder` protocol has a synchronous `record(event)` that stamps `seq`/`t_ms` and never raises (exceptions are logged and swallowed). `NullTrace` drops events; `ListTrace` keeps them and feeds an optional sink (the future `StreamingTrace` queue). One recorder per request, never a module-level singleton.
+- **Trace summary** (`trace/summary.py`): `summarize(events)` is a pure function to a structured `TraceSummary` (scenario id, outcome, node path with durations, route keys, model calls, failovers, run-time source reads, repair and refine rounds, reconciliation changes, degradation, deadline, timings). It works without `trace_finished`, because the summary travels inside that event's response. `trace.summary` imports `trace.events` only for type checking, so `schemas.api` can import `TraceSummary`.
+
+| `kind` | Fields (besides `seq`, `t_ms`) |
+|---|---|
+| `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source`), `count`, `source` |
+| `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh` |
+| `cache_lookup` | `backend`, `hit`, `similarity`, `threshold`, `duration_ms` |
+| `run_slot` | `acquired`, `waited_ms`, `capacity` |
+| `node_started` | `node` |
+| `node_finished` | `node`, `duration_ms`, `status` (`ok` / `error` / `cancelled`), `confidence` (validate_report only) |
+| `route_decided` | `source`, `target`, `route` (the router key) |
+| `model_call` | `model`, `role` (`primary` / `fallback`), `outcome`, `rate_limit_scope`, `retry_after_s`, `duration_ms` |
+| `telemetry_read` | `source`, `phase` (`setup` or none), `outcome` (`read` / `tripped` / `unavailable`), `attempts`, `breaker_before`, `breaker_after`, `signals`, `duration_ms` |
+| `validation_failed` | `attempt`, `error_count`, `fields` (declared report fields), `error_types` (Pydantic types) |
+| `reconciled` | `changes`: `degradation_before`/`after`, `breakers_changed`, `breakers_after`, `approval_raised` (action indexes) |
+| `deadline_exceeded` | `deadline_s` |
+| `cache_store` | `backend`, `outcome` (`stored` / `skipped_fallback` / `failed`), `duration_ms` |
+| `trace_finished` | `outcome` (`cache_hit` / `analyzed` / `shed`), `response` (`TriageResponse`, none when shed) |
+
 ---
 
 ## 3. Deep-Dive Components
