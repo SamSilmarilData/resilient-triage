@@ -31,8 +31,7 @@ _PER_RUN_KEYS = {"duration_ms", "timings", "timestamp", "execution_time_ms", "in
 @pytest.fixture
 def fast_pings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ping every millisecond, so pings interleave with events and the parser must skip them."""
-    # Not autouse: FastAPI's keepalive task raises BrokenResourceError out of the app when a
-    # client disconnects while it holds an unsent ping, which 1 ms pings make near-certain.
+    # Not autouse: the idle-disconnect tests want a stream that goes quiet.
     monkeypatch.setattr("fastapi.routing._PING_INTERVAL", 0.001)
 
 
@@ -64,12 +63,17 @@ def without_per_run_values(value: Any) -> Any:
     return value
 
 
-async def stream(client: httpx.AsyncClient, body: dict[str, Any]) -> list[TraceEvent]:
-    """POST /triage/stream and return its parsed events, checking the SSE response headers."""
+async def stream_text(client: httpx.AsyncClient, body: dict[str, Any]) -> str:
+    """POST /triage/stream and return its raw body, checking the SSE response headers."""
     resp = await client.post("/triage/stream", json=body)
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
-    return parse_sse(resp.text)
+    return resp.text
+
+
+async def stream(client: httpx.AsyncClient, body: dict[str, Any]) -> list[TraceEvent]:
+    """POST /triage/stream and return its parsed events."""
+    return parse_sse(await stream_text(client, body))
 
 
 def finished(events: list[TraceEvent]) -> TraceFinished:
@@ -141,6 +145,24 @@ async def test_a_shed_stream_still_ends_with_trace_finished(serve_app: AppServer
     assert slot.kind == "run_slot" and slot.acquired is False
 
 
+@pytest.mark.usefixtures("fast_pings")
+async def test_a_quiet_stream_sends_ping_comment_lines(serve_app: AppServer):
+    llm = BlockingAdapter()
+
+    async def release_after_a_quiet_spell() -> None:
+        await llm.started.wait()
+        await asyncio.sleep(0.05)  # 50 ping intervals with nothing recorded
+        llm.release.set()
+
+    async with serve_app(llm) as (_, ac):
+        releaser = asyncio.create_task(release_after_a_quiet_spell())
+        events = await stream_text(ac, {"query": QUERY})
+        await releaser
+
+    assert ": ping" in events.replace("\r\n", "\n").split("\n")
+    assert finished(parse_sse(events)).outcome == "analyzed"
+
+
 async def test_a_stream_past_the_run_deadline_records_it_then_finishes(serve_app: AppServer):
     llm = BlockingAdapter()  # never released: the run outlives its deadline
     async with serve_app(llm, one_slot(triage_run_deadline_s=0.2)) as (_, ac):
@@ -203,8 +225,7 @@ class RawStream:
 
     async def drained(self) -> None:
         """Wait until the app has sent every event so far (the run is blocked, so it stops)."""
-        # FastAPI's SSE keepalive task raises BrokenResourceError out of the app if the client
-        # disconnects while it holds an unsent event, so the test drops an idle stream.
+        # The idle-stream case; StalledClient covers a disconnect with sends still pending.
         await asyncio.wait_for(self.first_chunk.wait(), timeout=5.0)
         while True:
             sent = len(self.messages)
@@ -277,6 +298,42 @@ async def test_a_client_disconnect_cancels_the_run_and_releases_its_slot(serve_a
         request = asyncio.create_task(client.run())
         await asyncio.wait_for(llm.started.wait(), timeout=5.0)
         await client.drained()
+
+        client.disconnected.set()
+        await asyncio.wait_for(request, timeout=5.0)
+
+        assert client.status == 200
+        await assert_cleanly_abandoned(ac, llm)
+
+
+class StalledClient(RawStream):
+    """A client that reads the first chunk, then stops reading until it disconnects."""
+
+    # Like a server's send under flow control: a body send blocks while the client reads
+    # nothing, and returns once the client has gone.
+
+    def __init__(self, app: ASGIApp, body: dict[str, Any]) -> None:
+        super().__init__(app, body)
+        self.send_stalled = asyncio.Event()
+
+    async def _send(self, message: Message) -> None:
+        await super()._send(message)
+        if message["type"] == "http.response.body" and len(self.messages) > 2:
+            self.send_stalled.set()
+            await self.disconnected.wait()
+
+
+@pytest.mark.usefixtures("fast_pings")
+async def test_a_disconnect_with_events_or_pings_unsent_cancels_the_run_at_once(
+    serve_app: AppServer,
+):
+    llm = BlockingAdapter()
+    async with raw_app(serve_app, llm, one_slot()) as (_, ac, app):
+        client = StalledClient(app, {"query": QUERY})
+        request = asyncio.create_task(client.run())
+        await asyncio.wait_for(llm.started.wait(), timeout=5.0)
+        await asyncio.wait_for(client.send_stalled.wait(), timeout=5.0)
+        await asyncio.sleep(0.02)  # 1 ms pings pile up behind the stalled send
 
         client.disconnected.set()
         await asyncio.wait_for(request, timeout=5.0)

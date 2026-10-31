@@ -211,6 +211,17 @@ in `resilient_triage_abandoned_requests_total`, never as a triage outcome. The r
 owned by a request-scoped dependency and awaited on the way out, so no task outlives the
 request.
 
+- **Counted once.** `triage()` counts its own cancellation. A run task cancelled before its
+  first step never enters `triage()`, so `TriageGateway.stream()` counts that one instead.
+- **Nothing cached.** The gateway checks for a pending cancellation before it stores, so a run
+  whose graph swallowed the cancel is not stored. A `SemanticCacheManager.store()` cancelled
+  during its Redis write evicts the entry from the standby and (shielded, best effort) from
+  Redis before re-raising.
+- **Unsent sends.** If the client disconnects while FastAPI's SSE keepalive task still holds
+  an unsent event or ping, that task raises `anyio.BrokenResourceError` (in an
+  `ExceptionGroup`) through the request's exit stack. `open_trace_stream` catches exactly that
+  with `except*` and logs it at info, so it neither escapes the app nor delays the cleanup.
+
 ### Run deadline: a stalled run answers with a fallback
 
 Every graph run the Triage gateway starts has a **run deadline**, `triage_run_deadline_s` (default 45s, env `TRIAGE_RUN_DEADLINE_S`). The gateway wraps only the graph run in `asyncio.timeout(...)`: time spent waiting for a run slot is bounded separately by `triage_queue_timeout_s` and does not count against it. When the deadline passes, the run is cancelled (so breakers and the LLM gateway see a cancellation, which records nothing; a 429 the run already received still leaves its cooldown in place, see [section 6](#6-llm-gateway-failover-and-rate-limit-cooldowns)), its slot is released, and the caller gets `Analyzed` with `build_fallback_report(query, reason="Run deadline exceeded ...")`, reconciled on the same no-evidence `DegradationEvidence(..., synthesis_fell_back=True)` as a graph exception.

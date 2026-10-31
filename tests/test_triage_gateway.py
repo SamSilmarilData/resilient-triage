@@ -8,7 +8,9 @@ import pytest
 import pytest_asyncio
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
+from resilient_triage.cache.in_memory_store import InMemoryVectorStore
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
+from resilient_triage.cache.vector_store import VectorEntry
 from resilient_triage.config import Settings, settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 from resilient_triage.triage.gateway import (
@@ -400,3 +402,148 @@ async def test_a_timeout_raised_inside_the_graph_is_a_graph_exception_not_the_de
     assert outcome.report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
     assert "failed unexpectedly" in outcome.report.root_cause_analysis
     assert "Run deadline" not in outcome.report.root_cause_analysis
+
+
+async def test_a_stream_left_before_its_run_starts_counts_one_abandoned_request(cache):
+    graph = ReturningGraph({"final_report": _report()})
+    gateway = _gateway(cache, graph)
+
+    async with gateway.stream(QUERY, None):
+        pass  # left before the run task takes its first step: triage() never starts
+
+    assert graph.calls == []
+    assert gateway.metrics == TriageMetrics(abandoned=1)
+    assert await cache.lookup(QUERY) is None
+
+
+async def test_a_stream_left_mid_run_counts_one_abandoned_request_and_frees_its_slot(cache):
+    graph = BlockingGraph()
+    gateway = _gateway(cache, graph, _one_slot(deadline_s=5.0))
+
+    async with gateway.stream(QUERY, None):
+        await graph.started.wait()
+
+    assert gateway.metrics == TriageMetrics(abandoned=1)
+    assert await cache.lookup(QUERY) is None
+    graph.release.set()
+    assert isinstance(await gateway.triage("Checkout latency spike in eu-west-1", None), Analyzed)
+
+
+class StallingRedis(InMemoryVectorStore):
+    """A hash-mode remote store whose put writes, then waits for a reply that never comes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.put_started = asyncio.Event()
+
+    @property
+    def supports_search(self) -> bool:
+        return False
+
+    async def connect(self) -> None:
+        pass
+
+    async def ping(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+    async def entries(self) -> AsyncIterator[tuple[VectorEntry, float]]:
+        for stored in list(self._docs.values()):
+            yield stored.entry, 60.0
+
+    async def put(self, entry: VectorEntry, ttl: float) -> None:
+        await super().put(entry, ttl)
+        self.put_started.set()
+        await asyncio.Event().wait()
+
+
+async def test_a_run_cancelled_during_its_cache_store_caches_nothing():
+    redis = StallingRedis()
+    cache = SemanticCacheManager(
+        embedding_provider=DeterministicEmbeddingProvider(), remote_store_factory=lambda: redis
+    )
+    gateway = _gateway(cache, ReturningGraph({"final_report": _report()}))
+    task = asyncio.create_task(gateway.triage(QUERY, None))
+    await asyncio.wait_for(redis.put_started.wait(), timeout=5.0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert await cache.lookup(QUERY) is None
+    assert redis.count == 0
+    assert gateway.metrics == TriageMetrics(abandoned=1)
+
+
+class CancelSwallowingGraph:
+    """A GraphRunner that, once cancelled, swallows the cancellation and returns a report."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def ainvoke(self, input: dict[str, Any], *, trace: Any = None) -> dict[str, Any]:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass
+        return {"final_report": _report()}
+
+
+async def test_a_cancelled_run_stores_nothing_even_if_the_graph_swallows_the_cancel(cache):
+    graph = CancelSwallowingGraph()
+    gateway = _gateway(cache, graph, _one_slot(deadline_s=5.0))
+    task = asyncio.create_task(gateway.triage(QUERY, None))
+    await graph.started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert await cache.lookup(QUERY) is None
+    assert gateway.metrics == TriageMetrics(abandoned=1)
+
+
+class SlowToCancelGraph:
+    """A GraphRunner whose runs, once cancelled, finish cancelling only when `unwind` is set."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.unwind = asyncio.Event()
+
+    async def ainvoke(self, input: dict[str, Any], *, trace: Any = None) -> dict[str, Any]:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await self.unwind.wait()
+            raise
+        raise AssertionError("unreachable")
+
+
+async def test_a_stream_cancelled_again_while_its_run_unwinds_waits_and_keeps_that_cancel(cache):
+    graph = SlowToCancelGraph()
+    gateway = _gateway(cache, graph, _one_slot(deadline_s=5.0))
+
+    async def consume() -> None:
+        async with gateway.stream(QUERY, None):
+            await asyncio.Event().wait()
+
+    consumer = asyncio.create_task(consume())
+    await graph.started.wait()
+    consumer.cancel("client disconnected")
+    await graph.cancelled.wait()  # the stream now waits for its run to finish cancelling
+    consumer.cancel("server shutting down")
+    await asyncio.sleep(0)
+    assert not consumer.done()  # still waiting for the run
+
+    graph.unwind.set()
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await consumer
+
+    assert cancelled.value.args == ("server shutting down",)
+    assert gateway.metrics == TriageMetrics(abandoned=1)
