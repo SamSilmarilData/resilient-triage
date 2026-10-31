@@ -5,9 +5,14 @@ from typing import Any
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import settings
-from resilient_triage.scenarios import Scenario, ScenarioFactory
+from resilient_triage.scenarios import Scenario, ScenarioFactory, Setup
 from resilient_triage.schemas.telemetry import StatuspageSummary
-from resilient_triage.trace.events import TelemetryRead, TraceEvent, TraceStarted
+from resilient_triage.trace.events import (
+    ScenarioSetup,
+    TelemetryRead,
+    TraceEvent,
+    TraceStarted,
+)
 from resilient_triage.trace.recorder import ListTrace
 from resilient_triage.triage.gateway import Analyzed
 from resilient_triage.triage.slots import RunSlotPool
@@ -56,3 +61,24 @@ async def test_a_scenario_run_is_analyzed_with_its_scenario_id_on_trace_started(
     reads = [e for e in trace.events if isinstance(e, TelemetryRead)]
     assert [(r.source, r.outcome) for r in reads] == [("statuspage", "read")]
     assert _kinds(trace.events)[-1] == "trace_finished"
+
+
+async def test_pre_run_failures_open_the_private_breaker_at_exactly_fail_max() -> None:
+    trace = ListTrace()
+    scenario = _scenario(statuspage=None, setup=Setup(tripped_sources=("statuspage",)))
+
+    await _factory().build(scenario).triage(trace=trace)
+
+    fail_max = settings.circuit_breaker_fail_max
+    start = _kinds(trace.events).index("trace_started")
+    setup, run = trace.events[:start], trace.events[start:]
+    setup_reads = [e for e in setup if isinstance(e, TelemetryRead)]
+    assert len(setup_reads) == fail_max
+    assert all(r.phase == "setup" and r.source == "statuspage" for r in setup_reads)
+    assert [r.breaker_after for r in setup_reads] == ["closed"] * (fail_max - 1) + ["open"]
+    assert all(r.attempts == settings.retry_max_attempts for r in setup_reads)
+    assert setup[-1] == ScenarioSetup(
+        seq=fail_max, t_ms=setup[-1].t_ms, step="fail_source", count=fail_max, source="statuspage"
+    )
+    run_reads = [e for e in run if isinstance(e, TelemetryRead)]
+    assert [(r.phase, r.outcome, r.attempts) for r in run_reads] == [(None, "tripped", 0)]
