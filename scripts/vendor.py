@@ -74,6 +74,9 @@ def verify(vendor_dir: Path) -> list[str]:
 
     for package in manifest["packages"]:
         pkg_dir = package_dir(package)
+        if not _is_safe(pkg_dir):
+            problems.append(f"{pkg_dir}: unsafe package name or version")
+            continue
         listed = {entry["path"] for entry in package["files"]}
         if package["license_file"] not in listed:
             problems.append(
@@ -125,6 +128,8 @@ def _check_integrity(data: bytes, integrity: str, label: str) -> None:
 def _download(package: dict[str, Any], fetch: Fetch) -> dict[str, bytes]:
     """Fetch one pinned package and return its listed files; pin tarball, integrity, sha256."""
     label = package_dir(package)
+    if not _is_safe(label):
+        raise VendorError(f"{label}: unsafe package name or version")
     meta = json.loads(fetch(f"{REGISTRY}/{package['name']}/{package['version']}"))
     if meta.get("version") != package["version"]:
         raise VendorError(f"{label}: registry answered version {meta.get('version')!r}")
@@ -163,8 +168,10 @@ def _canonical(package: dict[str, Any]) -> dict[str, Any]:
     keys = ("name", "version", "license", "license_file", "tarball", "integrity")
     ordered = {key: package[key] for key in keys if key in package}
     ordered.update({k: v for k, v in package.items() if k not in ordered and k != "files"})
+    file_keys = ("path", "specifier", "sha256")
     ordered["files"] = [
-        {k: entry[k] for k in ("path", "specifier", "sha256") if k in entry}
+        {k: entry[k] for k in file_keys if k in entry}
+        | {k: v for k, v in entry.items() if k not in file_keys}
         for entry in package["files"]
     ]
     return ordered

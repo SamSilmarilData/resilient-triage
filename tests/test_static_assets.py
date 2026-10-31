@@ -126,6 +126,16 @@ def test_verify_reports_a_path_outside_the_package(tmp_path: Path):
     assert any("../escape.mjs" in p and "unsafe" in p for p in problems)
 
 
+def test_verify_reports_a_package_name_that_escapes_vendor(tmp_path: Path):
+    """A package name or version that would put its directory outside vendor/ is rejected."""
+    root = _small_tree(tmp_path)
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["packages"][0]["name"] = "../lib"
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    problems = vendor.verify(root)
+    assert any("../lib@1.0.0" in p and "unsafe" in p for p in problems)
+
+
 def test_verify_reports_a_duplicate_specifier(tmp_path: Path):
     """Two files claiming the same bare import specifier are reported."""
     root = _small_tree(tmp_path)
