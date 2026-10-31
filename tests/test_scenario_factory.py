@@ -9,6 +9,7 @@ import pytest
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import settings
 from resilient_triage.llm import DEFAULT_REPORT_JSON, ScriptedReply
+from resilient_triage.runtime import AppRuntime
 from resilient_triage.scenarios import (
     CacheSeed,
     HeldSlots,
@@ -182,3 +183,40 @@ async def test_a_run_deadline_override_cuts_off_only_that_run() -> None:
     deadlines = [e for e in trace.events if isinstance(e, DeadlineExceeded)]
     assert [d.deadline_s for d in deadlines] == [0.1]
     assert settings.triage_run_deadline_s != 0.1  # the shared setting is untouched
+
+
+async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
+    runtime: AppRuntime,
+) -> None:
+    before = await runtime.snapshot()
+    metrics_before = runtime.triage_gateway.metrics
+    factory = ScenarioFactory(
+        settings=settings,
+        slots=RunSlotPool(capacity=4, queue_timeout_s=settings.triage_queue_timeout_s),
+        embedder=runtime.cache.embedding_provider,
+    )
+    tripped = _scenario(
+        id="tripped",
+        statuspage=None,
+        setup=Setup(
+            tripped_sources=("statuspage",),
+            seeds=(CacheSeed(query="Stripe webhooks timing out", report=SEED_REPORT),),
+        ),
+    )
+    a, b = factory.build(tripped), factory.build(_scenario(id="plain"))
+    trace_a, trace_b = ListTrace(), ListTrace()
+
+    await asyncio.gather(a.triage(trace=trace_a), b.triage(trace=trace_b))
+
+    for private in ("gateway", "breakers", "cache", "llm", "telemetry", "chaos"):
+        assert getattr(a, private) is not getattr(b, private), private
+        assert getattr(a, private) is not getattr(runtime, private, None), private
+    assert a.deps.telemetry is not runtime.deps.telemetry
+    assert (a.cache.count, b.cache.count) == (2, 1)  # A's seed and answer; B's answer
+    assert a.breakers.get_all_statuses()["statuspage"].is_open
+    assert not b.breakers.get_all_statuses()["statuspage"].is_open
+    run_reads_b = [e for e in trace_b.events if isinstance(e, TelemetryRead)]
+    assert [(r.outcome, r.breaker_after) for r in run_reads_b] == [("read", "closed")]
+    after = await runtime.snapshot()
+    assert after == before
+    assert runtime.triage_gateway.metrics == metrics_before
