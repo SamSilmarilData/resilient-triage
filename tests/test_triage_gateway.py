@@ -209,7 +209,7 @@ async def test_a_cancelled_graph_run_propagates_and_frees_its_run_slot(cache):
         await gateway.triage(QUERY, None)
 
     assert await cache.lookup(QUERY) is None
-    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0)
+    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0, abandoned=1)
     graph.exc = RuntimeError("boom")
     assert isinstance(await gateway.triage(QUERY, None), Analyzed)
 
@@ -382,7 +382,7 @@ async def test_a_caller_cancelling_a_run_propagates_and_frees_its_run_slot(cache
         await task
 
     assert await cache.lookup(QUERY) is None
-    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0)
+    assert gateway.metrics == TriageMetrics(hit=0, miss=0, saturated=0, abandoned=1)
     graph.release.set()
     outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
     assert isinstance(outcome, Analyzed)

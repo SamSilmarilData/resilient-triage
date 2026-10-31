@@ -201,6 +201,16 @@ If the triage graph itself raises (a bug in a node, an unexpected library error)
 
 The report is not stored, so the next identical query runs the graph again rather than replaying the fallback. The run slot is released either way. Cancellation is not a failure: `CancelledError` propagates unchanged, still releasing the slot. So `triage()` never raises except `CancelledError`, and every request ends in exactly one `TriageOutcome` (`CacheHit`, `Analyzed` or `Shed`).
 
+### Streamed requests: one `trace_finished`, and abandoned runs
+`POST /triage/stream` sends its 200 headers before the run ends, so an error can no longer
+become a 500. If `TriageGateway.triage()` raises an `Exception` mid-stream, the stream still
+ends with one `trace_finished` carrying a reconciled `SEVERELY_DEGRADED` synthesis fallback
+(not cached). A client disconnect cancels the run instead: `CancelledError` propagates, the
+run slot is released in `finally`, nothing is cached, and the request is logged and counted
+in `resilient_triage_abandoned_requests_total`, never as a triage outcome. The run task is
+owned by a request-scoped dependency and awaited on the way out, so no task outlives the
+request.
+
 ### Run deadline: a stalled run answers with a fallback
 
 Every graph run the Triage gateway starts has a **run deadline**, `triage_run_deadline_s` (default 45s, env `TRIAGE_RUN_DEADLINE_S`). The gateway wraps only the graph run in `asyncio.timeout(...)`: time spent waiting for a run slot is bounded separately by `triage_queue_timeout_s` and does not count against it. When the deadline passes, the run is cancelled (so breakers and the LLM gateway see a cancellation, which records nothing; a 429 the run already received still leaves its cooldown in place, see [section 6](#6-llm-gateway-failover-and-rate-limit-cooldowns)), its slot is released, and the caller gets `Analyzed` with `build_fallback_report(query, reason="Run deadline exceeded ...")`, reconciled on the same no-evidence `DegradationEvidence(..., synthesis_fell_back=True)` as a graph exception.

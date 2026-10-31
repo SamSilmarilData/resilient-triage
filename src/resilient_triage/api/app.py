@@ -4,7 +4,7 @@ import logging
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, assert_never, cast
@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Securit
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import APIKeyHeader
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from resilient_triage import __version__
 from resilient_triage.config import settings
@@ -28,6 +29,7 @@ from resilient_triage.schemas.api import (
     TriageResponse,
 )
 from resilient_triage.schemas.telemetry import ChaosConfig, ChaosTelemetryResponse
+from resilient_triage.trace.events import TraceEvent
 from resilient_triage.trace.recorder import ListTrace
 from resilient_triage.triage.gateway import Analyzed, CacheHit, Shed
 
@@ -166,6 +168,36 @@ async def triage_incident(
         case _:
             assert_never(outcome)
     return JSONResponse(content=response.model_dump(mode="json"), headers=headers)
+
+
+async def open_trace_stream(
+    payload: TriageRequest, runtime: RuntimeDep
+) -> AsyncIterator[AsyncIterator[TraceEvent]]:
+    """Start the request's run; its cleanup cancels and awaits the run if it is still going."""
+    # A yield dependency, not the route's generator, owns the run: FastAPI unwinds it on its
+    # request exit stack once the stream ends, the client disconnects or the request is
+    # cancelled, while a generator parked at `yield` would close only when garbage-collected.
+    stream = runtime.triage_gateway.stream(
+        payload.query, payload.service_filter, force_refresh=payload.force_refresh
+    )
+    async with stream as events:
+        yield events
+
+
+@router.post("/triage/stream", response_class=EventSourceResponse)
+async def triage_incident_stream(
+    events: Annotated[AsyncIterator[TraceEvent], Depends(open_trace_stream)],
+) -> AsyncIterable[ServerSentEvent]:
+    """Triage an incident like POST /triage, streaming its execution trace as Server-Sent Events.
+
+    Takes the same `TriageRequest` body. Each event's SSE `event:` is its trace event kind and
+    its `data:` is the event as JSON. The stream always ends with one `trace_finished` carrying
+    the triage outcome and the response POST /triage would return (none when shed); the status
+    is 200 once it starts. A client disconnect cancels the run: it is counted as abandoned and
+    nothing is cached.
+    """
+    async for event in events:
+        yield ServerSentEvent(event=event.kind, data=event)
 
 
 @router.post("/chaos/inject", response_model=ChaosConfig, dependencies=[Depends(verify_admin_key)])
@@ -352,6 +384,13 @@ async def get_metrics(runtime: RuntimeDep) -> PlainTextResponse:
         f'resilient_triage_requests_total{{cache="hit"}} {counts.hit}',
         f'resilient_triage_requests_total{{cache="miss"}} {counts.miss}',
         f'resilient_triage_requests_total{{cache="saturated"}} {counts.saturated}',
+        "",
+        (
+            "# HELP resilient_triage_abandoned_requests_total Triage requests cancelled before "
+            "they ended, e.g. by a client disconnect (not a triage outcome)"
+        ),
+        "# TYPE resilient_triage_abandoned_requests_total counter",
+        f"resilient_triage_abandoned_requests_total {counts.abandoned}",
         "",
         (
             "# HELP resilient_triage_circuit_breaker_state Active circuit breaker state (1 if "

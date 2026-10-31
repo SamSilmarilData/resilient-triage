@@ -8,9 +8,10 @@ or lazily), so `llm.gateway`, which `schemas` imports, can default to `NullTrace
 an import cycle through `trace.events` -> `schemas.api` -> `llm`.
 """
 
+import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -71,6 +72,26 @@ class ListTrace:
                 self._sink(stamped)
         except Exception:
             logger.exception("Trace recorder dropped a %s event.", event.kind)
+
+
+class StreamingTrace(ListTrace):
+    """A ListTrace that also feeds every stamped event to an unbounded, lossless queue."""
+
+    # Unbounded on purpose: a slow client must never block a run, and no event is ever
+    # dropped; a run emits a few dozen events within its deadline (ADR-008).
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._queue: asyncio.Queue[TraceEvent | None] = asyncio.Queue()
+        super().__init__(clock=clock, sink=self._queue.put_nowait)
+
+    def close(self) -> None:
+        """Mark the end of the trace: follow() stops once it has yielded every earlier event."""
+        self._queue.put_nowait(None)
+
+    async def follow(self) -> "AsyncIterator[TraceEvent]":
+        """Yield each event as it is recorded, in seq order, until close()."""
+        while (event := await self._queue.get()) is not None:
+            yield event
 
 
 def ms_since(started: float, clock: Callable[[], float] = time.monotonic) -> float:
