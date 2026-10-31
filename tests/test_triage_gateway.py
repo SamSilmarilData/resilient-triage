@@ -504,3 +504,46 @@ async def test_a_cancelled_run_stores_nothing_even_if_the_graph_swallows_the_can
 
     assert await cache.lookup(QUERY) is None
     assert gateway.metrics == TriageMetrics(abandoned=1)
+
+
+class SlowToCancelGraph:
+    """A GraphRunner whose runs, once cancelled, finish cancelling only when `unwind` is set."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.unwind = asyncio.Event()
+
+    async def ainvoke(self, input: dict[str, Any], *, trace: Any = None) -> dict[str, Any]:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await self.unwind.wait()
+            raise
+        raise AssertionError("unreachable")
+
+
+async def test_a_stream_cancelled_again_while_its_run_unwinds_waits_and_keeps_that_cancel(cache):
+    graph = SlowToCancelGraph()
+    gateway = _gateway(cache, graph, _one_slot(deadline_s=5.0))
+
+    async def consume() -> None:
+        async with gateway.stream(QUERY, None):
+            await asyncio.Event().wait()
+
+    consumer = asyncio.create_task(consume())
+    await graph.started.wait()
+    consumer.cancel("client disconnected")
+    await graph.cancelled.wait()  # the stream now waits for its run to finish cancelling
+    consumer.cancel("server shutting down")
+    await asyncio.sleep(0)
+    assert not consumer.done()  # still waiting for the run
+
+    graph.unwind.set()
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await consumer
+
+    assert cancelled.value.args == ("server shutting down",)
+    assert gateway.metrics == TriageMetrics(abandoned=1)
