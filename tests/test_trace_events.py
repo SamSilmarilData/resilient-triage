@@ -636,6 +636,31 @@ def test_summary_of_a_deadline_counts_repairs_and_unfinished_nodes() -> None:
     assert summary.routes == ["repair"]
 
 
+def test_summary_timings_are_rounded_to_microseconds() -> None:
+    # Differences and sums of stamped floats carry binary noise (5.541 - 1.13 is
+    # 4.4110000000000005); the summary rounds them as the recorder rounds t_ms.
+    events = _numbered(
+        [
+            TraceStarted(t_ms=0.01),
+            CacheLookup(
+                t_ms=0.092, backend="in_memory", hit=False, threshold=0.9, duration_ms=0.0634170137
+            ),
+            RunSlot(t_ms=0.108, acquired=True, waited_ms=0.0067909713, capacity=4),
+            NodeStarted(t_ms=1.13, node="generate_report"),
+            ModelCall(t_ms=2, model="m1", role="primary", outcome="completion", duration_ms=0.1),
+            ModelCall(t_ms=3, model="m1", role="primary", outcome="completion", duration_ms=0.2),
+            NodeFinished(t_ms=5.541, node="generate_report", duration_ms=4.411),
+            CacheStore(t_ms=5.84, backend="in_memory", outcome="stored", duration_ms=0.05),
+        ]
+    )
+
+    timings = summarize(events).timings
+
+    assert timings == SummaryTimings(
+        total_ms=5.83, cache_lookup_ms=0.063, slot_wait_ms=0.007, run_ms=4.411, model_ms=0.3
+    )
+
+
 def test_summary_of_no_events_is_empty() -> None:
     summary = summarize([])
 
