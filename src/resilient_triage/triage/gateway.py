@@ -45,6 +45,7 @@ from resilient_triage.trace.recorder import (
     record_event,
 )
 from resilient_triage.trace.summary import TraceSummary
+from resilient_triage.triage.slots import RunSlotPool
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +126,24 @@ class TriageGateway:
     """Answers a triage query from the cache, or by a run in a bounded slot, or sheds it."""
 
     def __init__(
-        self, cache: SemanticCacheManager, run_graph: GraphRunner, settings: Settings
+        self,
+        cache: SemanticCacheManager,
+        run_graph: GraphRunner,
+        settings: Settings,
+        *,
+        slots: RunSlotPool | None = None,
+        scenario_id: str | None = None,
     ) -> None:
+        # Without a slot pool the gateway builds its own from settings; a scenario run's
+        # gateway is handed one, and names its scenario on every trace_started (ADR-009).
         self._cache = cache
         self._run_graph = run_graph
         self._settings = settings
-        self._run_slots = asyncio.Semaphore(settings.triage_max_concurrent_runs)
+        self._run_slots = slots or RunSlotPool(
+            capacity=settings.triage_max_concurrent_runs,
+            queue_timeout_s=settings.triage_queue_timeout_s,
+        )
+        self._scenario_id = scenario_id
         self._metrics = TriageMetrics()
 
     @property
@@ -153,7 +166,10 @@ class TriageGateway:
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
         started = time.monotonic()
         record_event(
-            recorder, lambda: TraceStarted(scoped=bool(scope), force_refresh=force_refresh)
+            recorder,
+            lambda: TraceStarted(
+                scenario_id=self._scenario_id, scoped=bool(scope), force_refresh=force_refresh
+            ),
         )
         try:
             answer = await self._answer(query, scope, force_refresh=force_refresh, trace=recorder)
@@ -267,15 +283,9 @@ class TriageGateway:
     async def _acquire_run_slot(self, trace: TraceRecorder) -> bool:
         """Wait up to the queue timeout for a run slot; record the wait and whether it came."""
         wait_started = time.monotonic()
-        try:
-            await asyncio.wait_for(
-                self._run_slots.acquire(), timeout=self._settings.triage_queue_timeout_s
-            )
-            acquired = True
-        except TimeoutError:
-            acquired = False
+        acquired = await self._run_slots.acquire()
         waited_ms = ms_since(wait_started)
-        capacity = self._settings.triage_max_concurrent_runs
+        capacity = self._run_slots.capacity
         record_event(
             trace, lambda: RunSlot(acquired=acquired, waited_ms=waited_ms, capacity=capacity)
         )

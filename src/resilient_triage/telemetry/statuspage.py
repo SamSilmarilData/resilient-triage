@@ -64,38 +64,7 @@ class StatuspageSource:
         start_time = time.monotonic()
         summary = await self._fetch_summary()
         elapsed_ms = round((time.monotonic() - start_time) * 1000.0, 2)
-
-        signals: list[TelemetrySignal] = [
-            TelemetrySignal(
-                source=GLOBAL_SIGNAL_SOURCE,
-                status=summary.indicator,
-                latency_ms=elapsed_ms,
-                error_rate=0.0 if summary.indicator == "none" else 0.5,
-                raw_snippet=f"{summary.page_name}: {summary.description}",
-            )
-        ]
-        for comp in summary.components:
-            if comp.status != "operational":
-                signals.append(
-                    TelemetrySignal(
-                        source=f"statuspage:component:{comp.name}",
-                        status=comp.status,
-                        latency_ms=elapsed_ms,
-                        error_rate=0.8 if "outage" in comp.status else 0.3,
-                        raw_snippet=comp.description or f"Component status is {comp.status}",
-                    )
-                )
-        for inc in summary.incidents:
-            signals.append(
-                TelemetrySignal(
-                    source=f"statuspage:incident:{inc.name}",
-                    status=inc.status,
-                    latency_ms=elapsed_ms,
-                    error_rate=1.0 if inc.impact == "critical" else 0.6,
-                    raw_snippet=f"Impact: {inc.impact}. Details: {inc.shortlink or 'Ongoing'}",
-                )
-            )
-        return signals
+        return summary_signals(summary, elapsed_ms)
 
     async def _fetch_summary(self) -> StatuspageSummary:
         """Fetch the summary JSON and parse it, serving a cached copy within the TTL."""
@@ -114,3 +83,38 @@ class StatuspageSource:
         if self.cache_ttl_seconds > 0:
             self._summary_cache[self.url] = (summary, now)
         return summary
+
+
+def summary_signals(summary: StatuspageSummary, elapsed_ms: float) -> list[TelemetrySignal]:
+    """Turn a summary into one global signal plus one per degraded component and incident."""
+    signals: list[TelemetrySignal] = [
+        TelemetrySignal(
+            source=GLOBAL_SIGNAL_SOURCE,
+            status=summary.indicator,
+            latency_ms=elapsed_ms,
+            error_rate=0.0 if summary.indicator == "none" else 0.5,
+            raw_snippet=f"{summary.page_name}: {summary.description}",
+        )
+    ]
+    for comp in summary.components:
+        if comp.status != "operational":
+            signals.append(
+                TelemetrySignal(
+                    source=f"statuspage:component:{comp.name}",
+                    status=comp.status,
+                    latency_ms=elapsed_ms,
+                    error_rate=0.8 if "outage" in comp.status else 0.3,
+                    raw_snippet=comp.description or f"Component status is {comp.status}",
+                )
+            )
+    for inc in summary.incidents:
+        signals.append(
+            TelemetrySignal(
+                source=f"statuspage:incident:{inc.name}",
+                status=inc.status,
+                latency_ms=elapsed_ms,
+                error_rate=1.0 if inc.impact == "critical" else 0.6,
+                raw_snippet=f"Impact: {inc.impact}. Details: {inc.shortlink or 'Ongoing'}",
+            )
+        )
+    return signals
