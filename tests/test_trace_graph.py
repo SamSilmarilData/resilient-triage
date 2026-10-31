@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import replace
 from typing import Any
 
+import httpx
 import pytest
 from fakes import make_triage_deps
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -21,8 +22,11 @@ from resilient_triage.llm import (
     ScriptedAdapter,
     Unavailable,
 )
+from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, force_open_for_tests
+from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
-from resilient_triage.trace.events import ModelCall
+from resilient_triage.telemetry.probe import TelemetryProbe
+from resilient_triage.trace.events import ModelCall, TelemetryRead
 from resilient_triage.trace.recorder import ListTrace
 
 MESSAGES: list[BaseMessage] = [HumanMessage(content="Is checkout down?")]
@@ -242,6 +246,65 @@ async def test_an_adapter_that_raises_is_one_unavailable_model_call() -> None:
 
     assert isinstance(result, Unavailable)
     assert [(e.kind, e.outcome) for e in trace.events] == [("model_call", "unavailable")]
+
+
+class _Source:
+    """A Telemetry source that raises each queued error in turn, then returns one signal."""
+
+    def __init__(self, source_id: str, *errors: Exception) -> None:
+        self.id = source_id
+        self.keywords: frozenset[str] = frozenset()
+        self.display_name = source_id
+        self.errors = list(errors)
+
+    async def read(self, query: str, scope: str | None) -> list[TelemetrySignal]:
+        if self.errors:
+            raise self.errors.pop(0)
+        return [TelemetrySignal(source=f"{self.id}:ok", status="OK")]
+
+    def degraded_label(self, query: str, scope: str | None) -> str:
+        return self.id
+
+
+def _reads(trace: ListTrace) -> list[tuple[Any, ...]]:
+    return [
+        (e.source, e.phase, e.outcome, e.attempts, e.breaker_before, e.breaker_after, e.signals)
+        for e in trace.events
+        if isinstance(e, TelemetryRead)
+    ]
+
+
+async def test_each_source_read_is_one_telemetry_read_with_its_attempts() -> None:
+    timeout = httpx.ConnectTimeout("slow")
+    probe = TelemetryProbe(
+        [_Source("alpha"), _Source("beta", timeout), _Source("gamma", RuntimeError("down"))],
+        breakers=CircuitBreakerRegistry(),
+    )
+    trace = ListTrace()
+
+    await probe.collect(frozenset({"alpha", "beta", "gamma"}), "q", None, trace=trace)
+
+    assert sorted(_reads(trace)) == [
+        ("alpha", None, "read", 1, "closed", "closed", 1),
+        ("beta", None, "read", 2, "closed", "closed", 1),
+        ("gamma", None, "unavailable", 1, "closed", "closed", 1),
+    ]
+
+
+async def test_a_read_records_its_breaker_state_before_and_after() -> None:
+    breakers = CircuitBreakerRegistry()
+    probe = TelemetryProbe(
+        [_Source("alpha", RuntimeError("down")), _Source("beta")], breakers=breakers, fail_max=1
+    )
+    force_open_for_tests(breakers.get_or_create("beta"))
+    trace = ListTrace()
+
+    await probe.collect(frozenset({"alpha", "beta"}), "q", None, trace=trace, phase="setup")
+
+    assert sorted(_reads(trace)) == [
+        ("alpha", "setup", "tripped", 1, "closed", "open", 1),
+        ("beta", "setup", "tripped", 0, "open", "open", 1),
+    ]
 
 
 async def test_the_shared_deps_keep_their_null_trace() -> None:
