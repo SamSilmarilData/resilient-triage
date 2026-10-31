@@ -7,6 +7,8 @@ a private `ChaosManager` for Cluster Sentinel), `CircuitBreakerRegistry`, in-mem
 injected. The graph, routers, reconciliation, cache and breaker code all run for real.
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
 
@@ -23,8 +25,13 @@ from resilient_triage.schemas.state import TriageState
 from resilient_triage.telemetry.canned import CannedStatuspageSource, FailingStatuspageSource
 from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
 from resilient_triage.telemetry.probe import TelemetryProbe, TelemetrySource
-from resilient_triage.trace.events import ScenarioSetup
-from resilient_triage.trace.recorder import NullTrace, TraceRecorder, record_event
+from resilient_triage.trace.events import ScenarioSetup, TraceEvent
+from resilient_triage.trace.recorder import (
+    NullTrace,
+    StreamingTrace,
+    TraceRecorder,
+    record_event,
+)
 from resilient_triage.triage.gateway import TriageGateway, TriageOutcome
 from resilient_triage.triage.slots import RunSlotPool
 
@@ -65,6 +72,21 @@ class ScenarioRun:
             return await self.gateway.triage(
                 self.scenario.query, self.scenario.scope, trace=recorder
             )
+        finally:
+            self._release_held()
+
+    @asynccontextmanager
+    async def stream(self) -> AsyncIterator[AsyncIterator[TraceEvent]]:
+        """Do the setup, then run the request; yield every live event, setup first."""
+        # Setup records on the stream's own trace, so its events stream before trace_started;
+        # the gateway's stream owns the run task and its cancellation, as for free play.
+        trace = StreamingTrace()
+        try:
+            await self._setup(trace)
+            async with self.gateway.stream(
+                self.scenario.query, self.scenario.scope, trace=trace
+            ) as events:
+                yield events
         finally:
             self._release_held()
 

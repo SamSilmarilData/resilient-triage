@@ -180,16 +180,23 @@ class TriageGateway:
 
     @asynccontextmanager
     async def stream(
-        self, query: str, scope: str | None, *, force_refresh: bool = False
+        self,
+        query: str,
+        scope: str | None,
+        *,
+        force_refresh: bool = False,
+        trace: StreamingTrace | None = None,
     ) -> AsyncIterator[AsyncIterator[TraceEvent]]:
         """Run a request; yield its live trace events, the last always its one trace_finished."""
+        # A caller may pass a trace it already recorded on (a scenario run's setup); those
+        # events stream first, before trace_started.
         # The request runs as its own task so events reach the client while it runs. Leaving
         # this context, normally or by cancellation (a client disconnect), cancels that task
         # and waits for it. The context, not the event iterator, owns the task: an iterator
         # parked at a `yield` is only closed whenever it is garbage-collected.
         # A task cancelled before its first step never runs triage(), which counts its own
         # cancellation, so this context counts that one instead: exactly once either way.
-        trace = StreamingTrace()
+        trace = trace if trace is not None else StreamingTrace()
         began = asyncio.Event()
         run = asyncio.create_task(
             self._triage_or_fallback(query, scope, force_refresh, trace, began)
