@@ -27,6 +27,7 @@ from resilient_triage.cache.vector_store import (
 )
 from resilient_triage.config import settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
+from resilient_triage.trace.fields import CacheBackend
 
 logger = logging.getLogger(__name__)
 
@@ -423,7 +424,7 @@ class SemanticCacheManager:
             )
 
     @property
-    def driver(self) -> str:
+    def driver(self) -> CacheBackend:
         """Return the active vector search driver name."""
         if self._redis is not None:
             if self._redis.supports_search:
