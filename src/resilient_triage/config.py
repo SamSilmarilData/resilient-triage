@@ -94,6 +94,15 @@ class Settings(BaseSettings):
         le=100,
         description="Max graph runs in flight per app; further requests queue for a slot",
     )
+    scenario_max_concurrent_runs: int = Field(
+        default=4,
+        ge=1,
+        le=100,
+        description=(
+            "Max scenario runs in flight per app, in a pool separate from free play's; "
+            "they queue for triage_queue_timeout_s"
+        ),
+    )
     triage_queue_timeout_s: float = Field(
         default=5.0,
         gt=0,

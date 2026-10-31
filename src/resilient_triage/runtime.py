@@ -14,6 +14,7 @@ from resilient_triage.graph.builder import triage_graph
 from resilient_triage.graph.deps import CacheReader, TriageDeps
 from resilient_triage.llm import LLMGateway, ModelAdapter, build_llm_gateway
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerInfo, CircuitBreakerRegistry
+from resilient_triage.scenarios import ScenarioFactory
 from resilient_triage.schemas.api import LLMQuotaSnapshot
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosTelemetryResponse
@@ -26,6 +27,7 @@ from resilient_triage.telemetry.statuspage import (
 )
 from resilient_triage.trace.recorder import TraceRecorder
 from resilient_triage.triage.gateway import TriageGateway
+from resilient_triage.triage.slots import RunSlotPool
 
 # Re-exported: the run-context contract lives in graph.deps so nodes avoid an import cycle.
 __all__ = [
@@ -95,6 +97,15 @@ class AppRuntime:
         self.deps = deps
         self._http_clients = http_clients
         self.triage_gateway = TriageGateway(cache, self.run_graph, settings)
+        # Scenario runs share one slot pool, separate from free play's, so neither sheds the
+        # other; each run's other collaborators are private (ADR-009).
+        self.scenario_slots = RunSlotPool(
+            capacity=settings.scenario_max_concurrent_runs,
+            queue_timeout_s=settings.triage_queue_timeout_s,
+        )
+        self.scenarios = ScenarioFactory(
+            settings=settings, slots=self.scenario_slots, embedder=cache.embedding_provider
+        )
 
     async def start(self) -> None:
         """Connect the cache (else use memory) and warm the embedder; never raises."""
