@@ -5,7 +5,7 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, assert_never, cast
 
@@ -191,16 +191,16 @@ def _shed_error(shed: Shed) -> HTTPException:
             assert_never(shed.reason)
 
 
-async def open_trace_stream(
-    payload: TriageRequest, runtime: RuntimeDep
-) -> AsyncIterator[AsyncIterator[TraceEvent]]:
-    """Start the request's run; its cleanup cancels and awaits the run if it is still going."""
-    # A yield dependency, not the route's generator, owns the run: FastAPI unwinds it on its
-    # request exit stack once the stream ends, the client disconnects or the request is
-    # cancelled, while a generator parked at `yield` would close only when garbage-collected.
-    stream = runtime.triage_gateway.stream(
-        payload.query, payload.service_filter, force_refresh=payload.force_refresh
-    )
+TraceStream = AbstractAsyncContextManager[AsyncIterator[TraceEvent]]
+
+
+@asynccontextmanager
+async def _client_stream(stream: TraceStream) -> AsyncIterator[AsyncIterator[TraceEvent]]:
+    """Enter a run's trace stream for an SSE client; leaving it cancels and awaits the run."""
+    # The stream routes' yield dependencies enter this, so they, not the route's generator,
+    # own the run: FastAPI unwinds them on its request exit stack once the stream ends, the
+    # client disconnects or the request is cancelled, while a generator parked at `yield`
+    # would close only when garbage-collected.
     async with stream as events:
         try:
             yield events
@@ -208,6 +208,17 @@ async def open_trace_stream(
             # FastAPI's SSE keepalive task raises this on a disconnect while it still holds an
             # unsent event or ping; the client is gone and the run is cancelled on exit anyway.
             logger.info("Trace stream client disconnected with an event or ping unsent.")
+
+
+async def open_trace_stream(
+    payload: TriageRequest, runtime: RuntimeDep
+) -> AsyncIterator[AsyncIterator[TraceEvent]]:
+    """Start the request's run; its cleanup cancels and awaits the run if it is still going."""
+    stream = runtime.triage_gateway.stream(
+        payload.query, payload.service_filter, force_refresh=payload.force_refresh
+    )
+    async with _client_stream(stream) as events:
+        yield events
 
 
 @router.post("/triage/stream", response_class=EventSourceResponse)
@@ -234,12 +245,8 @@ async def open_scenario_stream(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No scenario {scenario_id!r}."
         )
-    async with runtime.scenarios.build(scenario).stream() as events:
-        try:
-            yield events
-        except* anyio.BrokenResourceError:
-            # As for POST /triage/stream: the client is gone and the run is cancelled on exit.
-            logger.info("Scenario stream client disconnected with an event or ping unsent.")
+    async with _client_stream(runtime.scenarios.build(scenario).stream()) as events:
+        yield events
 
 
 @router.post("/scenarios/{scenario_id}/stream", response_class=EventSourceResponse)

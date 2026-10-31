@@ -52,7 +52,7 @@ The catalogue (`scenarios/catalogue.py`) holds the 13 scenarios and all their co
 - **Held slots** (`Overrides.held_slots`): the run gets a private `RunSlotPool` instead of the shared one, the setup takes every slot (`scenario_setup(step=hold_run_slots)`), and the real queue wait and timeout shed the request. The held slots are given back when the run ends, however it ends.
 - **Run deadline** (`Overrides.run_deadline_s`): the run's gateway gets a copy of the settings with that deadline; the shared settings are untouched. The setup shows it as `scenario_setup(step=set_run_deadline, count=1, deadline_s=)`.
 
-`GET /scenarios` serves `public_catalogue()` (a `ScenarioCatalogue`: chapters in order, each with its scenarios' `ScenarioView`s). `POST /scenarios/{scenario_id}/stream` looks the id up (404 before any stream if unknown) in a request-scoped yield dependency, `open_scenario_stream`, which enters `runtime.scenarios.build(scenario).stream()` the way `open_trace_stream` enters the free-play gateway's.
+`GET /scenarios` serves `public_catalogue()` (a `ScenarioCatalogue`: chapters in order, each with its scenarios' `ScenarioView`s). `POST /scenarios/{scenario_id}/stream` looks the id up (404 before any stream if unknown) in a request-scoped yield dependency, `open_scenario_stream`, which enters `runtime.scenarios.build(scenario).stream()` through the same `_client_stream` helper that `open_trace_stream` uses for the free-play gateway's stream.
 
 ### Execution trace
 An execution trace records what happened while one triage request was handled (ADR-008). `src/resilient_triage/trace/` holds its parts. The Triage gateway records the request path and hands the same recorder to the graph run, which records its own events.

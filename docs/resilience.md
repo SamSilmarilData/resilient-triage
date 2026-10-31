@@ -219,7 +219,8 @@ request.
   Redis before re-raising.
 - **Unsent sends.** If the client disconnects while FastAPI's SSE keepalive task still holds
   an unsent event or ping, that task raises `anyio.BrokenResourceError` (in an
-  `ExceptionGroup`) through the request's exit stack. `open_trace_stream` catches exactly that
+  `ExceptionGroup`) through the request's exit stack. `_client_stream` (`api/app.py`), which both
+  stream routes' dependencies enter, catches exactly that
   with `except*` and logs it at info, so it neither escapes the app nor delays the cleanup.
 
 ### Run slots and the free-play run budget
