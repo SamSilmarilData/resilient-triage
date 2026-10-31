@@ -158,7 +158,7 @@ async def test_a_request_with_no_free_run_slot_is_shed_after_the_queue_timeout(c
         gateway.triage("Checkout latency spike in eu-west-1", None), timeout=1.0
     )
 
-    assert outcome == Shed()
+    assert outcome == Shed(reason="capacity")
     assert loop.time() - started_at >= 0.05
     graph.release.set()
     assert isinstance(await first, Analyzed)

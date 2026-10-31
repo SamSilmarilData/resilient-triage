@@ -21,6 +21,8 @@ from resilient_triage.scenarios import (
 )
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
+from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
+from resilient_triage.telemetry.probe import TelemetryProbe
 from resilient_triage.trace.events import (
     DeadlineExceeded,
     ModelCall,
@@ -105,6 +107,23 @@ async def test_pre_run_failures_open_the_private_breaker_at_exactly_fail_max() -
     assert [(r.phase, r.outcome, r.attempts) for r in run_reads] == [(None, "tripped", 0)]
 
 
+async def test_setup_runs_before_the_clock_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Real-sized retry waits make the tripping setup take a noticeable time; none of it may
+    # count towards the run's clock, which starts at trace_started (#112).
+    monkeypatch.setattr(settings, "retry_min_wait_seconds", 0.02)
+    monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.02)
+    trace = ListTrace()
+    scenario = _scenario(statuspage=None, setup=Setup(tripped_sources=("statuspage",)))
+
+    await _factory().build(scenario).triage(trace=trace)
+
+    start = _kinds(trace.events).index("trace_started")
+    setup_ms = sum(e.duration_ms for e in trace.events[:start] if isinstance(e, TelemetryRead))
+    assert setup_ms >= 100  # the setup really waited
+    assert all(e.t_ms == 0 for e in trace.events[: start + 1])
+    assert trace.events[-1].t_ms < setup_ms
+
+
 async def test_a_seeded_scenario_is_answered_from_its_private_cache() -> None:
     trace = ListTrace()
     seed = CacheSeed(query=SCENARIO_QUERY, report=SEED_REPORT)
@@ -137,7 +156,7 @@ async def test_held_slots_shed_the_run_on_a_private_pool_and_are_released() -> N
 
     outcome = await run.triage(trace=trace)
 
-    assert isinstance(outcome, Shed)
+    assert outcome == Shed(reason="capacity")
     assert _kinds(trace.events) == [
         "scenario_setup",
         "trace_started",
@@ -192,6 +211,24 @@ async def test_a_run_deadline_override_cuts_off_only_that_run() -> None:
     assert settings.triage_run_deadline_s != 0.1  # the shared setting is untouched
 
 
+async def test_a_run_deadline_override_is_shown_as_scenario_setup() -> None:
+    trace = ListTrace()
+
+    await _factory().build(_scenario(overrides=Overrides(run_deadline_s=3))).triage(trace=trace)
+
+    assert _kinds(trace.events)[:2] == ["scenario_setup", "trace_started"]
+    assert trace.events[0] == ScenarioSetup(step="set_run_deadline", count=1, deadline_s=3)
+
+
+async def _chaos_manager(telemetry: TelemetryProbe) -> ChaosManager:
+    """The ChaosManager behind a probe's Cluster Sentinel source."""
+
+    async def manager(source: ClusterSentinelSource) -> ChaosManager:
+        return source.manager
+
+    return await telemetry.call_source(ClusterSentinelSource, manager)
+
+
 async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
     runtime: AppRuntime,
 ) -> None:
@@ -215,9 +252,14 @@ async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
 
     await asyncio.gather(a.triage(trace=trace_a), b.triage(trace=trace_b))
 
-    for private in ("gateway", "breakers", "cache", "llm", "telemetry", "chaos"):
+    for private in ("gateway", "breakers", "cache", "telemetry"):
         assert getattr(a, private) is not getattr(b, private), private
         assert getattr(a, private) is not getattr(runtime, private, None), private
+    assert a.deps.llm is not b.deps.llm
+    assert a.deps.llm is not runtime.llm
+    chaos_a, chaos_b = [await _chaos_manager(run.deps.telemetry) for run in (a, b)]
+    assert chaos_a is not chaos_b
+    assert chaos_a is not runtime.chaos and chaos_b is not runtime.chaos
     assert a.deps.telemetry is not runtime.deps.telemetry
     assert (a.cache.count, b.cache.count) == (2, 1)  # A's seed and answer; B's answer
     assert a.breakers.get_all_statuses()["statuspage"].is_open
@@ -294,3 +336,44 @@ async def test_a_streamed_run_carries_its_setup_before_trace_started() -> None:
     started = streamed[2]
     assert isinstance(started, TraceStarted) and started.scenario_id == "test-scenario"
     assert run.slots.free == 1
+
+
+async def _setup_read_fails(*args: Any, **kwargs: Any) -> Any:
+    raise RuntimeError("Secret setup failure")
+
+
+async def test_a_failing_setup_is_answered_with_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace = ListTrace()
+    held = HeldSlots(capacity=1, queue_timeout_s=0.02)
+    scenario = _scenario(
+        statuspage=None,
+        setup=Setup(tripped_sources=("statuspage",)),
+        overrides=Overrides(held_slots=held),
+    )
+    run = _factory().build(scenario)
+    monkeypatch.setattr(run.telemetry, "collect", _setup_read_fails)
+
+    outcome = await run.triage(trace=trace)
+
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.degradation_status == "SEVERELY_DEGRADED"
+    assert outcome.response.cached is False
+    assert _kinds(trace.events) == ["trace_started", "reconciled", "trace_finished"]
+    assert run.cache.count == 0  # the fallback is not cached
+    assert run.slots.free == 1
+
+
+async def test_a_failing_setup_still_streams_to_trace_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _factory().build(_scenario(statuspage=None, setup=Setup(tripped_sources=("statuspage",))))
+    monkeypatch.setattr(run.telemetry, "collect", _setup_read_fails)
+
+    async with run.stream() as events:
+        streamed = [event async for event in events]
+
+    assert _kinds(tuple(streamed)) == ["trace_started", "reconciled", "trace_finished"]
+    started = streamed[0]
+    assert isinstance(started, TraceStarted) and started.scenario_id == "test-scenario"

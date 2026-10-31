@@ -31,7 +31,9 @@ that is the trace's only source.
   unique `get_graph()` edge label, and a test fails if a pair ever becomes ambiguous. The reason
   for a decision is composed from the trace events that came before it. Routers stay pure.
 - **The recorder** (`src/resilient_triage/trace/`) has a synchronous `record(event)` that never
-  raises, and it stamps `seq` and `t_ms` (monotonic ms since the request started). Its
+  raises, and it stamps `seq` and `t_ms` (monotonic ms since the request started). The clock
+  starts when `trace_started` is recorded, so it is stamped 0; a scenario run's setup, recorded
+  before it, is stamped 0 too and ordered by `seq`, so setup time never counts as run time. Its
   implementations are `NullTrace`, `ListTrace` (which builds the trace summary) and
   `StreamingTrace` (a `ListTrace` that also feeds an unbounded `asyncio.Queue`, so a slow
   client can never block a run and no event is dropped).

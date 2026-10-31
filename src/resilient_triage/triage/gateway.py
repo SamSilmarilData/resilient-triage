@@ -4,15 +4,17 @@
 hands that recorder to the graph run, and builds the `TriageResponse` that both `POST /triage`
 and the closing `trace_finished` event carry, so every route answers with the same response.
 `stream()` runs `triage()` on a `StreamingTrace` and yields its events live for
-`POST /triage/stream`.
+`POST /triage/stream`. A scenario run passes its id and its setup, which runs before
+`trace_started`; a setup that raises is answered with a synthesis fallback, never an error.
 """
 
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, Protocol, assert_never, cast
 
 from resilient_triage.cache.semantic_cache import CacheMatch, SemanticCacheManager
@@ -53,9 +55,18 @@ logger = logging.getLogger(__name__)
 _GRAPH_EXCEPTION_REASON = (
     "Triage state machine failed unexpectedly. Safe heuristic fallback engaged."
 )
+_SETUP_FAILED_REASON = (
+    "Scenario setup failed before the run started. Safe heuristic fallback engaged."
+)
 _DEADLINE_REASON = (
     "Run deadline exceeded before analysis finished. Safe heuristic fallback engaged."
 )
+
+
+class RunSetup(Protocol):
+    """Work done before a request's trace_started, recording on `trace`: a scenario's setup."""
+
+    async def __call__(self, trace: TraceRecorder, /) -> None: ...
 
 
 class GraphRunner(Protocol):
@@ -93,10 +104,15 @@ class Analyzed:
 
 @dataclass(frozen=True)
 class Shed:
-    """Refused: no run slot freed up in time, or the run budget was spent."""
+    """Refused: no run slot freed up in time (capacity), or the run budget was spent (budget)."""
 
-    # Seconds until the run budget admits a run; None when shed for lack of a slot.
+    reason: ShedReason
+    # Seconds until the run budget admits a run; set exactly when the reason is "budget".
     retry_after_s: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.reason == "budget") != (self.retry_after_s is not None):
+            raise ValueError("A shed has a retry_after_s exactly when the budget refused it")
 
 
 TriageOutcome = CacheHit | Analyzed | Shed
@@ -137,10 +153,9 @@ class TriageGateway:
         *,
         slots: RunSlotPool | None = None,
         budget: RunBudget | None = None,
-        scenario_id: str | None = None,
     ) -> None:
         # Without a slot pool the gateway builds its own from settings; a scenario run's
-        # gateway is handed one, and names its scenario on every trace_started (ADR-009).
+        # gateway is handed one (ADR-009).
         # With a budget, every graph run (a cache miss or force_refresh) must pass it first.
         self._cache = cache
         self._run_graph = run_graph
@@ -150,7 +165,6 @@ class TriageGateway:
             queue_timeout_s=settings.triage_queue_timeout_s,
         )
         self._budget = budget
-        self._scenario_id = scenario_id
         self._metrics = TriageMetrics()
 
     @property
@@ -165,21 +179,30 @@ class TriageGateway:
         *,
         force_refresh: bool = False,
         trace: TraceRecorder | None = None,
+        scenario_id: str | None = None,
+        setup: RunSetup | None = None,
     ) -> TriageOutcome:
         """Return how this request ended, counting it and recording its trace on `trace`."""
         # Unless cancelled, a request ends in exactly one `trace_finished` carrying the
         # outcome's response (None when shed). A cancellation propagates, unrecorded, and is
         # counted as abandoned; the run slot is released and nothing is cached.
+        # A scenario run names itself on trace_started, and its setup runs before it, so the
+        # setup is not on the run's clock (ADR-009).
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
-        started = time.monotonic()
-        record_event(
-            recorder,
-            lambda: TraceStarted(
-                scenario_id=self._scenario_id, scoped=bool(scope), force_refresh=force_refresh
-            ),
-        )
         try:
-            answer = await self._answer(query, scope, force_refresh=force_refresh, trace=recorder)
+            set_up = await _set_up(setup, recorder)
+            started = time.monotonic()
+            record_event(
+                recorder,
+                lambda: TraceStarted(
+                    scenario_id=scenario_id, scoped=bool(scope), force_refresh=force_refresh
+                ),
+            )
+            answer: _Answer = (
+                await self._answer(query, scope, force_refresh=force_refresh, trace=recorder)
+                if set_up
+                else _reconciled_fallback(query, _SETUP_FAILED_REASON, recorder)
+            )
         except asyncio.CancelledError:
             self._count_abandoned()
             raise
@@ -192,22 +215,30 @@ class TriageGateway:
         scope: str | None,
         *,
         force_refresh: bool = False,
-        trace: StreamingTrace | None = None,
+        scenario_id: str | None = None,
+        setup: RunSetup | None = None,
     ) -> AsyncIterator[AsyncIterator[TraceEvent]]:
         """Run a request; yield its live trace events, the last always its one trace_finished."""
-        # A caller may pass a trace it already recorded on (a scenario run's setup); those
-        # events stream first, before trace_started.
+        # A scenario run's setup runs inside the request's task, so its events stream live,
+        # before trace_started, and a disconnect cancels it like the run.
         # The request runs as its own task so events reach the client while it runs. Leaving
         # this context, normally or by cancellation (a client disconnect), cancels that task
         # and waits for it. The context, not the event iterator, owns the task: an iterator
         # parked at a `yield` is only closed whenever it is garbage-collected.
         # A task cancelled before its first step never runs triage(), which counts its own
         # cancellation, so this context counts that one instead: exactly once either way.
-        trace = trace if trace is not None else StreamingTrace()
+        trace = StreamingTrace()
         began = asyncio.Event()
-        run = asyncio.create_task(
-            self._triage_or_fallback(query, scope, force_refresh, trace, began)
+        run_request = partial(
+            self.triage,
+            query,
+            scope,
+            force_refresh=force_refresh,
+            trace=trace,
+            scenario_id=scenario_id,
+            setup=setup,
         )
+        run = asyncio.create_task(self._triage_or_fallback(run_request, query, trace, began))
         run.add_done_callback(lambda _: trace.close())
         try:
             yield trace.follow()
@@ -220,9 +251,8 @@ class TriageGateway:
 
     async def _triage_or_fallback(
         self,
+        run_request: Callable[[], Awaitable[TriageOutcome]],
         query: str,
-        scope: str | None,
-        force_refresh: bool,
         trace: StreamingTrace,
         began: asyncio.Event,
     ) -> None:
@@ -230,7 +260,7 @@ class TriageGateway:
         began.set()
         started = time.monotonic()
         try:
-            await self.triage(query, scope, force_refresh=force_refresh, trace=trace)
+            await run_request()
         except Exception:
             # Once a stream's 200 headers are sent an error can't become a 500 (ADR-008).
             # triage() records trace_finished last, so a triage() that raised never recorded it.
@@ -287,7 +317,7 @@ class TriageGateway:
             return self._over_budget(self._budget, trace)
         if not await self._acquire_run_slot(trace):
             logger.warning("No run slot freed up in time; shed request.")
-            return Shed()
+            return Shed(reason="capacity")
         try:
             analysis = await self._analyze(query, scope, trace)
         finally:
@@ -311,7 +341,7 @@ class TriageGateway:
                 retry_after_s=retry_after_s,
             ),
         )
-        return Shed(retry_after_s=retry_after_s)
+        return Shed(reason="budget", retry_after_s=retry_after_s)
 
     async def _acquire_run_slot(self, trace: TraceRecorder) -> bool:
         """Wait up to the queue timeout for a run slot; record the wait and whether it came."""
@@ -370,6 +400,18 @@ class TriageGateway:
             return _Analysis(_synthesis_fallback(query, state, trace), fell_back=True)
         evidence = DegradationEvidence.from_state(cast(TriageState, state))
         return _Analysis(final_report, fell_back=evidence.synthesis_fell_back)
+
+
+async def _set_up(setup: RunSetup | None, trace: TraceRecorder) -> bool:
+    """Run a scenario's setup, if any; False if it raised, which is logged, never raised."""
+    if setup is None:
+        return True
+    try:
+        await setup(trace)
+    except Exception:
+        logger.exception("Scenario setup raised; answering with a synthesis fallback.")
+        return False
+    return True
 
 
 async def _cancel_and_wait(task: "asyncio.Task[None]") -> None:

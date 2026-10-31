@@ -198,7 +198,7 @@ async def test_a_shed_request_ends_in_trace_finished_with_no_response(cache) -> 
     outcome = await gateway.triage(OTHER_QUERY, None, trace=trace)
     first.cancel()
 
-    assert outcome == Shed()
+    assert outcome == Shed(reason="capacity")
     assert [_key(e) for e in trace.events] == [
         ("trace_started", None, False, False),
         ("cache_lookup", False),

@@ -1,6 +1,7 @@
 """Scenario routes (ADR-009): the public catalogue, scenario streams, and the free-play limits."""
 
 import asyncio
+from typing import Any
 
 import httpx
 import pytest
@@ -10,6 +11,7 @@ from resilient_triage.config import Settings, settings
 from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.scenarios import Scenario
 from resilient_triage.scenarios.catalogue import SCENARIOS
+from resilient_triage.telemetry.probe import TelemetryProbe
 from resilient_triage.trace.events import RunSlot, TraceFinished, TraceStarted
 from resilient_triage.trace.summary import summarize
 
@@ -74,6 +76,30 @@ async def test_an_unknown_scenario_is_a_404(client: httpx.AsyncClient) -> None:
     resp = await client.post("/scenarios/no-such-scenario/stream")
 
     assert resp.status_code == 404
+    assert resp.json() == {"detail": "No scenario 'no-such-scenario'."}
+    assert not resp.headers["content-type"].startswith("text/event-stream")
+
+
+async def test_a_failing_scenario_setup_still_streams_a_fallback(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_collect = TelemetryProbe.collect
+
+    async def collect(self: TelemetryProbe, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("phase") == "setup":
+            raise RuntimeError("Secret setup failure")
+        return await real_collect(self, *args, **kwargs)
+
+    monkeypatch.setattr(TelemetryProbe, "collect", collect)
+
+    resp = await client.post("/scenarios/tripped-breaker/stream")
+
+    assert resp.status_code == 200
+    assert "Secret setup failure" not in resp.text
+    last = finished(parse_sse(resp.text))
+    assert last.outcome == "analyzed"
+    assert last.response is not None
+    assert last.response.report.degradation_status == "SEVERELY_DEGRADED"
 
 
 QUERY = "Payments API returning 503 for card checkouts"

@@ -3,6 +3,9 @@
 A recorder is made per request and passed explicitly (never a module-level singleton).
 `record()` is synchronous and never raises, so recording can't change a run's result.
 
+The run's clock starts at `trace_started`: `t_ms` counts from it, so it is stamped 0, and any
+event recorded before it (a scenario run's setup) is stamped 0 too, keeping its order by `seq`.
+
 A leaf module at import time (events and the summary are imported only for type checking,
 or lazily), so `llm.gateway`, which `schemas` imports, can default to `NullTrace` without
 an import cycle through `trace.events` -> `schemas.api` -> `llm`.
@@ -46,7 +49,7 @@ class ListTrace:
     ) -> None:
         self._clock = clock
         self._sink = sink
-        self._started = clock()
+        self._started: float | None = None  # set when trace_started is recorded
         self._events: list[TraceEvent] = []
 
     @property
@@ -61,9 +64,13 @@ class ListTrace:
         return summarize(self._events)
 
     def record(self, event: "TraceEvent") -> None:
-        """Stamp seq and monotonic t_ms, keep the event, then feed the sink; never raises."""
+        """Stamp seq and t_ms (0 until trace_started), keep it, feed the sink; never raises."""
         try:
-            t_ms = ms_since(self._started, self._clock)
+            t_ms = 0.0
+            if self._started is not None:
+                t_ms = ms_since(self._started, self._clock)
+            elif event.kind == "trace_started":
+                self._started = self._clock()
             if self._events:
                 t_ms = max(t_ms, self._events[-1].t_ms)
             stamped = event.model_copy(update={"seq": len(self._events), "t_ms": t_ms})

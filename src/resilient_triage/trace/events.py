@@ -51,7 +51,9 @@ class _TraceEvent(BaseModel):
 
     seq: int = Field(default=0, ge=0, description="Position in the trace, from 0")
     t_ms: float = Field(
-        default=0.0, ge=0, description="Monotonic milliseconds since the trace's recorder began"
+        default=0.0,
+        ge=0,
+        description="Monotonic ms since trace_started; 0 for scenario setup recorded before it",
     )
 
 
@@ -71,9 +73,14 @@ class ScenarioSetup(_TraceEvent):
     """One step a scenario run took before the request, drawn before t = 0."""
 
     kind: Literal["scenario_setup"] = "scenario_setup"
-    step: Literal["seed_cache", "hold_run_slots", "fail_source"]
-    count: int = Field(ge=0, description="Entries seeded, slots held, or failed reads forced")
+    step: Literal["seed_cache", "hold_run_slots", "fail_source", "set_run_deadline"]
+    count: int = Field(
+        ge=0, description="Entries seeded, slots held, failed reads forced, or 1 deadline set"
+    )
     source: Identifier | None = Field(default=None, description="Source id for fail_source")
+    deadline_s: float | None = Field(
+        default=None, gt=0, description="The run's deadline in seconds, for set_run_deadline"
+    )
 
 
 class CacheLookup(_TraceEvent):

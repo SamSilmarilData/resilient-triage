@@ -1,6 +1,7 @@
 """Free-play run budget: a sliding 60 s window of admitted graph runs, per process."""
 
 from fakes import FakeClock
+
 from resilient_triage.triage.budget import RunBudget
 
 
