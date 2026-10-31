@@ -311,3 +311,44 @@ async def test_a_streamed_run_carries_its_setup_before_trace_started() -> None:
     started = streamed[2]
     assert isinstance(started, TraceStarted) and started.scenario_id == "test-scenario"
     assert run.slots.free == 1
+
+
+async def _setup_read_fails(*args: Any, **kwargs: Any) -> Any:
+    raise RuntimeError("Secret setup failure")
+
+
+async def test_a_failing_setup_is_answered_with_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace = ListTrace()
+    held = HeldSlots(capacity=1, queue_timeout_s=0.02)
+    scenario = _scenario(
+        statuspage=None,
+        setup=Setup(tripped_sources=("statuspage",)),
+        overrides=Overrides(held_slots=held),
+    )
+    run = _factory().build(scenario)
+    monkeypatch.setattr(run.telemetry, "collect", _setup_read_fails)
+
+    outcome = await run.triage(trace=trace)
+
+    assert isinstance(outcome, Analyzed)
+    assert outcome.report.degradation_status == "SEVERELY_DEGRADED"
+    assert outcome.response.cached is False
+    assert _kinds(trace.events) == ["trace_started", "reconciled", "trace_finished"]
+    assert run.cache.count == 0  # the fallback is not cached
+    assert run.slots.free == 1
+
+
+async def test_a_failing_setup_still_streams_to_trace_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _factory().build(_scenario(statuspage=None, setup=Setup(tripped_sources=("statuspage",))))
+    monkeypatch.setattr(run.telemetry, "collect", _setup_read_fails)
+
+    async with run.stream() as events:
+        streamed = [event async for event in events]
+
+    assert _kinds(tuple(streamed)) == ["trace_started", "reconciled", "trace_finished"]
+    started = streamed[0]
+    assert isinstance(started, TraceStarted) and started.scenario_id == "test-scenario"
