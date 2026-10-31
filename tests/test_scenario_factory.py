@@ -19,7 +19,7 @@ from resilient_triage.scenarios import (
     Setup,
 )
 from resilient_triage.schemas.incident import IncidentTriageReport
-from resilient_triage.schemas.telemetry import StatuspageSummary
+from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
 from resilient_triage.trace.events import (
     DeadlineExceeded,
     ModelCall,
@@ -220,3 +220,47 @@ async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
     after = await runtime.snapshot()
     assert after == before
     assert runtime.triage_gateway.metrics == metrics_before
+
+
+SENTINEL_DOWN = ChaosConfig(active=True, inject_503=True)
+INTERNAL_QUERY = "Internal auth service failing with 503 errors"
+
+
+async def test_a_cluster_sentinel_fault_is_set_on_the_private_chaos_manager_only(
+    runtime: AppRuntime,
+) -> None:
+    trace = ListTrace()
+    scenario = _scenario(query=INTERNAL_QUERY, cluster_sentinel=SENTINEL_DOWN)
+
+    await _factory().build(scenario).triage(trace=trace)
+
+    reads = [e for e in trace.events if isinstance(e, TelemetryRead)]
+    assert [(r.source, r.outcome) for r in reads] == [("chaos", "unavailable")]
+    assert runtime.chaos.get_config() == ChaosConfig()
+
+
+async def test_a_failing_cluster_sentinel_can_be_tripped_in_setup() -> None:
+    trace = ListTrace()
+    scenario = _scenario(
+        query=INTERNAL_QUERY,
+        cluster_sentinel=SENTINEL_DOWN,
+        setup=Setup(tripped_sources=("chaos",)),
+    )
+
+    await _factory().build(scenario).triage(trace=trace)
+
+    setup_reads = [e for e in trace.events if isinstance(e, TelemetryRead) and e.phase]
+    assert len(setup_reads) == settings.circuit_breaker_fail_max
+    assert setup_reads[-1].breaker_after == "open"
+
+
+def test_a_scenario_cannot_trip_a_source_that_does_not_fail() -> None:
+    with pytest.raises(ValueError, match="statuspage"):
+        _scenario(setup=Setup(tripped_sources=("statuspage",)))
+    with pytest.raises(ValueError, match="chaos"):
+        _scenario(setup=Setup(tripped_sources=("chaos",)))
+
+
+def test_a_scenario_fault_must_repeat_exactly() -> None:
+    with pytest.raises(ValueError, match="failure_rate"):
+        _scenario(cluster_sentinel=ChaosConfig(active=True, failure_rate=0.5))
