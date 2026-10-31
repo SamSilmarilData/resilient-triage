@@ -7,13 +7,31 @@ or Pydantic error `input` can travel in one. The report travels once, in `trace_
 `seq` and `t_ms` are stamped by the recorder (`trace.recorder`); callers leave them at 0.
 """
 
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
-from resilient_triage.llm.failures import RateLimitScope
+from resilient_triage.llm.failures import (
+    MalformedResponse,
+    ProviderFailure,
+    RateLimited,
+    RateLimitScope,
+    Rejected,
+    Unavailable,
+)
 from resilient_triage.schemas.api import TriageResponse
-from resilient_triage.schemas.incident import DegradationStatus
+from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
+
+if TYPE_CHECKING:
+    from resilient_triage.llm.gateway import Completion
 
 # Bumped only when a kind or field is renamed or removed; adding either is not a bump.
 TRACE_SCHEMA_VERSION = 1
@@ -126,6 +144,26 @@ class ModelCall(_TraceEvent):
     retry_after_s: float | None = Field(default=None, ge=0, description="Set on a 429")
     duration_ms: Milliseconds
 
+    @classmethod
+    def from_result(
+        cls,
+        *,
+        model: str,
+        role: ModelRole,
+        result: "Completion | ProviderFailure",
+        duration_ms: float,
+    ) -> Self:
+        """Project one adapter result to its outcome kind, dropping its text and detail."""
+        limited = result if isinstance(result, RateLimited) else None
+        return cls(
+            model=model,
+            role=role,
+            outcome=_model_outcome(result),
+            rate_limit_scope=limited.scope if limited else None,
+            retry_after_s=limited.retry_after_s if limited else None,
+            duration_ms=duration_ms,
+        )
+
 
 class TelemetryRead(_TraceEvent):
     """One guarded read of one Telemetry source."""
@@ -152,6 +190,22 @@ class ValidationFailed(_TraceEvent):
     fields: list[Identifier] = Field(description="Top-level report fields with errors")
     error_types: list[Identifier] = Field(description="Pydantic error types, e.g. 'missing'")
 
+    @classmethod
+    def from_error(cls, error: ValidationError | ValueError, *, attempt: int) -> Self:
+        """Project a failed validation to field names and error types, never input values."""
+        if not isinstance(error, ValidationError):  # JSON that didn't parse
+            return cls(attempt=attempt, error_count=1, fields=[], error_types=["json_invalid"])
+        errors = error.errors(include_input=False, include_context=False, include_url=False)
+        known = IncidentTriageReport.model_fields
+        # loc[0] can be a key the model made up (extra_forbidden): keep only declared fields.
+        fields = {str(e["loc"][0]) for e in errors if e["loc"] and e["loc"][0] in known}
+        return cls(
+            attempt=attempt,
+            error_count=max(len(errors), 1),
+            fields=sorted(fields),
+            error_types=sorted({e["type"] for e in errors}),
+        )
+
 
 class ReconcileChanges(BaseModel):
     """What reconcile changed in a report: statuses, breaker ids and action indexes only."""
@@ -172,6 +226,29 @@ class Reconciled(_TraceEvent):
 
     kind: Literal["reconciled"] = "reconciled"
     changes: ReconcileChanges
+
+    @classmethod
+    def between(cls, before: IncidentTriageReport, after: IncidentTriageReport) -> Self:
+        """Record what reconcile changed from before to after (after's breakers are ids)."""
+        raised = [
+            index
+            for index, (old, new) in enumerate(
+                zip(before.recommended_actions, after.recommended_actions, strict=False)
+            )
+            if new.requires_approval and not old.requires_approval
+        ]
+        return cls(
+            changes=ReconcileChanges(
+                degradation_before=before.degradation_status,
+                degradation_after=after.degradation_status,
+                breakers_changed=(
+                    sorted(before.circuit_breakers_tripped)
+                    != sorted(after.circuit_breakers_tripped)
+                ),
+                breakers_after=sorted(after.circuit_breakers_tripped),
+                approval_raised=raised,
+            )
+        )
 
 
 class DeadlineExceeded(_TraceEvent):
@@ -232,3 +309,18 @@ def parse_trace_event(data: str | bytes | dict[str, Any]) -> TraceEvent:
     if isinstance(data, dict):
         return _EVENT_ADAPTER.validate_python(data)
     return _EVENT_ADAPTER.validate_json(data)
+
+
+def _model_outcome(result: "Completion | ProviderFailure") -> ModelOutcome:
+    """Name an adapter result's kind."""
+    match result:
+        case RateLimited():
+            return "rate_limited"
+        case Unavailable():
+            return "unavailable"
+        case Rejected():
+            return "rejected"
+        case MalformedResponse():
+            return "malformed_response"
+        case _:
+            return "completion"
