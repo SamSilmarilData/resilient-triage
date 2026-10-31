@@ -44,6 +44,8 @@ def _scenario(**changes: Any) -> Scenario:
     """A plain scenario (canned Statuspage, default replies), with `changes` applied."""
     base = Scenario(
         id="test-scenario",
+        chapter="test-chapter",
+        title="Test scenario",
         query=SCENARIO_QUERY,
         scope=None,
         script=(),

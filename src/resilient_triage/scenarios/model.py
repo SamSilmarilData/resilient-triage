@@ -65,10 +65,20 @@ class Overrides:
 
 
 @dataclass(frozen=True)
+class Chapter:
+    """A group of scenarios on the page, shown under its title in catalogue order."""
+
+    id: str
+    title: str
+
+
+@dataclass(frozen=True)
 class Scenario:
     """One catalogued scenario: request, scripted replies and Statuspage, setup and overrides."""
 
     id: str
+    chapter: str  # the id of the Chapter it is shown under
+    title: str
     query: str
     scope: str | None
     # The model's replies in call order, each with an optional delay (a ScriptedReply);
@@ -82,6 +92,8 @@ class Scenario:
     cluster_sentinel: ChaosConfig | None = None
     setup: Setup = field(default_factory=Setup)
     overrides: Overrides = field(default_factory=Overrides)
+    # What is true before the run, in words for the page (the setup and overrides, the faults).
+    setup_notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _SCENARIO_ID.match(self.id):
