@@ -526,6 +526,14 @@ def test_page_shell_has_landmarks_sections_and_a_noscript_note():
     assert ({"type": "module", "src": "/static/app.mjs"}, "") in page.scripts
 
 
+def test_page_declares_a_shipped_icon():
+    """A declared icon keeps the browser from requesting /favicon.ico, which would 404."""
+    icons = [attrs for tag, attrs in _page().tags if tag == "link" and attrs.get("rel") == "icon"]
+
+    assert len(icons) == 1
+    assert (STATIC_DIR / str(icons[0]["href"]).removeprefix("/static/")).is_file()
+
+
 def test_old_console_template_is_gone():
     """The Tailwind-CDN console and its package-data entry went with the new page."""
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
