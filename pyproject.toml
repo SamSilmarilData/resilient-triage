@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=62.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -40,7 +40,8 @@ lint = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"resilient_triage.api" = ["templates/*.html"]
+# static/** needs setuptools 62.3+ (recursive globs).
+"resilient_triage.api" = ["templates/*.html", "static/**"]
 
 
 [tool.pytest.ini_options]

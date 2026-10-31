@@ -71,6 +71,13 @@ An execution trace records what happened while one triage request was handled (A
 
 Each kind's fields are listed in the [event table](api.md#execution-trace-events).
 
+### Frontend assets
+The page is build-free (ADR-010): native ES modules, one stylesheet and self-hosted fonts, served same-origin from `src/resilient_triage/api/static/`, which is package data (`static/**`).
+
+- **Serving** (`api/static_assets.py`): `create_app` mounts `StaticAssets` at `/static`, one instance per app. It is Starlette's `StaticFiles` with a fixed media-type table, so `.mjs` is `text/javascript` and `.woff2` is `font/woff2` whatever the host's MIME database holds (the global `mimetypes` registry is not touched), and a `Cache-Control` on every file: `immutable` for a year under `vendor/`, whose paths carry versions, and `no-cache` (revalidate) for everything else. Headers per path are in [api.md](api.md#11-get-staticpath).
+- **Vendored packages** (`static/vendor/`): Preact 10.29.8 (+ hooks), htm 3.1.1 (+ `htm/preact`), `@preact/signals` 2.11.4, `@preact/signals-core` 1.14.5, and the Inter and JetBrains Mono variable woff2 Latin subsets (Fontsource 5.3.0), each at `<npm name>@<version>/<path in the package>` with its LICENSE. The JavaScript files are each package's `.mjs` export; the manifest gives each its bare import `specifier` (`preact`, `preact/hooks`, `htm`, `htm/preact`, `@preact/signals`, `@preact/signals-core`), from which the page's import map is written. `htm/preact/standalone` is never vendored.
+- **Manifest and `scripts/vendor.py`**: `static/vendor/manifest.json` pins each package's npm tarball URL and integrity and each file's sha256. `vendor.py verify` (stdlib only, offline) checks every file against it, that each package lists its license file, and that no unlisted file sits under `vendor/`; `tests/test_static_assets.py` runs the same check. `vendor.py update` is the only step that touches the network and is run by hand (see [deployment](deployment.md#vendored-frontend-files)).
+
 ---
 
 ## 3. Deep-Dive Components

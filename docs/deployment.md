@@ -104,6 +104,17 @@ cp .env.example .env
 
 ---
 
+## Vendored frontend files
+
+The page's third-party JavaScript and fonts are committed under `src/resilient_triage/api/static/vendor/` and ship inside the package, so a deployment makes no third-party requests and needs no Node or build step (ADR-010). The Docker image gets them through `pip install .` (package-data `static/**`, setuptools 62.3+); `/app/src` is not on the runtime path.
+
+- **Check a deployment**: `docker run --rm --entrypoint python <image> scripts/vendor.py verify --installed` re-hashes the installed package's copy (in site-packages) against its manifest; CI runs it on every image, and checks the image does not run as root. `python scripts/smoke_test.py` also fetches every vendored file over HTTP and checks its sha256, media type and `Cache-Control`.
+- **Check the checkout**: `python scripts/vendor.py verify` (offline; `./scripts/check.sh` runs the same check in pytest).
+- **Update or bump a package** (manual, needs network, never run by tests or CI): edit its `version` in `static/vendor/manifest.json`, then run `python scripts/vendor.py update`. It reads the version's tarball URL and integrity from `registry.npmjs.org`, refuses a version whose integrity differs from the one already recorded, checks the tarball's sha512, extracts only the listed files, records their sha256 and removes files no package lists. Commit the manifest and files together. Adding a package or file means adding its entry by hand first, and needs approval (CODING_STANDARDS "Frontend").
+- **Caching**: `/static/vendor/…` is served `Cache-Control: public, max-age=31536000, immutable`, so a CDN or browser keeps it for a year; a bump changes the URL. Other `/static/` files are `no-cache`.
+
+---
+
 ## Admin key
 
 The mutating admin routes (`POST /chaos/inject`, `/resilience/reset`, `/cache/clear`) fail closed: they answer `403` until `ADMIN_API_KEY` is set, and then need a matching `X-Admin-Key` header (`401` otherwise). Every other route, `/triage` included, needs no key.
