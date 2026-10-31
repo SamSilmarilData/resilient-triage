@@ -64,7 +64,12 @@ class ScenarioRun:
 
     async def _setup(self, trace: TraceRecorder) -> None:
         """Do the scenario setup, recording it on `trace` before the request's trace_started."""
-        for source in self.scenario.setup.tripped_sources:
+        setup = self.scenario.setup
+        if setup.seeds:
+            for seed in setup.seeds:
+                await self.cache.store(seed.query, seed.report, seed.scope)
+            record_event(trace, lambda: ScenarioSetup(step="seed_cache", count=len(setup.seeds)))
+        for source in setup.tripped_sources:
             await self._trip(source, trace)
 
     async def _trip(self, source: str, trace: TraceRecorder) -> None:

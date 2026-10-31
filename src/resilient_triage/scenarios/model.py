@@ -9,11 +9,21 @@ import re
 from dataclasses import dataclass, field
 
 from resilient_triage.llm import ProviderFailure
+from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import StatuspageSummary
 from resilient_triage.trace.fields import TriageOutcomeKind
 
 # Same shape as the trace's Identifier, since the id travels on trace_started.
 _SCENARIO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+
+
+@dataclass(frozen=True)
+class CacheSeed:
+    """A scenario seed: a query and report stored in the run's private cache before the run."""
+
+    query: str
+    report: IncidentTriageReport
+    scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -23,6 +33,8 @@ class Setup:
     # Sources whose private breaker is tripped by fail_max real failed reads before the run.
     # Each must fail in this scenario (statuspage=None for "statuspage").
     tripped_sources: tuple[str, ...] = ()
+    # Stored through the cache's real store() path, so the run's lookup embeds and compares.
+    seeds: tuple[CacheSeed, ...] = ()
 
 
 @dataclass(frozen=True)
