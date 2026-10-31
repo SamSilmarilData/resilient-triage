@@ -166,7 +166,7 @@ Executes autonomous incident triage. Checks Redis semantic cache for similarity 
 | `timings` | Milliseconds from `trace_started`, rounded to microseconds: `total_ms` (to the last event before `trace_finished`), `cache_lookup_ms`, `slot_wait_ms`, `run_ms` (first node start to last node finish), `model_ms` (sum of model calls). `null` where the step did not happen. |
 
 #### Execution trace events
-The summary is derived from the request's trace events. `POST /triage` returns only the summary; the event stream itself is for [`POST /triage/stream`](#1a-post-triagestream), where every stream ends in `trace_finished` carrying the same `TriageResponse` this route returns. Every event has `kind`, `seq` (0, 1, …) and `t_ms` (monotonic ms since the recorder was created). A cache hit is `trace_started`, `cache_lookup`, `trace_finished`; a run deadline records `deadline_exceeded`, then the reconciled fallback (`reconciled`), `cache_store` (`skipped_fallback`) and `trace_finished`.
+The summary is derived from the request's trace events. `POST /triage` returns only the summary; the event stream itself is for [`POST /triage/stream`](#1a-post-triagestream), where every stream ends in `trace_finished` carrying the same `TriageResponse` this route returns. Every event has `kind`, `seq` (0, 1, …) and `t_ms` (monotonic ms since `trace_started`, which is stamped 0; a scenario run's `scenario_setup` steps and setup `telemetry_read`s come before it and are stamped 0 too). A cache hit is `trace_started`, `cache_lookup`, `trace_finished`; a run deadline records `deadline_exceeded`, then the reconciled fallback (`reconciled`), `cache_store` (`skipped_fallback`) and `trace_finished`.
 
 | `kind` | Fields (besides `seq`, `t_ms`) |
 |---|---|

@@ -188,17 +188,23 @@ class FakeClock:
         return self.now
 
 
-def test_list_trace_stamps_seq_and_ms_since_it_began() -> None:
+def test_list_trace_stamps_seq_and_ms_since_trace_started() -> None:
     clock = FakeClock()
     trace = ListTrace(clock=clock)
+    clock.now += 2.0  # e.g. a scenario's setup: before the run's clock starts
+    trace.record(ScenarioSetup(step="seed_cache", count=1))
+    clock.now += 1.0
+    trace.record(TraceStarted())
     clock.now += 0.0125
     trace.record(NodeStarted(node="analyze_query"))
     clock.now += 0.25
     trace.record(NodeFinished(node="analyze_query", duration_ms=250.0))
 
     assert [(e.seq, e.t_ms, e.kind) for e in trace.events] == [
-        (0, 12.5, "node_started"),
-        (1, 262.5, "node_finished"),
+        (0, 0.0, "scenario_setup"),
+        (1, 0.0, "trace_started"),
+        (2, 12.5, "node_started"),
+        (3, 262.5, "node_finished"),
     ]
 
 

@@ -51,7 +51,9 @@ class _TraceEvent(BaseModel):
 
     seq: int = Field(default=0, ge=0, description="Position in the trace, from 0")
     t_ms: float = Field(
-        default=0.0, ge=0, description="Monotonic milliseconds since the trace's recorder began"
+        default=0.0,
+        ge=0,
+        description="Monotonic ms since trace_started; 0 for scenario setup recorded before it",
     )
 
 
