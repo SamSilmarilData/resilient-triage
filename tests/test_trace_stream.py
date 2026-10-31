@@ -308,6 +308,42 @@ async def test_a_client_disconnect_cancels_the_run_and_releases_its_slot(serve_a
         await assert_cleanly_abandoned(ac, llm)
 
 
+class StalledClient(RawStream):
+    """A client that reads the first chunk, then stops reading until it disconnects."""
+
+    # Like a server's send under flow control: a body send blocks while the client reads
+    # nothing, and returns once the client has gone.
+
+    def __init__(self, app: ASGIApp, body: dict[str, Any]) -> None:
+        super().__init__(app, body)
+        self.send_stalled = asyncio.Event()
+
+    async def _send(self, message: Message) -> None:
+        await super()._send(message)
+        if message["type"] == "http.response.body" and len(self.messages) > 2:
+            self.send_stalled.set()
+            await self.disconnected.wait()
+
+
+@pytest.mark.usefixtures("fast_pings")
+async def test_a_disconnect_with_events_or_pings_unsent_cancels_the_run_at_once(
+    serve_app: AppServer,
+):
+    llm = BlockingAdapter()
+    async with raw_app(serve_app, llm, one_slot()) as (_, ac, app):
+        client = StalledClient(app, {"query": QUERY})
+        request = asyncio.create_task(client.run())
+        await asyncio.wait_for(llm.started.wait(), timeout=5.0)
+        await asyncio.wait_for(client.send_stalled.wait(), timeout=5.0)
+        await asyncio.sleep(0.02)  # 1 ms pings pile up behind the stalled send
+
+        client.disconnected.set()
+        await asyncio.wait_for(request, timeout=5.0)
+
+        assert client.status == 200
+        await assert_cleanly_abandoned(ac, llm)
+
+
 async def test_an_explicitly_cancelled_stream_leaks_no_slot_or_task(serve_app: AppServer):
     llm = BlockingAdapter()
     async with raw_app(serve_app, llm, one_slot()) as (_, ac, app):
