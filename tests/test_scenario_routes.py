@@ -6,10 +6,11 @@ import httpx
 import pytest
 from fakes import AppServer, BlockingAdapter, finished, observed, one_slot, parse_sse
 
+from resilient_triage.config import Settings, settings
 from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.scenarios import Scenario
 from resilient_triage.scenarios.catalogue import SCENARIOS
-from resilient_triage.trace.events import TraceFinished, TraceStarted
+from resilient_triage.trace.events import RunSlot, TraceFinished, TraceStarted
 from resilient_triage.trace.summary import summarize
 
 DISPLAY_ORDER = {
@@ -108,3 +109,85 @@ async def test_a_full_free_play_pool_does_not_shed_scenarios(serve_app: AppServe
 
     assert shed_free_play.status_code == 503
     assert scenario.outcome == "analyzed"
+
+
+# Unlike each other, so none is a semantic cache hit for another.
+QUERIES = (
+    "Payments API returning 503 for card checkouts",
+    "PostgreSQL primary replication lag above five minutes",
+    "Kubernetes nodes in us-east-1 evicting pods for disk pressure",
+)
+
+
+def budget_of(runs: int) -> Settings:
+    """Settings allowing `runs` free-play graph runs a minute."""
+    return settings.model_copy(update={"free_play_runs_per_minute": runs})
+
+
+async def test_graph_runs_over_the_budget_are_shed_with_retry_after(serve_app: AppServer) -> None:
+    async with serve_app(ScriptedAdapter(), budget_of(2)) as (_, ac):
+        ran = [await ac.post("/triage", json={"query": q}) for q in QUERIES[:2]]
+        shed = await ac.post("/triage", json={"query": QUERIES[2]})
+        metrics = (await ac.get("/metrics")).text
+
+    assert [r.status_code for r in ran] == [200, 200]
+    assert shed.status_code == 503
+    assert 1 <= int(shed.headers["Retry-After"]) <= 60
+    assert 'resilient_triage_requests_total{cache="saturated"} 1' in metrics
+
+
+async def test_cache_hits_do_not_count_against_the_budget(serve_app: AppServer) -> None:
+    async with serve_app(ScriptedAdapter(), budget_of(2)) as (_, ac):
+        first = await ac.post("/triage", json={"query": QUERIES[0]})
+        hits = [await ac.post("/triage", json={"query": QUERIES[0]}) for _ in range(3)]
+        second = await ac.post("/triage", json={"query": QUERIES[1]})
+        third = await ac.post("/triage", json={"query": QUERIES[2]})
+
+    assert first.headers["X-Cache"] == "MISS"
+    assert [h.headers["X-Cache"] for h in hits] == ["HIT"] * 3
+    assert second.status_code == 200
+    assert third.status_code == 503
+
+
+async def test_a_force_refresh_run_counts(serve_app: AppServer) -> None:
+    async with serve_app(ScriptedAdapter(), budget_of(1)) as (_, ac):
+        await ac.post("/triage", json={"query": QUERIES[0]})
+        refresh = await ac.post("/triage", json={"query": QUERIES[0], "force_refresh": True})
+
+    assert refresh.status_code == 503
+
+
+async def test_a_budget_shed_stream_names_its_reason_and_retry_after(serve_app: AppServer) -> None:
+    async with serve_app(ScriptedAdapter(), budget_of(1)) as (_, ac):
+        await ac.post("/triage", json={"query": QUERIES[0]})
+        events = parse_sse((await ac.post("/triage/stream", json={"query": QUERIES[1]})).text)
+
+    assert finished(events).outcome == "shed"
+    [slot] = [e for e in events if isinstance(e, RunSlot)]
+    assert (slot.acquired, slot.reason) == (False, "budget")
+    assert slot.retry_after_s is not None and 1 <= slot.retry_after_s <= 60
+
+
+async def test_a_run_shed_for_capacity_still_counts_and_says_why(serve_app: AppServer) -> None:
+    llm = BlockingAdapter()
+    async with serve_app(llm, one_slot(free_play_runs_per_minute=2)) as (_, ac):
+        first = asyncio.create_task(ac.post("/triage", json={"query": QUERIES[0]}))
+        await asyncio.wait_for(llm.started.wait(), timeout=5.0)
+        no_slot = parse_sse((await ac.post("/triage/stream", json={"query": QUERIES[1]})).text)
+        llm.release.set()
+        assert (await first).status_code == 200
+        over_budget = await ac.post("/triage", json={"query": QUERIES[2]})
+
+    [slot] = [e for e in no_slot if isinstance(e, RunSlot)]
+    assert (slot.acquired, slot.reason, slot.retry_after_s) == (False, "capacity", None)
+    assert over_budget.status_code == 503
+    assert "Retry-After" in over_budget.headers
+
+
+async def test_scenario_runs_do_not_count_against_the_budget(serve_app: AppServer) -> None:
+    async with serve_app(ScriptedAdapter(), budget_of(1)) as (_, ac):
+        scenarios = [await run_scenario(ac, "healthy-run") for _ in range(2)]
+        free_play = await ac.post("/triage", json={"query": QUERIES[0]})
+
+    assert [s.outcome for s in scenarios] == ["analyzed", "analyzed"]
+    assert free_play.status_code == 200
