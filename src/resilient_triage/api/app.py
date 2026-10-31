@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, assert_never, cast
 
+import anyio
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Security, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -181,7 +182,12 @@ async def open_trace_stream(
         payload.query, payload.service_filter, force_refresh=payload.force_refresh
     )
     async with stream as events:
-        yield events
+        try:
+            yield events
+        except* anyio.BrokenResourceError:
+            # FastAPI's SSE keepalive task raises this on a disconnect while it still holds an
+            # unsent event or ping; the client is gone and the run is cancelled on exit anyway.
+            logger.info("Trace stream client disconnected with an event or ping unsent.")
 
 
 @router.post("/triage/stream", response_class=EventSourceResponse)

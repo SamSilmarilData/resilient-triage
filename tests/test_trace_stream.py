@@ -31,8 +31,7 @@ _PER_RUN_KEYS = {"duration_ms", "timings", "timestamp", "execution_time_ms", "in
 @pytest.fixture
 def fast_pings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ping every millisecond, so pings interleave with events and the parser must skip them."""
-    # Not autouse: FastAPI's keepalive task raises BrokenResourceError out of the app when a
-    # client disconnects while it holds an unsent ping, which 1 ms pings make near-certain.
+    # Not autouse: the idle-disconnect tests want a stream that goes quiet.
     monkeypatch.setattr("fastapi.routing._PING_INTERVAL", 0.001)
 
 
@@ -226,8 +225,7 @@ class RawStream:
 
     async def drained(self) -> None:
         """Wait until the app has sent every event so far (the run is blocked, so it stops)."""
-        # FastAPI's SSE keepalive task raises BrokenResourceError out of the app if the client
-        # disconnects while it holds an unsent event, so the test drops an idle stream.
+        # The idle-stream case; StalledClient covers a disconnect with sends still pending.
         await asyncio.wait_for(self.first_chunk.wait(), timeout=5.0)
         while True:
             sent = len(self.messages)
