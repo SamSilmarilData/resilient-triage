@@ -15,8 +15,9 @@ from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.trace.events import TraceEvent, TraceFinished, parse_trace_event
 
 QUERY = "Payments API returning 503 for card checkouts"
-# Timings and the report timestamp differ between any two runs; everything else must match.
-_TIMING_KEYS = {"duration_ms", "timings", "timestamp", "execution_time_ms"}
+# Timings, the report timestamp and its generated incident id differ between any two runs;
+# everything else must match.
+_PER_RUN_KEYS = {"duration_ms", "timings", "timestamp", "execution_time_ms", "incident_id"}
 
 
 @pytest.fixture(autouse=True)
@@ -44,12 +45,12 @@ def parse_sse(body: str) -> list[TraceEvent]:
     return events
 
 
-def without_timings(value: Any) -> Any:
-    """A JSON value with every timing (and the report timestamp) removed, recursively."""
+def without_per_run_values(value: Any) -> Any:
+    """A JSON value with every per-run value (timings, timestamp, id) removed, recursively."""
     if isinstance(value, dict):
-        return {k: without_timings(v) for k, v in value.items() if k not in _TIMING_KEYS}
+        return {k: without_per_run_values(v) for k, v in value.items() if k not in _PER_RUN_KEYS}
     if isinstance(value, list):
-        return [without_timings(v) for v in value]
+        return [without_per_run_values(v) for v in value]
     return value
 
 
@@ -82,6 +83,6 @@ async def test_stream_ends_with_the_same_response_post_triage_returns(serve_app:
     assert last.outcome == "analyzed"
     assert last.response is not None
     streamed = json.loads(last.response.model_dump_json())
-    assert without_timings(streamed["report"]) == without_timings(plain["report"])
-    assert without_timings(streamed["trace"]) == without_timings(plain["trace"])
+    assert without_per_run_values(streamed["report"]) == without_per_run_values(plain["report"])
+    assert without_per_run_values(streamed["trace"]) == without_per_run_values(plain["trace"])
     assert streamed["trace"]["nodes"]

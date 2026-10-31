@@ -3,11 +3,14 @@
 `triage()` records the request path's execution trace (ADR-008) on the recorder it is given,
 hands that recorder to the graph run, and builds the `TriageResponse` that both `POST /triage`
 and the closing `trace_finished` event carry, so every route answers with the same response.
+`stream()` runs `triage()` on a `StreamingTrace` and yields its events live for
+`POST /triage/stream`.
 """
 
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, assert_never, cast
 
@@ -27,6 +30,7 @@ from resilient_triage.trace.events import (
     DeadlineExceeded,
     Reconciled,
     RunSlot,
+    TraceEvent,
     TraceFinished,
     TraceStarted,
 )
@@ -34,6 +38,7 @@ from resilient_triage.trace.fields import StoreOutcome, TriageOutcomeKind
 from resilient_triage.trace.recorder import (
     ListTrace,
     NullTrace,
+    StreamingTrace,
     TraceRecorder,
     ms_since,
     record_event,
@@ -106,11 +111,13 @@ _Answer = CacheMatch | IncidentTriageReport | None
 
 @dataclass(frozen=True)
 class TriageMetrics:
-    """Counts of triage outcomes, exported on /metrics as cache=hit/miss/saturated."""
+    """Counts of triage outcomes (cache=hit/miss/saturated on /metrics), and abandoned requests."""
 
     hit: int = 0
     miss: int = 0
     saturated: int = 0
+    # Not a triage outcome: a request cancelled before it ended, e.g. by a client disconnect.
+    abandoned: int = 0
 
 
 class TriageGateway:
@@ -140,19 +147,59 @@ class TriageGateway:
     ) -> TriageOutcome:
         """Return how this request ended, counting it and recording its trace on `trace`."""
         # Unless cancelled, a request ends in exactly one `trace_finished` carrying the
-        # outcome's response (None when shed). A cancellation propagates, unrecorded.
+        # outcome's response (None when shed). A cancellation propagates, unrecorded, and is
+        # counted as abandoned; the run slot is released and nothing is cached.
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
         started = time.monotonic()
         record_event(
             recorder, lambda: TraceStarted(scoped=bool(scope), force_refresh=force_refresh)
         )
-        answer = await self._answer(query, scope, force_refresh=force_refresh, trace=recorder)
+        try:
+            answer = await self._answer(query, scope, force_refresh=force_refresh, trace=recorder)
+        except asyncio.CancelledError:
+            logger.info("Triage request abandoned before it ended (cancelled).")
+            self._metrics = replace(self._metrics, abandoned=self._metrics.abandoned + 1)
+            raise
         outcome = _outcome(answer, started, recorder)
         self._count(outcome)
         response = None if isinstance(outcome, Shed) else outcome.response
         kind = _kind(outcome)
         record_event(recorder, lambda: TraceFinished(outcome=kind, response=response))
         return outcome
+
+    async def stream(
+        self, query: str, scope: str | None, *, force_refresh: bool = False
+    ) -> AsyncIterator[TraceEvent]:
+        """Yield this request's trace events live; the last is always its one trace_finished."""
+        # The request runs as its own task so events reach the client while it runs. Closing
+        # or cancelling this iterator (a client disconnect) cancels that task and waits for it.
+        trace = StreamingTrace()
+        run = asyncio.create_task(self._triage_or_fallback(query, scope, force_refresh, trace))
+        run.add_done_callback(lambda _: trace.close())
+        try:
+            async for event in trace.follow():
+                yield event
+        finally:
+            await _cancel_and_wait(run)
+
+    async def _triage_or_fallback(
+        self, query: str, scope: str | None, force_refresh: bool, trace: StreamingTrace
+    ) -> None:
+        """Run triage(); if it raises, still finish the trace with a synthesis fallback."""
+        started = time.monotonic()
+        try:
+            await self.triage(query, scope, force_refresh=force_refresh, trace=trace)
+        except Exception:
+            # Once a stream's 200 headers are sent an error can't become a 500 (ADR-008).
+            logger.exception("Triage request raised; finishing its stream with a fallback.")
+            if any(event.kind == "trace_finished" for event in trace.events):
+                return
+            report = _reconciled_fallback(query, _GRAPH_EXCEPTION_REASON, trace)
+            outcome = Analyzed(_response(report, started, trace, similarity=None))
+            self._count(outcome)
+            record_event(
+                trace, lambda: TraceFinished(outcome="analyzed", response=outcome.response)
+            )
 
     def _count(self, outcome: TriageOutcome) -> None:
         m = self._metrics
@@ -255,6 +302,21 @@ class TriageGateway:
             return _Analysis(_synthesis_fallback(query, state, trace), fell_back=True)
         evidence = DegradationEvidence.from_state(cast(TriageState, state))
         return _Analysis(final_report, fell_back=evidence.synthesis_fell_back)
+
+
+async def _cancel_and_wait(task: "asyncio.Task[None]") -> None:
+    """Cancel a task and wait until it has finished, even if this wait is itself cancelled."""
+    # A cancelled stream may be re-cancelled at every await (anyio cancel scopes), so the wait
+    # repeats until the task is done, then re-raises the cancellation: no task outlives it.
+    task.cancel()
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _outcome(answer: _Answer, started: float, trace: TraceRecorder) -> TriageOutcome:

@@ -4,7 +4,7 @@ import logging
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, assert_never, cast
@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Securit
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import APIKeyHeader
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from resilient_triage import __version__
 from resilient_triage.config import settings
@@ -166,6 +167,24 @@ async def triage_incident(
         case _:
             assert_never(outcome)
     return JSONResponse(content=response.model_dump(mode="json"), headers=headers)
+
+
+@router.post("/triage/stream", response_class=EventSourceResponse)
+async def triage_incident_stream(
+    payload: TriageRequest, runtime: RuntimeDep
+) -> AsyncIterable[ServerSentEvent]:
+    """Triage an incident like POST /triage, streaming its execution trace as Server-Sent Events.
+
+    Each event's SSE `event:` is its trace event kind and its `data:` is the event as JSON.
+    The stream always ends with one `trace_finished` carrying the triage outcome and the
+    response POST /triage would return (none when shed); the status is 200 once it starts.
+    A client disconnect cancels the run: it is counted as abandoned and nothing is cached.
+    """
+    events = runtime.triage_gateway.stream(
+        payload.query, payload.service_filter, force_refresh=payload.force_refresh
+    )
+    async for event in events:
+        yield ServerSentEvent(event=event.kind, data=event)
 
 
 @router.post("/chaos/inject", response_model=ChaosConfig, dependencies=[Depends(verify_admin_key)])
