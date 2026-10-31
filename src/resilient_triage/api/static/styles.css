@@ -380,8 +380,12 @@
     border-radius: var(--radius);
     background: var(--surface);
 
+    /* At phone width the panel drops its chrome so the graph gets the full content width
+       (343 px at 375 px), which graph-layout.json is sized for. */
     @media (max-width: 30rem) {
-      padding: 0.75rem;
+      padding: 0;
+      border: 0;
+      background: none;
     }
   }
 
