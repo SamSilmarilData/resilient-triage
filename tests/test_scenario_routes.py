@@ -74,6 +74,8 @@ async def test_an_unknown_scenario_is_a_404(client: httpx.AsyncClient) -> None:
     resp = await client.post("/scenarios/no-such-scenario/stream")
 
     assert resp.status_code == 404
+    assert resp.json() == {"detail": "No scenario 'no-such-scenario'."}
+    assert not resp.headers["content-type"].startswith("text/event-stream")
 
 
 QUERY = "Payments API returning 503 for card checkouts"
