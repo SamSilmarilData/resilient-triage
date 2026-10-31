@@ -1,0 +1,3 @@
+# Vendored files are checked byte for byte against static/vendor/manifest.json (scripts/vendor.py):
+# never convert their line endings.
+src/resilient_triage/api/static/vendor/** -text
