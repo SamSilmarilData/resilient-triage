@@ -264,3 +264,26 @@ def test_a_scenario_cannot_trip_a_source_that_does_not_fail() -> None:
 def test_a_scenario_fault_must_repeat_exactly() -> None:
     with pytest.raises(ValueError, match="failure_rate"):
         _scenario(cluster_sentinel=ChaosConfig(active=True, failure_rate=0.5))
+
+
+async def test_a_streamed_run_carries_its_setup_before_trace_started() -> None:
+    held = HeldSlots(capacity=1, queue_timeout_s=0.02)
+    seed = CacheSeed(query="Stripe webhooks timing out", report=SEED_REPORT)
+    scenario = _scenario(setup=Setup(seeds=(seed,)), overrides=Overrides(held_slots=held))
+    run = _factory().build(scenario)
+
+    async with run.stream() as events:
+        streamed = [event async for event in events]
+
+    assert _kinds(tuple(streamed)) == [
+        "scenario_setup",
+        "scenario_setup",
+        "trace_started",
+        "cache_lookup",
+        "run_slot",
+        "trace_finished",
+    ]
+    assert [e.seq for e in streamed] == list(range(6))
+    started = streamed[2]
+    assert isinstance(started, TraceStarted) and started.scenario_id == "test-scenario"
+    assert run.slots.free == 1
