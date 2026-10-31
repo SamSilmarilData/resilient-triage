@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, assert_never, cast
 
@@ -167,18 +168,20 @@ class TriageGateway:
         record_event(recorder, lambda: TraceFinished(outcome=kind, response=response))
         return outcome
 
+    @asynccontextmanager
     async def stream(
         self, query: str, scope: str | None, *, force_refresh: bool = False
-    ) -> AsyncIterator[TraceEvent]:
-        """Yield this request's trace events live; the last is always its one trace_finished."""
-        # The request runs as its own task so events reach the client while it runs. Closing
-        # or cancelling this iterator (a client disconnect) cancels that task and waits for it.
+    ) -> AsyncIterator[AsyncIterator[TraceEvent]]:
+        """Run a request; yield its live trace events, the last always its one trace_finished."""
+        # The request runs as its own task so events reach the client while it runs. Leaving
+        # this context, normally or by cancellation (a client disconnect), cancels that task
+        # and waits for it. The context, not the event iterator, owns the task: an iterator
+        # parked at a `yield` is only closed whenever it is garbage-collected.
         trace = StreamingTrace()
         run = asyncio.create_task(self._triage_or_fallback(query, scope, force_refresh, trace))
         run.add_done_callback(lambda _: trace.close())
         try:
-            async for event in trace.follow():
-                yield event
+            yield trace.follow()
         finally:
             await _cancel_and_wait(run)
 
