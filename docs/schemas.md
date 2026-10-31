@@ -77,7 +77,10 @@ Typed dictionary carrying execution state across graph nodes:
 - `report: IncidentTriageReport`: The triage report.
 - `cached: bool`: Whether served from semantic cache (`X-Cache: HIT`).
 - `cache_similarity: float | None`: Cosine similarity score if matched in cache.
-- `execution_time_ms: float`: Request turnaround time in milliseconds.
+- `execution_time_ms: float`: Request turnaround time in milliseconds, measured by the Triage gateway.
+- `trace: TraceSummary | None`: The request's trace summary (`resilient_triage.trace.summary`, ADR-008), derived by `summarize()` from the events recorded before `trace_finished`; `null` when the request was not traced with a recorder that keeps its events. Structured ids, counts and timings only, never the event list. Fields and meanings: [API reference](api.md#1-post-triage). `IncidentTriageReport` is unchanged.
+
+`resilient_triage.schemas` re-exports nothing; import from the submodules (`schemas.api` imports `trace.summary`, which imports `schemas.incident`, so eager package re-exports would close an import cycle).
 
 ### `CircuitSnapshot`
 Snapshot representation of an individual circuit breaker's operational state:
