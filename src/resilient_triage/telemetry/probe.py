@@ -11,7 +11,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Protocol, TypeVar
+from typing import ClassVar, Literal, Protocol, TypeVar
 
 from resilient_triage.config import settings
 from resilient_triage.resilience.circuit_breaker import (
@@ -22,6 +22,9 @@ from resilient_triage.resilience.circuit_breaker import (
 from resilient_triage.resilience.retry import with_retry
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.telemetry import SIGNAL_STATUS_CIRCUIT_OPEN, SIGNAL_STATUS_UNAVAILABLE
+from resilient_triage.trace.events import TelemetryRead
+from resilient_triage.trace.fields import BreakerState, ReadOutcome
+from resilient_triage.trace.recorder import NullTrace, TraceRecorder, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -159,11 +162,24 @@ class TelemetryProbe:
         return matched or frozenset(self.source_ids)
 
     async def collect(
-        self, targets: frozenset[str], query: str, scope: str | None
+        self,
+        targets: frozenset[str],
+        query: str,
+        scope: str | None,
+        *,
+        trace: TraceRecorder | None = None,
+        phase: Literal["setup"] | None = None,
     ) -> TelemetryReading:
-        """Read every targeted source; never raises except CancelledError."""
+        """Read every targeted source; never raises except CancelledError.
+
+        Each source read is recorded on trace as one `telemetry_read` (ADR-008), marked with
+        phase ("setup" for a scenario's pre-run read); with no trace, nothing is recorded.
+        """
         targeted = [source for source in self._sources if source.id in targets]
-        outcomes = await asyncio.gather(*(self._read(s, query, scope) for s in targeted))
+        recorder = trace or NullTrace()
+        outcomes = await asyncio.gather(
+            *(self._traced_read(s, query, scope, recorder, phase) for s in targeted)
+        )
         signals: list[TelemetrySignal] = []
         tripped: set[str] = set()
         unavailable: set[str] = set()
@@ -195,12 +211,64 @@ class TelemetryProbe:
 
         return await self._source_breakers[source_id].call(within_deadline)
 
-    async def _read(self, source: TelemetrySource, query: str, scope: str | None) -> _Outcome:
-        """Read one source and classify the outcome; only CancelledError escapes."""
+    async def _traced_read(
+        self,
+        source: TelemetrySource,
+        query: str,
+        scope: str | None,
+        trace: TraceRecorder,
+        phase: Literal["setup"] | None,
+    ) -> _Outcome:
+        """Read one source, recording a telemetry_read: attempts, outcome and breaker states."""
+        breaker = self._source_breakers[source.id]
+        before = breaker.state
+        attempts = 0
+
+        async def read_once() -> list[TelemetrySignal]:
+            # Counted here, so a refused read is 0 attempts and each retry is one more.
+            nonlocal attempts
+            attempts += 1
+            return await source.read(query, scope)
+
+        started = time.monotonic()
+        outcome = await self._read(source, query, scope, read_once)
+        duration_ms = round((time.monotonic() - started) * 1000, 3)
+        read_outcome: ReadOutcome
+        match outcome:
+            case _Read():
+                read_outcome, signals = "read", len(outcome.signals)
+            case _Tripped():
+                read_outcome, signals = "tripped", 1
+            case _Unavailable():
+                read_outcome, signals = "unavailable", 1
+        after = breaker.state
+        record_event(
+            trace,
+            lambda: TelemetryRead(
+                source=source.id,
+                phase=phase,
+                outcome=read_outcome,
+                attempts=attempts,
+                breaker_before=_breaker_state(before),
+                breaker_after=_breaker_state(after),
+                signals=signals,
+                duration_ms=duration_ms,
+            ),
+        )
+        return outcome
+
+    async def _read(
+        self,
+        source: TelemetrySource,
+        query: str,
+        scope: str | None,
+        read: Callable[[], Awaitable[list[TelemetrySignal]]],
+    ) -> _Outcome:
+        """Run read() under the source's guard and classify it; only CancelledError escapes."""
         started = time.monotonic()
         failure: type[_Tripped | _Unavailable]
         try:
-            return _Read(await self._guarded(source.id, lambda: source.read(query, scope)))
+            return _Read(await self._guarded(source.id, read))
         except BreakerOpen as exc:
             logger.warning("Telemetry source %s refused by its breaker: %s", source.id, exc)
             failure = _Tripped
@@ -249,3 +317,15 @@ class TelemetryProbe:
         except Exception as exc:
             logger.warning("Reading breaker statuses failed: %s", exc)
             return {}
+
+
+def _breaker_state(state: str) -> BreakerState:
+    """Narrow a breaker's state name to a trace BreakerState; raises on an unknown one."""
+    match state:
+        case "closed":
+            return "closed"
+        case "open":
+            return "open"
+        case "half-open":
+            return "half-open"
+    raise ValueError(f"Unknown breaker state: {state}")

@@ -17,7 +17,10 @@ async def collect_telemetry_node(
     # No targeting yet means every source.
     targets = state.get("targeted_sources", probe.source_ids)
     reading = await probe.collect(
-        frozenset(targets), state.get("query", ""), state.get("service_filter")
+        frozenset(targets),
+        state.get("query", ""),
+        state.get("service_filter"),
+        trace=runtime.context.trace,
     )
     return {
         "telemetry_signals": [s.model_dump() for s in reading.signals],
