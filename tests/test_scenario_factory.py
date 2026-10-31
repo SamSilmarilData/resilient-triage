@@ -20,6 +20,7 @@ from resilient_triage.scenarios import (
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import StatuspageSummary
 from resilient_triage.trace.events import (
+    DeadlineExceeded,
     ModelCall,
     RunSlot,
     ScenarioSetup,
@@ -166,3 +167,18 @@ async def test_declared_reply_delays_are_zeroed_in_tests_by_default() -> None:
         outcome = await _factory().build(_scenario(script=script)).triage()
 
     assert isinstance(outcome, Analyzed)
+
+
+@pytest.mark.real_scripted_delays
+async def test_a_run_deadline_override_cuts_off_only_that_run() -> None:
+    trace = ListTrace()
+    slow = (ScriptedReply(DEFAULT_REPORT_JSON, delay_s=5),)
+    scenario = _scenario(script=slow, overrides=Overrides(run_deadline_s=0.1))
+
+    async with asyncio.timeout(3):
+        outcome = await _factory().build(scenario).triage(trace=trace)
+
+    assert isinstance(outcome, Analyzed)
+    deadlines = [e for e in trace.events if isinstance(e, DeadlineExceeded)]
+    assert [d.deadline_s for d in deadlines] == [0.1]
+    assert settings.triage_run_deadline_s != 0.1  # the shared setting is untouched
