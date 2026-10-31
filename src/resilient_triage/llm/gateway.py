@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from langchain_core.messages import BaseMessage
 
@@ -19,6 +19,10 @@ from resilient_triage.llm.failures import (
     Unavailable,
 )
 from resilient_triage.schemas.api import LLMQuotaSnapshot
+from resilient_triage.trace.recorder import NullTrace, TraceRecorder, record_event
+
+if TYPE_CHECKING:
+    from resilient_triage.trace.fields import ModelRole
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +124,18 @@ class LLMGateway:
         """The display name of the active provider (the /health "active_model")."""
         return self._label
 
-    async def complete(self, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        """Return a completion or a provider failure; raises nothing but CancelledError."""
+    async def complete(
+        self, messages: list[BaseMessage], *, trace: TraceRecorder | None = None
+    ) -> Completion | ProviderFailure:
+        """Return a completion or a provider failure; raises nothing but CancelledError.
+
+        Each adapter attempt is recorded on trace as one `model_call` (ADR-008); with no
+        trace (the default, e.g. for /chaos/*), nothing is recorded.
+        """
         attempts: list[Attempt] = []
         result: Completion | ProviderFailure
         try:
-            result = await self._complete(messages, attempts)
+            result = await self._complete(messages, attempts, trace or NullTrace())
         except Exception as exc:
             logger.error("LLM gateway call failed unexpectedly: %s", exc)
             result = Unavailable(detail=f"LLM gateway error: {exc}")
@@ -135,7 +145,7 @@ class LLMGateway:
         return result
 
     async def _complete(
-        self, messages: list[BaseMessage], attempts: list[Attempt]
+        self, messages: list[BaseMessage], attempts: list[Attempt], trace: TraceRecorder
     ) -> Completion | ProviderFailure:
         primary_left_s = self._remaining_s(self.primary)
         if primary_left_s > 0:
@@ -148,13 +158,13 @@ class LLMGateway:
                     scope="unknown",
                     detail=f"Both {self.primary} and {self.fallback} are cooling down",
                 )
-            return await self._call(self.fallback, messages, attempts)
-        result = await self._call(self.primary, messages, attempts)
+            return await self._call(self.fallback, messages, attempts, trace)
+        result = await self._call(self.primary, messages, attempts, trace)
         if isinstance(result, Unavailable):
             await asyncio.sleep(
                 random.uniform(settings.retry_min_wait_seconds, settings.retry_max_wait_seconds)
             )
-            result = await self._call(self.primary, messages, attempts)
+            result = await self._call(self.primary, messages, attempts, trace)
         if isinstance(result, Completion | Rejected):
             return result
         if self._cooling_down(self.fallback):
@@ -163,7 +173,7 @@ class LLMGateway:
             )
             return result
         logger.warning("LLM primary %s failed; failing over to %s", self.primary, self.fallback)
-        return await self._call(self.fallback, messages, attempts)
+        return await self._call(self.fallback, messages, attempts, trace)
 
     def _cooling_down(self, model: str) -> bool:
         return self._remaining_s(model) > 0
@@ -172,9 +182,20 @@ class LLMGateway:
         return self._cooldown_until.get(model, 0.0) - self._clock()
 
     async def _call(
-        self, model: str, messages: list[BaseMessage], attempts: list[Attempt]
+        self,
+        model: str,
+        messages: list[BaseMessage],
+        attempts: list[Attempt],
+        trace: TraceRecorder,
     ) -> Completion | ProviderFailure:
-        result = await self.adapter.call(model, messages)
+        started = time.monotonic()
+        try:
+            result = await self.adapter.call(model, messages)
+        except Exception as exc:
+            # complete() answers this with Unavailable: trace the attempt as one.
+            self._trace_call(trace, model, Unavailable(detail=str(exc)), started)
+            raise
+        self._trace_call(trace, model, result, started)
         attempts.append(Attempt(model=model, result=result))
         if isinstance(result, RateLimited):
             # Started here, not in _record, so concurrent and cancelled calls see it at once.
@@ -184,6 +205,26 @@ class LLMGateway:
         if not isinstance(result, Completion):
             logger.warning("LLM call to %s failed: %s", model, result)
         return result
+
+    def _trace_call(
+        self,
+        trace: TraceRecorder,
+        model: str,
+        result: Completion | ProviderFailure,
+        started: float,
+    ) -> None:
+        """Record one adapter attempt as a model_call: its outcome kind, never its text."""
+        # Imported here: trace.events imports schemas.api, which imports this package.
+        from resilient_triage.trace.events import ModelCall
+
+        duration_ms = round((time.monotonic() - started) * 1000, 3)
+        role: ModelRole = "fallback" if model == self.fallback else "primary"
+        record_event(
+            trace,
+            lambda: ModelCall.from_result(
+                model=model, role=role, result=result, duration_ms=duration_ms
+            ),
+        )
 
     def _record(self, attempts: list[Attempt], result: Completion | ProviderFailure) -> None:
         """Apply one completed complete() call to the counters (cooldowns start in _call)."""

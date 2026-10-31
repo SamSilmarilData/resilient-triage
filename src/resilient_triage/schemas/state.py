@@ -46,3 +46,7 @@ class TriageState(TypedDict, total=False):
 
     # Validated final output
     final_report: IncidentTriageReport | None
+
+    # The node that ran last: set by builder.py's trace wrapper, so the next node's wrapper
+    # can derive the route taken from the (previous, current) node pair (ADR-008)
+    previous_node: str

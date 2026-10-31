@@ -103,7 +103,7 @@ Only genuinely transient exceptions trigger retries:
 
 - **Breakers at build time**: building the probe creates one breaker per source with the shared `circuit_breaker_fail_max` / `circuit_breaker_reset_timeout`, so `/health` lists both from startup. `AppRuntime.start()` registers none.
 - **`select_targets(query, scope)`** returns the Targeted sources: those whose keywords appear as whole words in `f"{query} {scope or ''}".lower()`, or every source when none match. `analyze_query` stores the result, sorted, as `targeted_sources`.
-- **`collect(targets, query, scope)`** reads the targeted sources concurrently and returns a `TelemetryReading` (`signals`, `tripped_breakers`, `unavailable_sources`, `breaker_states`). It never raises except `CancelledError`. Sources not in `targets` are never read and never appear in either set.
+- **`collect(targets, query, scope)`** reads the targeted sources concurrently and returns a `TelemetryReading` (`signals`, `tripped_breakers`, `unavailable_sources`, `breaker_states`). It never raises except `CancelledError`. Sources not in `targets` are never read and never appear in either set. With `trace=` (keyword, default none) it records one `telemetry_read` per source read: outcome, attempts (0 when the breaker refused), and the breaker's state before and after; `phase="setup"` marks a scenario's pre-run read. Recording never raises, so it cannot change a reading.
 - **Tripped vs Unavailable**: a read is a **Tripped breaker** if the breaker refused it (`BreakerOpen`, including a refusal during someone else's half-open trial) or the breaker is open right after it (the read that trips it). It is an **Unavailable source** if the read failed and the breaker is not open afterwards.
 - **One degraded signal per failed source**: `source=degraded_label(...)` (`statuspage:global`, or the matched Cluster Sentinel sub-probe name), `status` `CIRCUIT_OPEN` or `UNAVAILABLE`, `error_rate=1.0`; the snippet carries the failure. The read that trips the breaker is `CIRCUIT_OPEN` and still names the real error.
 - **`guarded(source_id, read)`** runs any read through the same breaker → deadline → retry and raises its failure; `GET /chaos/probe` uses it with the `chaos` breaker.
@@ -236,7 +236,7 @@ The rule takes the maximum of (HEALTHY < PARTIALLY_DEGRADED < SEVERELY_DEGRADED)
 
 ## 6. LLM Gateway: Failover and Rate-Limit Cooldowns
 
-Every model call goes through `LLMGateway.complete(messages)` (`src/resilient_triage/llm/gateway.py`, ADR-006). It returns a `Completion` or a typed provider failure (`RateLimited`, `Unavailable`, `Rejected`, `MalformedResponse`; see [architecture](architecture.md#2-llm-gateway-groq-lpus)) and never raises anything except `CancelledError`. The adapter underneath makes exactly one call to one model; retries, failover and cooldowns all live in the gateway.
+Every model call goes through `LLMGateway.complete(messages)` (`src/resilient_triage/llm/gateway.py`, ADR-006). It returns a `Completion` or a typed provider failure (`RateLimited`, `Unavailable`, `Rejected`, `MalformedResponse`; see [architecture](architecture.md#2-llm-gateway-groq-lpus)) and never raises anything except `CancelledError`. The adapter underneath makes exactly one call to one model; retries, failover and cooldowns all live in the gateway. `complete(messages, trace=...)` records one `model_call` trace event per adapter attempt (ADR-008); the default records nothing.
 
 ### Failover policy
 
