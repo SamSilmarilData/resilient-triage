@@ -222,6 +222,13 @@ request.
   `ExceptionGroup`) through the request's exit stack. `open_trace_stream` catches exactly that
   with `except*` and logs it at info, so it neither escapes the app nor delays the cleanup.
 
+### Run slots and the free-play run budget
+Two limits keep graph runs bounded, both owned by `AppRuntime` (`runtime.py`):
+
+- **Two slot pools.** Free play (`POST /triage`, `/triage/stream`) waits for one of `triage_max_concurrent_runs` (10) slots; scenario runs (`POST /scenarios/{id}/stream`) share their own `RunSlotPool` of `scenario_max_concurrent_runs` (4). Both wait up to `triage_queue_timeout_s`, and neither can shed the other. `shed-request` runs on a private pool whose slots its setup holds, so it never takes a shared slot.
+- **Free-play run budget** (`triage/budget.py`, `RunBudget`): free play's gateway admits at most `free_play_runs_per_minute` (20) graph runs in any sliding 60 s window. The check comes after a cache miss (or under `force_refresh`) and before the slot wait, so cache hits are free and a run counts once admitted, even if it is then shed for lack of a slot. A refused run is not counted. It is shed at once as `Shed(retry_after_s=...)`: no new triage outcome, `saturated` on `/metrics`, a `run_slot(acquired=false, reason=budget, retry_after_s=...)` event, and a 503 with `Retry-After` on `POST /triage`. `retry_after_s` is the whole seconds (at least 1) until the oldest counted run leaves the window. A shed for lack of a slot records `reason=capacity` and has no retry-after. Scenario gateways get no budget.
+- **Per process, not per deployment.** The budget and both pools live in memory in one process. With several uvicorn workers or replicas, each allows its own 20 runs a minute and its own slots, so the deployment-wide limit is that many times larger. This is deliberate: no Redis or shared store backs it, and the demo runs one worker.
+
 ### Run deadline: a stalled run answers with a fallback
 
 Every graph run the Triage gateway starts has a **run deadline**, `triage_run_deadline_s` (default 45s, env `TRIAGE_RUN_DEADLINE_S`). The gateway wraps only the graph run in `asyncio.timeout(...)`: time spent waiting for a run slot is bounded separately by `triage_queue_timeout_s` and does not count against it. When the deadline passes, the run is cancelled (so breakers and the LLM gateway see a cancellation, which records nothing; a 429 the run already received still leaves its cooldown in place, see [section 6](#6-llm-gateway-failover-and-rate-limit-cooldowns)), its slot is released, and the caller gets `Analyzed` with `build_fallback_report(query, reason="Run deadline exceeded ...")`, reconciled on the same no-evidence `DegradationEvidence(..., synthesis_fell_back=True)` as a graph exception.

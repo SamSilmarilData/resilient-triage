@@ -34,6 +34,8 @@ Every HTTP response returned by the API includes the following observability hea
 | :--- | :--- | :--- | :---: |
 | `POST` | [`/triage`](#1-post-triage) | Run autonomous incident triage analysis | Public |
 | `POST` | [`/triage/stream`](#1a-post-triagestream) | Same triage, streaming its execution trace as Server-Sent Events | Public |
+| `GET` | [`/scenarios`](#1b-get-scenarios) | The scenario catalogue's public view, by chapter in display order | Public |
+| `POST` | [`/scenarios/{scenario_id}/stream`](#1c-post-scenariosscenario_idstream) | Run one catalogued scenario on private collaborators, streaming its trace | Public |
 | `GET` | [`/health`](#2-get-health) | Check system availability, active model, and circuit states | Public |
 | `GET` | [`/resilience/status`](#3-get-resiliencestatus) | Detailed diagnostics for breakers, chaos, and cache | Public |
 | `GET` | [`/llm/quota`](#4-get-llmquota) | Retrieve real-time Groq rate limits and token budgets | Public |
@@ -53,6 +55,8 @@ Executes autonomous incident triage. Checks Redis semantic cache for similarity 
 
 > [!NOTE]
 > **Concurrency Load Shedding**: The Triage gateway bounds graph runs to `TRIAGE_MAX_CONCURRENT_RUNS` (default 10) per app. A request that waits longer than `TRIAGE_QUEUE_TIMEOUT_S` (default 5.0s) for a run slot is shed with `HTTP 503 Service Unavailable`.
+>
+> **Free-play run budget**: at most `FREE_PLAY_RUNS_PER_MINUTE` (default 20) graph runs are admitted in any sliding 60 s window, per process (per worker). Only graph runs count: a cache miss or a `force_refresh` request, counted once admitted even if it is then shed for lack of a slot. Cache hits are always free, and scenario runs never count. A run over the budget is shed at once (no queueing) with `HTTP 503` and a `Retry-After` header: whole seconds (at least 1) until the oldest counted run leaves the window. A shed for lack of a slot has no `Retry-After`. Both count as `saturated` on `/metrics`.
 
 #### Request Body (`application/json`)
 ```json
@@ -169,7 +173,7 @@ The summary is derived from the request's trace events. `POST /triage` returns o
 | `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source`), `count`, `source` |
 | `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh` |
 | `cache_lookup` | `backend`, `hit`, `similarity`, `threshold`, `duration_ms` |
-| `run_slot` | `acquired`, `waited_ms`, `capacity` |
+| `run_slot` | `acquired`, `waited_ms`, `capacity`, `reason` (`capacity` / `budget` when shed, else none), `retry_after_s` (budget sheds only) |
 | `node_started` | `node` |
 | `node_finished` | `node`, `duration_ms`, `status` (`ok` / `error` / `cancelled`), `confidence` (validate_report only) |
 | `route_decided` | `source`, `target`, `route` (the router key) |
@@ -214,7 +218,7 @@ event: trace_finished
 data: {"kind":"trace_finished","seq":41,"t_ms":2150.7,"outcome":"analyzed","response":{"report":{...},"cached":false,"cache_similarity":null,"execution_time_ms":2150.6,"trace":{...}}}
 ```
 
-- **Exactly one `trace_finished`, always last.** Its `response` is the `TriageResponse` that `POST /triage` would return for the same request (none when `outcome` is `shed`). The status is 200 once the stream starts, so failures arrive inside it, never as an HTTP error: a shed request ends `run_slot(acquired=false)`, `trace_finished(outcome=shed)` (where `POST /triage` answers 503); a run deadline records `deadline_exceeded` before the fallback; an unexpected exception ends the stream with a `SEVERELY_DEGRADED` synthesis fallback in `trace_finished` (`outcome=analyzed`, not cached). A request body that fails validation is still a 422 before any stream starts.
+- **Exactly one `trace_finished`, always last.** Its `response` is the `TriageResponse` that `POST /triage` would return for the same request (none when `outcome` is `shed`). The status is 200 once the stream starts, so failures arrive inside it, never as an HTTP error: a shed request ends `run_slot(acquired=false, reason=capacity|budget)`, `trace_finished(outcome=shed)` (where `POST /triage` answers 503; a budget shed's `run_slot` carries the `retry_after_s` the 503 sends as `Retry-After`); a run deadline records `deadline_exceeded` before the fallback; an unexpected exception ends the stream with a `SEVERELY_DEGRADED` synthesis fallback in `trace_finished` (`outcome=analyzed`, not cached). A request body that fails validation is still a 422 before any stream starts.
 - **No headers, no ids, no resume.** The cache outcome is in `trace_finished` (`outcome`, `response.cached`), not in `X-Cache` headers. There is no run id, no `GET` and no `Last-Event-ID` resume: a dropped connection loses its trace, and re-sending the request may now be a cache hit.
 - **A client disconnect cancels the run.** The run's slot is released, nothing is cached (a cancel that lands during the cache store evicts the entry again), and the request counts once, whenever the disconnect lands, in `resilient_triage_abandoned_requests_total` on [`/metrics`](#5-get-metrics), not as a hit, miss or saturated request.
 
@@ -223,6 +227,52 @@ data: {"kind":"trace_finished","seq":41,"t_ms":2150.7,"outcome":"analyzed","resp
 curl -N -X POST http://127.0.0.1:8000/triage/stream \
   -H "Content-Type: application/json" \
   -d '{"query": "Gateway service reporting 503 errors"}'
+```
+
+---
+
+### 1b. `GET /scenarios`
+The scenario catalogue's public view (ADR-009): every chapter in display order, each with its scenarios in display order. A scenario's entry is its page copy only (`ScenarioView`), never its query, script or expected outcome. The catalogue is fixed in code, so the response only changes with a deploy.
+
+#### Response (`200 OK`) - `ScenarioCatalogue`
+```json
+{
+  "chapters": [
+    {
+      "id": "fast-paths",
+      "title": "Fast paths",
+      "scenarios": [
+        {
+          "id": "healthy-run",
+          "chapter": "fast-paths",
+          "title": "...",
+          "caption": "...",
+          "setup_notes": []
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `chapters[].id`, `chapters[].title` | The chapter's id and heading (`fast-paths`, `model-misbehaves`, `dependencies-fail`, `finale`). |
+| `chapters[].scenarios[]` | `id` (what `POST /scenarios/{scenario_id}/stream` takes), `chapter` (the chapter's id), `title`, `caption`, `setup_notes` (what is true before the run, in words). |
+
+---
+
+### 1c. `POST /scenarios/{scenario_id}/stream`
+Runs one catalogued scenario and streams its execution trace exactly like [`POST /triage/stream`](#1a-post-triagestream): same SSE framing and pings, exactly one `trace_finished`, always last; a disconnect cancels the run. The body is empty: the scenario fixes the query, scope, the model's replies and every fault. An unknown `scenario_id` is a `404` before any stream starts.
+
+- **Setup first.** The scenario setup (`scenario_setup` events, and setup `telemetry_read`s with `phase: "setup"`) streams before `trace_started`, whose `scenario_id` names the scenario.
+- **Private collaborators.** Each run gets its own scripted model gateway, telemetry sources, breakers, chaos manager and in-memory cache, so scenario runs never change `/metrics` outcome counts, `/llm/quota`, `/resilience/status` or `/health`, and never read or write the shared cache.
+- **Own slot pool.** Scenario runs share a pool of `SCENARIO_MAX_CONCURRENT_RUNS` (default 4) run slots, separate from free play's, and wait up to `TRIAGE_QUEUE_TIMEOUT_S` for one; free play and scenario traffic can't shed each other. A scenario shed for lack of a slot still answers 200 and ends `trace_finished(outcome=shed)`. `shed-request` holds every slot of a private pool, so it is always shed and never touches the shared one. The free-play run budget does not apply.
+- **Real time.** Scripted replies take about 0.9 s and failures about 0.18 s; `run-deadline` waits about 3 s for its deadline and `shed-request` about 1 s in the queue.
+
+#### Example cURL
+```bash
+curl -N -X POST http://127.0.0.1:8000/scenarios/self-repair/stream
 ```
 
 ---

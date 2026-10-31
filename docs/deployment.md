@@ -60,6 +60,7 @@ Under the **Environment Variables** tab, add:
 - `ADMIN_API_KEY` (optional): a long random string that enables the admin routes. Unset, they answer `403` (see [Admin key](#admin-key)).
 - `CACHE_SIMILARITY_THRESHOLD`: `0.90`
 - `TRIAGE_RUN_DEADLINE_S` (optional, default `45.0`, above 0 and at most 120): the run deadline. A graph run that takes longer is cancelled and the request answered with an uncached `SEVERELY_DEGRADED` fallback report. Keep it below your platform's request timeout so the client gets that report rather than a proxy timeout. Slot wait (`TRIAGE_QUEUE_TIMEOUT_S`) is not included.
+- `FREE_PLAY_RUNS_PER_MINUTE` (optional, default `20`, 1 to 10000): free-play graph runs admitted per sliding 60 s; a run over it gets a 503 with `Retry-After`. Cache hits and scenario runs are free. The budget is per process: with several workers or replicas, each allows this many. `SCENARIO_MAX_CONCURRENT_RUNS` (optional, default `4`, 1 to 100) bounds scenario runs in flight, separately from `TRIAGE_MAX_CONCURRENT_RUNS`.
 - `TELEMETRY_SOURCE_DEADLINE_S` (optional, default `5.0`, 0.5 to 30): the source deadline. One Telemetry source read (Statuspage or Cluster Sentinel), retries included, that takes longer is cut off, counted as a breaker failure, and the source is reported unavailable for that run. Keep it well below `TRIAGE_RUN_DEADLINE_S`.
 
 ### Step 3: Deploy
