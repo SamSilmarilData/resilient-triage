@@ -1,14 +1,22 @@
 """Hand-built fakes for TriageDeps, so graph nodes run without the app or the network."""
 
+import asyncio
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import httpx
+from langchain_core.messages import BaseMessage
 
 from resilient_triage.cache.semantic_cache import CacheMatch
 from resilient_triage.config import settings
-from resilient_triage.llm import ModelAdapter, ScriptedAdapter, build_llm_gateway
+from resilient_triage.llm import (
+    Completion,
+    ModelAdapter,
+    ProviderFailure,
+    ScriptedAdapter,
+    build_llm_gateway,
+)
 from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry
 from resilient_triage.runtime import AppRuntime, TriageDeps
 from resilient_triage.scenarios import ExpectedOutcome
@@ -140,4 +148,31 @@ def observed(events: Sequence[TraceEvent]) -> ExpectedOutcome:
         confidence=report.confidence_score if report else None,
         cache_store=stores[0] if stores else None,
         deadline_exceeded=summary.deadline_exceeded,
+    )
+
+
+class BlockingAdapter(ScriptedAdapter):
+    """A ScriptedAdapter whose first call waits until `release` is set; records a cancel."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = False
+
+    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
+        if not self.started.is_set():
+            self.started.set()
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+        return await super().call(model, messages)
+
+
+def one_slot(**update: Any) -> Any:
+    """Settings with a single run slot and a short queue timeout, plus any overrides."""
+    return settings.model_copy(
+        update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.05, **update}
     )

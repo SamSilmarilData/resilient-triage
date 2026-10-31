@@ -13,12 +13,11 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from fakes import AppServer, finished, parse_sse
-from langchain_core.messages import BaseMessage
+from fakes import AppServer, BlockingAdapter, finished, one_slot, parse_sse
 
 from resilient_triage.api.app import create_app
-from resilient_triage.config import Settings, settings
-from resilient_triage.llm import Completion, ProviderFailure, ScriptedAdapter
+from resilient_triage.config import Settings
+from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.runtime import AppRuntime
 from resilient_triage.trace.events import TraceEvent
 
@@ -74,33 +73,6 @@ async def test_stream_ends_with_the_same_response_post_triage_returns(serve_app:
     assert without_per_run_values(streamed["report"]) == without_per_run_values(plain["report"])
     assert without_per_run_values(streamed["trace"]) == without_per_run_values(plain["trace"])
     assert streamed["trace"]["nodes"]
-
-
-class BlockingAdapter(ScriptedAdapter):
-    """A ScriptedAdapter whose first call waits until `release` is set; records a cancel."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.cancelled = False
-
-    async def call(self, model: str, messages: list[BaseMessage]) -> Completion | ProviderFailure:
-        if not self.started.is_set():
-            self.started.set()
-            try:
-                await self.release.wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
-        return await super().call(model, messages)
-
-
-def one_slot(**update: Any) -> Any:
-    """Settings with a single run slot and a short queue timeout, plus any overrides."""
-    return settings.model_copy(
-        update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.05, **update}
-    )
 
 
 async def test_a_shed_stream_still_ends_with_trace_finished(serve_app: AppServer):
