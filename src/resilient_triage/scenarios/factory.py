@@ -41,16 +41,13 @@ class ScenarioRun:
         llm: LLMGateway,
         telemetry: TelemetryProbe,
         breakers: CircuitBreakerRegistry,
-        chaos: ChaosManager,
         cache: SemanticCacheManager,
         slots: RunSlotPool,
         settings: Settings,
     ) -> None:
         self.scenario = scenario
-        self.llm = llm
         self.telemetry = telemetry
         self.breakers = breakers
-        self.chaos = chaos
         self.cache = cache
         self.slots = slots
         self._held = 0  # slots this run's setup holds, given back when the run ends
@@ -190,7 +187,6 @@ class ScenarioFactory:
             llm=build_llm_gateway(settings, ScriptedAdapter(scenario.script)),
             telemetry=telemetry,
             breakers=breakers,
-            chaos=chaos,
             cache=cache,
             slots=slots,
             settings=settings,

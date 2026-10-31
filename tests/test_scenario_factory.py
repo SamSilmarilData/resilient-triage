@@ -241,9 +241,11 @@ async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
 
     await asyncio.gather(a.triage(trace=trace_a), b.triage(trace=trace_b))
 
-    for private in ("gateway", "breakers", "cache", "llm", "telemetry", "chaos"):
+    for private in ("gateway", "breakers", "cache", "telemetry"):
         assert getattr(a, private) is not getattr(b, private), private
         assert getattr(a, private) is not getattr(runtime, private, None), private
+    assert a.deps.llm is not b.deps.llm
+    assert a.deps.llm is not runtime.llm
     assert a.deps.telemetry is not runtime.deps.telemetry
     assert (a.cache.count, b.cache.count) == (2, 1)  # A's seed and answer; B's answer
     assert a.breakers.get_all_statuses()["statuspage"].is_open
