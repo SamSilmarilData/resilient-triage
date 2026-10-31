@@ -1,4 +1,4 @@
-"""Tests for the vendored frontend assets: manifest check, update step and serving (#115)."""
+"""Tests for the page's static files: vendored assets (#115) and the page shell (#116)."""
 
 import base64
 import glob
@@ -11,6 +11,7 @@ import mimetypes
 import shutil
 import tarfile
 import tomllib
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 
@@ -459,3 +460,72 @@ def test_installed_package_contains_the_vendored_files():
 
     assert installed.is_file()
     assert vendor.verify(vendor.installed_vendor_dir()) == []
+
+
+# --- The page shell (#116) ---
+
+STATIC_DIR = VENDOR_DIR.parent
+
+
+class _PageParser(HTMLParser):
+    """Collects every start tag with its attributes, and each <script>'s attributes and text."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tags: list[tuple[str, dict[str, str | None]]] = []
+        self.scripts: list[tuple[dict[str, str | None], str]] = []
+        self._script: dict[str, str | None] | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.tags.append((tag, dict(attrs)))
+        if tag == "script":
+            self._script, self._text = dict(attrs), []
+
+    def handle_data(self, data: str) -> None:
+        if self._script is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._script is not None:
+            self.scripts.append((self._script, "".join(self._text)))
+            self._script = None
+
+
+def _page() -> _PageParser:
+    parser = _PageParser()
+    parser.feed((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+    parser.close()
+    return parser
+
+
+async def test_root_serves_the_page_shell(client: httpx.AsyncClient):
+    """`/` answers with static/index.html, revalidated on every visit like unversioned files."""
+    response = await client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.content == (STATIC_DIR / "index.html").read_bytes()
+
+
+def test_page_shell_has_landmarks_sections_and_a_noscript_note():
+    """The static HTML has the landmarks, the four sections and a note for visitors with no JS."""
+    page = _page()
+    tags = [tag for tag, _ in page.tags]
+    ids = {attrs.get("id") for _, attrs in page.tags}
+
+    assert page.tags[0] == ("html", {"lang": "en"})
+    assert tags.count("main") == 1 and tags.count("h1") == 1
+    assert {"header", "nav", "footer", "noscript"} <= set(tags)
+    assert {"hook", "guided", "free-play", "how-its-built"} <= ids
+    assert ("link", {"rel": "stylesheet", "href": "/static/styles.css"}) in page.tags
+    assert ({"type": "module", "src": "/static/app.mjs"}, "") in page.scripts
+
+
+def test_old_console_template_is_gone():
+    """The Tailwind-CDN console and its package-data entry went with the new page."""
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert not (STATIC_DIR.parent / "templates").exists()
+    assert pyproject["tool"]["setuptools"]["package-data"]["resilient_triage.api"] == ["static/**"]

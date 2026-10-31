@@ -520,19 +520,6 @@ async def test_triage_internal_scope_only_targets_chaos(
 
 
 @pytest.mark.asyncio
-async def test_sre_console_renders_html(client: httpx.AsyncClient):
-    """Verify that GET / serves the interactive SRE command center single-page console."""
-    resp = await client.get("/")
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers.get("content-type", "")
-    assert "Resilient Triage" in resp.text
-    assert "Live Architecture Pipeline Simulation" in resp.text
-    assert "CACHE &amp; VECTOR TIER" in resp.text or "CACHE & VECTOR TIER" in resp.text
-    assert "RESILIENT ORCHESTRATION" in resp.text
-    assert "Fast-Path Highway" in resp.text
-
-
-@pytest.mark.asyncio
 async def test_prometheus_metrics_endpoint(client: httpx.AsyncClient):
     """Verify that GET /metrics returns standard Prometheus exposition format."""
     resp = await client.get("/metrics")
