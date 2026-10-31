@@ -1,12 +1,23 @@
 """Tests for trace events, the trace recorders and the trace summary (ADR-008, #108)."""
 
+import json
 from typing import get_args
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
+from resilient_triage.graph.reconciliation import DegradationEvidence, reconcile
+from resilient_triage.llm.failures import (
+    MalformedResponse,
+    ProviderFailure,
+    RateLimited,
+    Rejected,
+    Unavailable,
+)
+from resilient_triage.llm.gateway import Completion
 from resilient_triage.schemas.api import TriageResponse
 from resilient_triage.schemas.incident import (
+    ActionRecommendation,
     DegradationStatus,
     IncidentTriageReport,
     SeverityLevel,
@@ -220,3 +231,182 @@ def test_null_trace_records_nothing_and_never_raises() -> None:
     recorder: TraceRecorder = NullTrace()
     for event in one_of_each_kind():
         recorder.record(event)
+
+
+# Free text a caller could leak: query, prompt, model output, snippet or Pydantic input.
+SENTINEL = "Secret customer query: card 4111 failing"
+
+
+def _string_schemas(node: object, defs: dict[str, object], path: str) -> list[tuple[str, dict]]:
+    """Every string-typed schema reachable from node, except inside TriageResponse."""
+    if isinstance(node, list):
+        return [s for item in node for s in _string_schemas(item, defs, path)]
+    if not isinstance(node, dict):
+        return []
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        name = ref.rsplit("/", 1)[-1]
+        if name == "TriageResponse":  # the report travels only in trace_finished
+            return []
+        return _string_schemas(defs[name], defs, f"{path}->{name}")
+    found = [(path, node)] if node.get("type") == "string" else []
+    for key, child in node.items():
+        if key != "$defs":
+            found += _string_schemas(child, defs, f"{path}.{key}")
+    return found
+
+
+def test_no_event_field_can_hold_free_text() -> None:
+    schema = TypeAdapter(TraceEvent).json_schema()
+    strings = _string_schemas(schema, schema["$defs"], "TraceEvent")
+
+    assert strings, "the walk found no string fields at all"
+    free_text = [p for p, s in strings if not ({"enum", "const", "pattern"} & s.keys())]
+    assert free_text == []
+
+
+@pytest.mark.parametrize("event", one_of_each_kind(), ids=lambda e: e.kind)
+def test_sentinel_is_rejected_by_every_string_field(event: TraceEvent) -> None:
+    data = event.model_dump(mode="json")
+    for name, value in data.items():
+        if name == "kind" or not isinstance(value, str):
+            continue
+        with pytest.raises(ValidationError):
+            type(event).model_validate({**data, name: SENTINEL})
+
+
+def _invalid_report_error() -> ValidationError:
+    try:
+        IncidentTriageReport.model_validate(
+            {
+                "summary": SENTINEL,
+                "severity": SENTINEL,
+                "root_cause_analysis": SENTINEL,
+                "confidence_score": SENTINEL,
+                SENTINEL: SENTINEL,
+            }
+        )
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected the report to be invalid")
+
+
+def _events_built_from_sentinel_inputs() -> list[TraceEvent]:
+    before = _report(SENTINEL).model_copy(
+        update={
+            "circuit_breakers_tripped": [SENTINEL],
+            "recommended_actions": [
+                ActionRecommendation(
+                    action=SENTINEL, target_system=SENTINEL, action_type="remediative"
+                ),
+                ActionRecommendation(
+                    action=SENTINEL, target_system=SENTINEL, action_type="diagnostic"
+                ),
+            ],
+        }
+    )
+    evidence = DegradationEvidence(
+        tripped_breakers=frozenset({"statuspage"}),
+        unavailable_sources=frozenset(),
+        synthesis_fell_back=False,
+    )
+    after = reconcile(before, evidence)
+    results: list[Completion | ProviderFailure] = [
+        Completion(text=SENTINEL, model="qwen/qwen3.8-27b"),
+        RateLimited(retry_after_s=30.0, scope="minute", detail=SENTINEL),
+        Unavailable(detail=SENTINEL),
+        Rejected(detail=SENTINEL),
+        MalformedResponse(detail=SENTINEL),
+    ]
+    return [
+        *(
+            ModelCall.from_result(
+                model="qwen/qwen3.8-27b", role="primary", result=result, duration_ms=5.0
+            )
+            for result in results
+        ),
+        ValidationFailed.from_error(_invalid_report_error(), attempt=1),
+        ValidationFailed.from_error(json.JSONDecodeError(SENTINEL, SENTINEL, 0), attempt=2),
+        Reconciled.between(before, after),
+        TraceFinished(
+            outcome="analyzed", response=TriageResponse(report=after, execution_time_ms=9.0)
+        ),
+    ]
+
+
+def test_sentinel_reaches_the_wire_only_inside_trace_finished() -> None:
+    trace = ListTrace()
+    for event in [*one_of_each_kind(), *_events_built_from_sentinel_inputs()]:
+        trace.record(event)
+
+    leaks = [e.kind for e in trace.events if SENTINEL in e.model_dump_json()]
+    assert leaks == ["trace_finished"]
+
+
+def test_model_call_keeps_the_failure_kind_not_its_detail() -> None:
+    limited = ModelCall.from_result(
+        model="llama-3.1-8b-instant",
+        role="fallback",
+        result=RateLimited(retry_after_s=12.0, scope="day", detail=SENTINEL),
+        duration_ms=3.0,
+    )
+    assert (limited.outcome, limited.rate_limit_scope, limited.retry_after_s) == (
+        "rate_limited",
+        "day",
+        12.0,
+    )
+
+    malformed = ModelCall.from_result(
+        model="qwen/qwen3.8-27b", role="primary", result=MalformedResponse("x"), duration_ms=1
+    )
+    assert (malformed.outcome, malformed.rate_limit_scope) == ("malformed_response", None)
+
+
+def test_validation_failed_names_fields_and_error_types_only() -> None:
+    event = ValidationFailed.from_error(_invalid_report_error(), attempt=1)
+
+    assert event.fields == ["confidence_score", "severity"]
+    assert event.error_types == ["enum", "extra_forbidden", "float_parsing"]
+    assert event.error_count == 3
+
+
+def test_unparseable_json_is_one_json_invalid_error() -> None:
+    event = ValidationFailed.from_error(json.JSONDecodeError("bad", "{", 0), attempt=2)
+
+    assert (event.attempt, event.error_count, event.fields, event.error_types) == (
+        2,
+        1,
+        [],
+        ["json_invalid"],
+    )
+
+
+def test_reconciled_records_status_breakers_and_raised_approvals() -> None:
+    before = _report().model_copy(
+        update={
+            "circuit_breakers_tripped": ["made-up-breaker"],
+            "recommended_actions": [
+                ActionRecommendation(
+                    action="inspect", target_system="api", action_type="diagnostic"
+                ),
+                ActionRecommendation(
+                    action="restart", target_system="api", action_type="remediative"
+                ),
+            ],
+        }
+    )
+    evidence = DegradationEvidence(
+        tripped_breakers=frozenset({"statuspage"}),
+        unavailable_sources=frozenset(),
+        synthesis_fell_back=False,
+    )
+
+    changes = Reconciled.between(before, reconcile(before, evidence)).changes
+
+    assert changes == ReconcileChanges(
+        degradation_before=DegradationStatus.HEALTHY,
+        degradation_after=DegradationStatus.PARTIALLY_DEGRADED,
+        breakers_changed=True,
+        breakers_after=["statuspage"],
+        approval_raised=[1],
+    )
