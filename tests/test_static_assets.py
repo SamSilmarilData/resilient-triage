@@ -790,7 +790,9 @@ def test_fonts_are_self_hosted_and_swap():
     families = set()
     for body in faces:
         assert re.search(r"font-display:\s*swap;", body), body
-        families.add(re.search(r"font-family:\s*\"([^\"]+)\"", body).group(1))  # type: ignore[union-attr]
+        family = re.search(r"font-family:\s*\"([^\"]+)\"", body)
+        assert family, body
+        families.add(family.group(1))
         assert all(url.startswith("vendor/@fontsource-variable/") for url in _css_urls(body))
 
     assert families == {"Inter Variable", "JetBrains Mono Variable"}
