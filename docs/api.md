@@ -33,6 +33,7 @@ Every HTTP response returned by the API includes the following observability hea
 | Method | Endpoint | Description | Auth |
 | :--- | :--- | :--- | :---: |
 | `POST` | [`/triage`](#1-post-triage) | Run autonomous incident triage analysis | Public |
+| `POST` | [`/triage/stream`](#1a-post-triagestream) | Same triage, streaming its execution trace as Server-Sent Events | Public |
 | `GET` | [`/health`](#2-get-health) | Check system availability, active model, and circuit states | Public |
 | `GET` | [`/resilience/status`](#3-get-resiliencestatus) | Detailed diagnostics for breakers, chaos, and cache | Public |
 | `GET` | [`/llm/quota`](#4-get-llmquota) | Retrieve real-time Groq rate limits and token budgets | Public |
@@ -161,7 +162,7 @@ Executes autonomous incident triage. Checks Redis semantic cache for similarity 
 | `timings` | Milliseconds from `trace_started`, rounded to microseconds: `total_ms` (to the last event before `trace_finished`), `cache_lookup_ms`, `slot_wait_ms`, `run_ms` (first node start to last node finish), `model_ms` (sum of model calls). `null` where the step did not happen. |
 
 #### Execution trace events
-The summary is derived from the request's trace events. `POST /triage` returns only the summary; the event stream itself is for `POST /triage/stream` (#111), where every stream ends in `trace_finished` carrying the same `TriageResponse` this route returns. Every event has `kind`, `seq` (0, 1, …) and `t_ms` (monotonic ms since the recorder was created). A cache hit is `trace_started`, `cache_lookup`, `trace_finished`; a run deadline records `deadline_exceeded`, then the reconciled fallback (`reconciled`), `cache_store` (`skipped_fallback`) and `trace_finished`.
+The summary is derived from the request's trace events. `POST /triage` returns only the summary; the event stream itself is for [`POST /triage/stream`](#1a-post-triagestream), where every stream ends in `trace_finished` carrying the same `TriageResponse` this route returns. Every event has `kind`, `seq` (0, 1, …) and `t_ms` (monotonic ms since the recorder was created). A cache hit is `trace_started`, `cache_lookup`, `trace_finished`; a run deadline records `deadline_exceeded`, then the reconciled fallback (`reconciled`), `cache_store` (`skipped_fallback`) and `trace_finished`.
 
 | `kind` | Fields (besides `seq`, `t_ms`) |
 |---|---|
@@ -191,6 +192,37 @@ curl -X POST http://127.0.0.1:8000/triage \
 curl -X POST http://127.0.0.1:8000/triage \
   -H "Content-Type: application/json" \
   -d '{"query": "Gateway service reporting 503 errors", "force_refresh": true}'
+```
+
+---
+
+### 1a. `POST /triage/stream`
+Runs the same triage as `POST /triage` (same `TriageRequest` body, same cache, run slots, run deadline and fallbacks) and streams its [execution trace events](#execution-trace-events) as Server-Sent Events while it runs (ADR-008). A browser reads it with `fetch()` and a stream parser: `EventSource` cannot send a POST body.
+
+#### Response (`200 OK` - `text/event-stream`)
+Each trace event is one SSE event: `event:` is its `kind` and `data:` is the event as JSON. While nothing happens the server sends a `: ping` comment line every 15 s; skip comment lines. Responses carry `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
+```text
+event: trace_started
+data: {"kind":"trace_started","seq":0,"t_ms":0.0,"schema_version":1,"scenario_id":null,"scoped":false,"force_refresh":false}
+
+event: cache_lookup
+data: {"kind":"cache_lookup","seq":1,"t_ms":4.1,"backend":"in_memory","hit":false,"similarity":null,"threshold":0.85,"duration_ms":4.0}
+
+: ping
+
+event: trace_finished
+data: {"kind":"trace_finished","seq":41,"t_ms":2150.7,"outcome":"analyzed","response":{"report":{...},"cached":false,"cache_similarity":null,"execution_time_ms":2150.6,"trace":{...}}}
+```
+
+- **Exactly one `trace_finished`, always last.** Its `response` is the `TriageResponse` that `POST /triage` would return for the same request (none when `outcome` is `shed`). The status is 200 once the stream starts, so failures arrive inside it, never as an HTTP error: a shed request ends `run_slot(acquired=false)`, `trace_finished(outcome=shed)` (where `POST /triage` answers 503); a run deadline records `deadline_exceeded` before the fallback; an unexpected exception ends the stream with a `SEVERELY_DEGRADED` synthesis fallback in `trace_finished` (`outcome=analyzed`, not cached). A request body that fails validation is still a 422 before any stream starts.
+- **No headers, no ids, no resume.** The cache outcome is in `trace_finished` (`outcome`, `response.cached`), not in `X-Cache` headers. There is no run id, no `GET` and no `Last-Event-ID` resume: a dropped connection loses its trace, and re-sending the request may now be a cache hit.
+- **A client disconnect cancels the run.** The run's slot is released, nothing is cached, and the request counts once in `resilient_triage_abandoned_requests_total` on [`/metrics`](#5-get-metrics), not as a hit, miss or saturated request.
+
+#### Example cURL
+```bash
+curl -N -X POST http://127.0.0.1:8000/triage/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Gateway service reporting 503 errors"}'
 ```
 
 ---
@@ -321,6 +353,10 @@ Prometheus text exposition format endpoint for scraping operational metrics, cac
 resilient_triage_requests_total{cache="hit"} 42
 resilient_triage_requests_total{cache="miss"} 8
 resilient_triage_requests_total{cache="saturated"} 0
+
+# HELP resilient_triage_abandoned_requests_total Triage requests cancelled before they ended, e.g. by a client disconnect (not a triage outcome)
+# TYPE resilient_triage_abandoned_requests_total counter
+resilient_triage_abandoned_requests_total 1
 
 # HELP resilient_triage_circuit_breaker_state Active circuit breaker state (1 if active, 0 otherwise)
 # TYPE resilient_triage_circuit_breaker_state gauge
