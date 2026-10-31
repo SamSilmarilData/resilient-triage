@@ -154,7 +154,7 @@ async def test_held_slots_shed_the_run_on_a_private_pool_and_are_released() -> N
 
     outcome = await run.triage(trace=trace)
 
-    assert isinstance(outcome, Shed)
+    assert outcome == Shed(reason="capacity")
     assert _kinds(trace.events) == [
         "scenario_setup",
         "trace_started",
