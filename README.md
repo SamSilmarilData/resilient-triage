@@ -26,25 +26,9 @@
 
 ---
 
-## 🖥️ SRE Incident Command Center UI (Served at `/`)
+## 🖥️ Explorable Page (Served at `/`)
 
-`resilient-triage` ships with a dark-mode (`#09090b` zinc) interactive SRE command console built with Tailwind CSS, Inter, and JetBrains Mono typography:
-
-- **Real-Time Telemetry Navbar**: Displays live active model (`⚡ Groq LPU (qwen/qwen3.8-27b)`), system health (`HEALTHY` / `DEGRADED`), live Redis driver state (`REDIS: CONNECTED (RediSearch)`), and circuit breakers (`statuspage`, `chaos`).
-- **Incident Query Console**: 1-click preset incident scenarios (`💥 Actions 503 Outage`, `💳 Stripe Ingestion Timeout`, `🗄️ Postgres Pool Exhaustion`) with `Cmd+Enter` hotkey execution.
-- **Dual-Metric Latency Telemetry**:
-  - `⚡ X-Cache: HIT • Server: 1.16ms (Redis HNSW) • Net RTT: 78ms (79ms total)` (emerald pulse)
-  - `🔍 X-Cache: MISS • Server: 1.27s (Groq LPU) • Net RTT: 85ms (1.35s total)` (violet pulse)
-- **Structured Report Viewer**: Renders severity pills, confidence meter, root cause analysis, affected services, and prioritized diagnostic/remediative action items with 1-click **Copy Command** clipboard actions.
-- **Chaos & Resilience Controller Panel**:
-  - Toggle HTTP 503 fault injections dynamically into upstream probes.
-  - Inject artificial latency and random failure rates via sliders.
-  - `⚡ Trip Breaker`: Manually trips circuit breakers to `OPEN` to verify automatic compensatory graph routing.
-  - `🔄 Reset Circuits`: Restores all breakers to `CLOSED` and clears chaos state.
-  - `🧹 Flush Semantic Cache`: Purges Redis and in-memory vector cache on demand.
-- **Live Event Audit Stream**: Real-time ticker logging every request with dual-metric precision: `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
-
-> 🎬 **Showcasing or Presenting?** Check out the [Interactive Demo Guide & 5-Act Presentation Script](docs/demo.md).
+`/` serves a build-free page (ADR-010) that explains a triage run by playing it: guided scenarios break one dependency at a time while a graph and a timeline draw the real execution trace, then free play runs your own question. The page shell is in place (static prose, layout, light and dark themes); the scenarios, trace view and free play are being built on top of it (tracking issue #104). Everything it loads, Preact, htm, Signals and the Inter and JetBrains Mono fonts included, is vendored and served from the app's own origin.
 
 ---
 
@@ -115,7 +99,7 @@ cp .env.example .env
 ./scripts/run_local.sh
 ```
 
-- **SRE Command Center Dashboard**: [http://127.0.0.1:8000](http://127.0.0.1:8000)
+- **Explorable page**: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 - **Interactive OpenAPI Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - **Live Health Endpoint**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
@@ -202,7 +186,7 @@ See the full [REST API Reference](docs/api.md) for detailed JSON schemas, header
 | `GET` | `/chaos/probe` | Trigger live diagnostic probe through Tenacity retries and circuit breaker. |
 | `POST` | `/resilience/reset` | Administratively reset all tripped circuit breakers, chaos state, and LLM counters. |
 | `POST` | `/cache/clear` | Flush all entries from Redis and in-memory semantic cache. |
-| `GET` | `/` | Serve the interactive SRE Incident Command Center UI. |
+| `GET` | `/` | Serve the explorable page (static shell; assets under `/static`). |
 
 
 ---
@@ -233,7 +217,7 @@ resilient-triage/
 │   ├── telemetry/                  # Live Statuspage and configurable Chaos clients
 │   ├── cache/                      # Redis 8 RediSearch & NumPy vector caching engine
 │   ├── graph/                      # LangGraph cyclic state machine and self-repair nodes
-│   └── api/                        # FastAPI gateway, middleware, and SRE console UI
+│   └── api/                        # FastAPI gateway, middleware, and the page (static/)
 └── tests/                          # 58 unit, integration, and chaos resilience tests
 ```
 

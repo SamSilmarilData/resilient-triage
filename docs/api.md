@@ -46,6 +46,7 @@ Every HTTP response returned by the API includes the following observability hea
 | `GET` | [`/chaos/probe`](#9-get-chaosprobe) | Upstream probe target to test circuit tripping | Public |
 | `POST` | [`/cache/clear`](#10-post-cacheclear) | Flush Redis and in-memory semantic cache | Admin (`X-Admin-Key`) |
 | `GET` | [`/static/{path}`](#11-get-staticpath) | The page's static files, vendored libraries and fonts included | Public |
+| `GET` | [`/`](#12-get-) | The explorable page (HTML shell) | Public |
 
 ---
 
@@ -597,4 +598,14 @@ A `304 Not Modified` carries the same `Cache-Control`.
 #### Example cURL
 ```bash
 curl -I http://127.0.0.1:8000/static/vendor/preact@10.29.8/dist/preact.mjs
+```
+
+---
+
+### 12. `GET /`
+Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
+
+#### Example cURL
+```bash
+curl -i http://127.0.0.1:8000/
 ```
