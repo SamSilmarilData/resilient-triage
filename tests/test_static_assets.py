@@ -282,3 +282,36 @@ def test_update_after_a_version_bump_replaces_the_old_directory(tmp_path: Path):
 
     assert not (root / "lib@1.0.0").exists()
     assert (root / "lib@1.1.0/dist/lib.mjs").read_bytes() == b"export const x = 11;\n"
+
+
+def test_committed_vendor_tree_matches_its_manifest():
+    """Every vendored file matches its manifest sha256 and every package ships its LICENSE."""
+    assert vendor.verify(VENDOR_DIR) == []
+
+
+def test_manifest_pins_the_approved_packages():
+    """The manifest pins exactly the packages and versions approved in #94 (ADR 0010)."""
+    manifest = json.loads((VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
+    pinned = {(p["name"], p["version"], p["license"]) for p in manifest["packages"]}
+    assert pinned == {
+        ("preact", "10.29.8", "MIT"),
+        ("htm", "3.1.1", "Apache-2.0"),
+        ("@preact/signals", "2.11.4", "MIT"),
+        ("@preact/signals-core", "1.14.5", "MIT"),
+        ("@fontsource-variable/inter", "5.3.0", "OFL-1.1"),
+        ("@fontsource-variable/jetbrains-mono", "5.3.0", "OFL-1.1"),
+    }
+    specifiers = {
+        f["specifier"]: f"{p['name']}@{p['version']}/{f['path']}"
+        for p in manifest["packages"]
+        for f in p["files"]
+        if "specifier" in f
+    }
+    assert specifiers == {
+        "preact": "preact@10.29.8/dist/preact.mjs",
+        "preact/hooks": "preact@10.29.8/hooks/dist/hooks.mjs",
+        "htm": "htm@3.1.1/dist/htm.mjs",
+        "htm/preact": "htm@3.1.1/preact/index.mjs",
+        "@preact/signals": "@preact/signals@2.11.4/dist/signals.mjs",
+        "@preact/signals-core": "@preact/signals-core@1.14.5/dist/signals-core.mjs",
+    }
