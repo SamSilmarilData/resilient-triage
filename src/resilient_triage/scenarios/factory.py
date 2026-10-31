@@ -96,8 +96,14 @@ class ScenarioRun:
             record_event(trace, lambda: ScenarioSetup(step="seed_cache", count=len(setup.seeds)))
         for source in setup.tripped_sources:
             await self._trip(source, trace)
-        if self.scenario.overrides.held_slots is not None:
+        overrides = self.scenario.overrides
+        if overrides.held_slots is not None:
             await self._hold_every_slot(trace)
+        if (deadline_s := overrides.run_deadline_s) is not None:  # applied by the factory
+            record_event(
+                trace,
+                lambda: ScenarioSetup(step="set_run_deadline", count=1, deadline_s=deadline_s),
+            )
 
     async def _hold_every_slot(self, trace: TraceRecorder) -> None:
         """Take every slot of this run's private pool, so its request queues and is shed."""

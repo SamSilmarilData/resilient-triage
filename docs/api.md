@@ -170,7 +170,7 @@ The summary is derived from the request's trace events. `POST /triage` returns o
 
 | `kind` | Fields (besides `seq`, `t_ms`) |
 |---|---|
-| `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source`), `count`, `source` |
+| `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source` / `set_run_deadline`), `count`, `source` (`fail_source`), `deadline_s` (`set_run_deadline`) |
 | `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh` |
 | `cache_lookup` | `backend`, `hit`, `similarity`, `threshold`, `duration_ms` |
 | `run_slot` | `acquired`, `waited_ms`, `capacity`, `reason` (`capacity` / `budget` when shed, else none), `retry_after_s` (budget sheds only) |
