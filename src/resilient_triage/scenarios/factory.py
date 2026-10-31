@@ -143,6 +143,8 @@ class ScenarioFactory:
         )
         breakers = CircuitBreakerRegistry()
         chaos = ChaosManager()
+        if scenario.cluster_sentinel is not None:
+            chaos.update_config(scenario.cluster_sentinel)
         statuspage: TelemetrySource = (
             CannedStatuspageSource(scenario.statuspage)
             if scenario.statuspage is not None

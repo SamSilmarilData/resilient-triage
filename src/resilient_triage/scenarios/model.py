@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from resilient_triage.llm import ScriptEntry
 from resilient_triage.schemas.incident import IncidentTriageReport
-from resilient_triage.schemas.telemetry import StatuspageSummary
+from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
 from resilient_triage.trace.fields import TriageOutcomeKind
 
 # Same shape as the trace's Identifier, since the id travels on trace_started.
@@ -31,7 +31,8 @@ class Setup:
     """Scenario setup: what is already true before the run starts, all traced before t = 0."""
 
     # Sources whose private breaker is tripped by fail_max real failed reads before the run.
-    # Each must fail in this scenario (statuspage=None for "statuspage").
+    # Each must fail in this scenario: "statuspage" needs statuspage=None, "chaos" a
+    # cluster_sentinel that always fails.
     tripped_sources: tuple[str, ...] = ()
     # Stored through the cache's real store() path, so the run's lookup embeds and compares.
     seeds: tuple[CacheSeed, ...] = ()
@@ -77,14 +78,23 @@ class Scenario:
     statuspage: StatuspageSummary | None
     caption: str
     expected_outcome: TriageOutcomeKind
+    # Cluster Sentinel failing or slow, set on the run's private ChaosManager; None: healthy.
+    cluster_sentinel: ChaosConfig | None = None
     setup: Setup = field(default_factory=Setup)
     overrides: Overrides = field(default_factory=Overrides)
 
     def __post_init__(self) -> None:
         if not _SCENARIO_ID.match(self.id):
             raise ValueError(f"Scenario id {self.id!r} is not an identifier")
+        sentinel = self.cluster_sentinel
+        if sentinel is not None and 0 < sentinel.failure_rate < 1:
+            raise ValueError("A random Cluster Sentinel failure_rate would not repeat exactly")
+        failing = {
+            "statuspage": self.statuspage is None,
+            "chaos": sentinel is not None
+            and sentinel.active
+            and (sentinel.inject_503 or sentinel.failure_rate == 1),
+        }
         for source in self.setup.tripped_sources:
-            if source != "statuspage":
-                raise ValueError(f"Scenario setup can only trip 'statuspage', not {source!r}")
-            if self.statuspage is not None:
-                raise ValueError("Tripping 'statuspage' needs a failing Statuspage (None)")
+            if not failing.get(source, False):
+                raise ValueError(f"Scenario setup cannot trip {source!r}: it does not fail here")
