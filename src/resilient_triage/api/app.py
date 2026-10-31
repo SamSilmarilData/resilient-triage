@@ -160,26 +160,35 @@ async def triage_incident(
             }
         case Analyzed(response=response):
             headers = {"X-Cache": "MISS", "X-Thread-ID": thread_id}
-        case Shed(retry_after_s=None):
-            raise HTTPException(
+        case Shed():
+            raise _shed_error(outcome)
+        case _:
+            assert_never(outcome)
+    return JSONResponse(content=response.model_dump(mode="json"), headers=headers)
+
+
+def _shed_error(shed: Shed) -> HTTPException:
+    """The 503 for a shed request; a budget shed also says when to retry."""
+    match shed.reason:
+        case "capacity":
+            return HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
                     "Triage state machine is currently saturated. "
                     "Please retry with exponential backoff."
                 ),
             )
-        case Shed(retry_after_s=retry_after_s):
-            raise HTTPException(
+        case "budget":
+            return HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
                     "Free-play run budget is spent for now; cached answers still work. "
-                    f"Retry in {retry_after_s} s."
+                    f"Retry in {shed.retry_after_s} s."
                 ),
-                headers={"Retry-After": str(retry_after_s)},
+                headers={"Retry-After": str(shed.retry_after_s)},
             )
         case _:
-            assert_never(outcome)
-    return JSONResponse(content=response.model_dump(mode="json"), headers=headers)
+            assert_never(shed.reason)
 
 
 async def open_trace_stream(

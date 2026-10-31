@@ -104,10 +104,15 @@ class Analyzed:
 
 @dataclass(frozen=True)
 class Shed:
-    """Refused: no run slot freed up in time, or the run budget was spent."""
+    """Refused: no run slot freed up in time (capacity), or the run budget was spent (budget)."""
 
-    # Seconds until the run budget admits a run; None when shed for lack of a slot.
+    reason: ShedReason
+    # Seconds until the run budget admits a run; set exactly when the reason is "budget".
     retry_after_s: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.reason == "budget") != (self.retry_after_s is not None):
+            raise ValueError("A shed has a retry_after_s exactly when the budget refused it")
 
 
 TriageOutcome = CacheHit | Analyzed | Shed
@@ -312,7 +317,7 @@ class TriageGateway:
             return self._over_budget(self._budget, trace)
         if not await self._acquire_run_slot(trace):
             logger.warning("No run slot freed up in time; shed request.")
-            return Shed()
+            return Shed(reason="capacity")
         try:
             analysis = await self._analyze(query, scope, trace)
         finally:
@@ -336,7 +341,7 @@ class TriageGateway:
                 retry_after_s=retry_after_s,
             ),
         )
-        return Shed(retry_after_s=retry_after_s)
+        return Shed(reason="budget", retry_after_s=retry_after_s)
 
     async def _acquire_run_slot(self, trace: TraceRecorder) -> bool:
         """Wait up to the queue timeout for a run slot; record the wait and whether it came."""
