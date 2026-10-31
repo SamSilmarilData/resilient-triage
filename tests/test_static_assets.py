@@ -5,12 +5,17 @@ import hashlib
 import importlib.util
 import io
 import json
+import mimetypes
 import shutil
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 
+import httpx
 import pytest
+from resilient_triage.api.static_assets import StaticAssets
+from starlette.applications import Starlette
+from starlette.routing import Mount
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static" / "vendor"
@@ -315,3 +320,101 @@ def test_manifest_pins_the_approved_packages():
         "@preact/signals": "@preact/signals@2.11.4/dist/signals.mjs",
         "@preact/signals-core": "@preact/signals-core@1.14.5/dist/signals-core.mjs",
     }
+
+
+IMMUTABLE = "public, max-age=31536000, immutable"
+# Independent of the code under test: what a browser needs for each vendored file kind.
+EXPECTED_CONTENT_TYPE = {
+    ".mjs": "text/javascript; charset=utf-8",
+    ".woff2": "font/woff2",
+    "": "text/plain; charset=utf-8",  # LICENSE
+}
+
+
+def _vendored_paths() -> list[str]:
+    manifest = json.loads((VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
+    return [
+        f"{p['name']}@{p['version']}/{f['path']}" for p in manifest["packages"] for f in p["files"]
+    ]
+
+
+@pytest.fixture
+def host_without_mime_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make `mimetypes` know only Python's built-in table, like python:3.12-slim with no
+    /etc/mime.types (which has no `.woff2` entry)."""
+    monkeypatch.setattr(mimetypes, "_db", mimetypes.MimeTypes())
+
+
+@pytest.mark.usefixtures("host_without_mime_database")
+@pytest.mark.parametrize("rel", _vendored_paths())
+async def test_vendored_file_is_served_immutable_with_its_type(client: httpx.AsyncClient, rel: str):
+    """Each vendored file is served byte for byte, typed for the browser, cached for a year."""
+    response = await client.get(f"/static/vendor/{rel}")
+
+    assert response.status_code == 200
+    assert response.content == (VENDOR_DIR / rel).read_bytes()
+    assert response.headers["content-type"] == EXPECTED_CONTENT_TYPE[PurePosixPath(rel).suffix]
+    assert response.headers["cache-control"] == IMMUTABLE
+
+
+async def test_manifest_is_served(client: httpx.AsyncClient):
+    """The manifest itself is reachable, as JSON, so a deployment can be checked over HTTP."""
+    response = await client.get("/static/vendor/manifest.json")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.json()["packages"][0]["name"] == "preact"
+
+
+async def test_revalidation_keeps_the_cache_header(client: httpx.AsyncClient):
+    """A conditional request gets 304 and still carries the immutable Cache-Control."""
+    path = "/static/vendor/preact@10.29.8/dist/preact.mjs"
+    etag = (await client.get(path)).headers["etag"]
+
+    response = await client.get(path, headers={"If-None-Match": etag})
+
+    assert response.status_code == 304
+    assert response.headers["cache-control"] == IMMUTABLE
+
+
+async def test_head_request_carries_the_same_headers(client: httpx.AsyncClient):
+    """HEAD answers with the GET headers and no body."""
+    response = await client.head("/static/vendor/htm@3.1.1/dist/htm.mjs")
+
+    assert response.status_code == 200
+    assert response.content == b""
+    assert response.headers["content-type"] == "text/javascript; charset=utf-8"
+    assert response.headers["cache-control"] == IMMUTABLE
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/static/vendor/preact@10.29.8/dist/missing.mjs",
+        "/static/vendor/..%2f..%2fapp.py",
+        "/static/../app.py",
+    ],
+)
+async def test_unknown_or_escaping_path_is_404(client: httpx.AsyncClient, path: str):
+    """A missing file or a path that climbs out of static/ is a 404, never a 500."""
+    response = await client.get(path)
+
+    assert response.status_code == 404
+
+
+async def test_unversioned_static_file_is_revalidated(tmp_path: Path):
+    """Files outside vendor/ have no version in their path, so browsers must revalidate them."""
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "lib@1.0.0.mjs").write_bytes(b"export {};\n")
+    (tmp_path / "app.mjs").write_bytes(b"export {};\n")
+    app = Starlette(routes=[Mount("/static", StaticAssets(directory=tmp_path))])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as ac:
+        page_module = await ac.get("/static/app.mjs")
+        vendored = await ac.get("/static/vendor/lib@1.0.0.mjs")
+
+    assert page_module.headers["cache-control"] == "no-cache"
+    assert page_module.headers["content-type"] == "text/javascript; charset=utf-8"
+    assert vendored.headers["cache-control"] == IMMUTABLE
