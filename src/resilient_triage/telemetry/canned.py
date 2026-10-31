@@ -5,8 +5,6 @@ breaker and the graph treat them exactly as the live source; neither makes an HT
 (ADR-009).
 """
 
-import time
-
 import httpx
 
 from resilient_triage.schemas.incident import TelemetrySignal
@@ -18,36 +16,31 @@ from resilient_triage.telemetry.statuspage import (
 )
 
 
-class CannedStatuspageSource:
-    """Statuspage source that reads a fixed summary."""
+class _ScenarioStatuspage:
+    """What both scenario Statuspage sources share with the live one: id, name and keywords."""
 
     id = StatuspageSource.id
     display_name = StatuspageSource.display_name
     keywords = StatuspageSource.keywords
+
+    def degraded_label(self, query: str, scope: str | None) -> str:
+        """Signal source used when this source cannot be read."""
+        return GLOBAL_SIGNAL_SOURCE
+
+
+class CannedStatuspageSource(_ScenarioStatuspage):
+    """Statuspage source that reads a fixed summary."""
 
     def __init__(self, summary: StatuspageSummary) -> None:
         self._summary = summary
 
-    def degraded_label(self, query: str, scope: str | None) -> str:
-        """Signal source used when this source cannot be read."""
-        return GLOBAL_SIGNAL_SOURCE
-
     async def read(self, query: str, scope: str | None) -> list[TelemetrySignal]:
         """Parse the fixed summary into signals, as the live source parses a fetched one."""
-        started = time.monotonic()
-        return summary_signals(self._summary, round((time.monotonic() - started) * 1000.0, 2))
+        return summary_signals(self._summary, 0.0)  # nothing is fetched, so no latency
 
 
-class FailingStatuspageSource:
+class FailingStatuspageSource(_ScenarioStatuspage):
     """Statuspage source whose every read fails to connect: the scenario's unavailable source."""
-
-    id = StatuspageSource.id
-    display_name = StatuspageSource.display_name
-    keywords = StatuspageSource.keywords
-
-    def degraded_label(self, query: str, scope: str | None) -> str:
-        """Signal source used when this source cannot be read."""
-        return GLOBAL_SIGNAL_SOURCE
 
     async def read(self, query: str, scope: str | None) -> list[TelemetrySignal]:
         """Raise a connection error, which the probe retries as a transient failure."""
