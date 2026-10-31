@@ -13,6 +13,8 @@ from resilient_triage.llm import ScriptEntry
 from resilient_triage.schemas.api import ScenarioView
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
+from resilient_triage.telemetry.chaos import ClusterSentinelSource
+from resilient_triage.telemetry.statuspage import StatuspageSource
 from resilient_triage.trace.fields import (
     ModelOutcome,
     ModelRole,
@@ -128,8 +130,8 @@ class Scenario:
         if sentinel is not None and 0 < sentinel.failure_rate < 1:
             raise ValueError("A random Cluster Sentinel failure_rate would not repeat exactly")
         failing = {
-            "statuspage": self.statuspage is None,
-            "chaos": sentinel is not None
+            StatuspageSource.id: self.statuspage is None,
+            ClusterSentinelSource.id: sentinel is not None
             and sentinel.active
             and (sentinel.inject_503 or sentinel.failure_rate == 1),
         }
