@@ -14,6 +14,7 @@ from resilient_triage.runtime import AppRuntime, TriageDeps
 from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
 from resilient_triage.telemetry.probe import TelemetryProbe
 from resilient_triage.telemetry.statuspage import StatuspageSource
+from resilient_triage.trace.events import TraceEvent, TraceFinished, parse_trace_event
 
 AppServer = Callable[..., AbstractAsyncContextManager[tuple[AppRuntime, httpx.AsyncClient]]]
 """The conftest `serve_app` factory: (llm_adapter, app_settings=settings) -> (runtime, client)."""
@@ -81,3 +82,30 @@ def make_triage_deps(
         telemetry=TelemetryProbe([statuspage, sentinel], breakers=breakers),
         history=fake_history,
     )
+
+
+def parse_sse(body: str) -> list[TraceEvent]:
+    """Parse an SSE body into trace events, checking each `event:` name matches its kind."""
+    events: list[TraceEvent] = []
+    for block in body.replace("\r\n", "\n").split("\n\n"):
+        name: str | None = None
+        data: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event: "):
+                name = line.removeprefix("event: ")
+            elif line.startswith("data: "):
+                data.append(line.removeprefix("data: "))
+        if not data:
+            continue  # a ping (comment-only block) or trailing blank
+        event = parse_trace_event("\n".join(data))
+        assert event.kind == name
+        events.append(event)
+    return events
+
+
+def finished(events: list[TraceEvent]) -> TraceFinished:
+    """The stream's one trace_finished, which must be its last event."""
+    assert [e.kind for e in events].count("trace_finished") == 1
+    last = events[-1]
+    assert isinstance(last, TraceFinished)
+    return last
