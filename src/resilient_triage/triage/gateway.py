@@ -160,12 +160,7 @@ class TriageGateway:
         except asyncio.CancelledError:
             self._count_abandoned()
             raise
-        outcome = _outcome(answer, started, recorder)
-        self._count(outcome)
-        response = None if isinstance(outcome, Shed) else outcome.response
-        kind = _kind(outcome)
-        record_event(recorder, lambda: TraceFinished(outcome=kind, response=response))
-        return outcome
+        return self._finish(_outcome(answer, started, recorder), recorder)
 
     @asynccontextmanager
     async def stream(
@@ -208,15 +203,18 @@ class TriageGateway:
             await self.triage(query, scope, force_refresh=force_refresh, trace=trace)
         except Exception:
             # Once a stream's 200 headers are sent an error can't become a 500 (ADR-008).
+            # triage() records trace_finished last, so a triage() that raised never recorded it.
             logger.exception("Triage request raised; finishing its stream with a fallback.")
-            if any(event.kind == "trace_finished" for event in trace.events):
-                return
             report = _reconciled_fallback(query, _GRAPH_EXCEPTION_REASON, trace)
-            outcome = Analyzed(_response(report, started, trace, similarity=None))
-            self._count(outcome)
-            record_event(
-                trace, lambda: TraceFinished(outcome="analyzed", response=outcome.response)
-            )
+            self._finish(Analyzed(_response(report, started, trace, similarity=None)), trace)
+
+    def _finish(self, outcome: TriageOutcome, trace: TraceRecorder) -> TriageOutcome:
+        """Count how a request ended and record its one trace_finished; return the outcome."""
+        self._count(outcome)
+        response = None if isinstance(outcome, Shed) else outcome.response
+        kind = _kind(outcome)
+        record_event(trace, lambda: TraceFinished(outcome=kind, response=response))
+        return outcome
 
     def _count_abandoned(self) -> None:
         """Count a request cancelled before it ended; it is not a triage outcome."""
