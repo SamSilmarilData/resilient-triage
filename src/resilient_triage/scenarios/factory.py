@@ -23,7 +23,8 @@ from resilient_triage.schemas.state import TriageState
 from resilient_triage.telemetry.canned import CannedStatuspageSource, FailingStatuspageSource
 from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
 from resilient_triage.telemetry.probe import TelemetryProbe, TelemetrySource
-from resilient_triage.trace.recorder import NullTrace, TraceRecorder
+from resilient_triage.trace.events import ScenarioSetup
+from resilient_triage.trace.recorder import NullTrace, TraceRecorder, record_event
 from resilient_triage.triage.gateway import TriageGateway, TriageOutcome
 from resilient_triage.triage.slots import RunSlotPool
 
@@ -58,7 +59,32 @@ class ScenarioRun:
     async def triage(self, *, trace: TraceRecorder | None = None) -> TriageOutcome:
         """Run the scenario's request through its private gateway, recording on `trace`."""
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
+        await self._setup(recorder)
         return await self.gateway.triage(self.scenario.query, self.scenario.scope, trace=recorder)
+
+    async def _setup(self, trace: TraceRecorder) -> None:
+        """Do the scenario setup, recording it on `trace` before the request's trace_started."""
+        for source in self.scenario.setup.tripped_sources:
+            await self._trip(source, trace)
+
+    async def _trip(self, source: str, trace: TraceRecorder) -> None:
+        """Fail real reads of `source` until its private breaker opens (fail_max of them)."""
+        breaker = self.breakers.get(source)
+        if breaker is None:
+            raise ValueError(f"No breaker for scenario source {source!r}")
+        failed = 0
+        while not breaker.info().is_open:
+            if failed >= breaker.info().fail_max:
+                raise RuntimeError(f"Scenario source {source!r} did not fail in setup")
+            await self.telemetry.collect(
+                frozenset({source}),
+                self.scenario.query,
+                self.scenario.scope,
+                trace=trace,
+                phase="setup",
+            )
+            failed += 1
+        record_event(trace, lambda: ScenarioSetup(step="fail_source", count=failed, source=source))
 
     async def _run_graph(
         self, run_input: TriageState, /, *, trace: TraceRecorder
