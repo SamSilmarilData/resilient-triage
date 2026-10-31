@@ -6,17 +6,25 @@ from typing import Any
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import settings
 from resilient_triage.llm import DEFAULT_REPORT_JSON
-from resilient_triage.scenarios import CacheSeed, Scenario, ScenarioFactory, Setup
+from resilient_triage.scenarios import (
+    CacheSeed,
+    HeldSlots,
+    Overrides,
+    Scenario,
+    ScenarioFactory,
+    Setup,
+)
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import StatuspageSummary
 from resilient_triage.trace.events import (
+    RunSlot,
     ScenarioSetup,
     TelemetryRead,
     TraceEvent,
     TraceStarted,
 )
 from resilient_triage.trace.recorder import ListTrace
-from resilient_triage.triage.gateway import Analyzed, CacheHit
+from resilient_triage.triage.gateway import Analyzed, CacheHit, Shed
 from resilient_triage.triage.slots import RunSlotPool
 
 SCENARIO_QUERY = "GitHub Actions workflows failing with 503 errors"
@@ -104,3 +112,31 @@ async def test_a_seeded_scenario_is_answered_from_its_private_cache() -> None:
         ("trace_finished", None),
     ]
     assert isinstance(trace.events[0], ScenarioSetup) and trace.events[0].count == 1
+
+
+async def test_held_slots_shed_the_run_on_a_private_pool_and_are_released() -> None:
+    trace = ListTrace()
+    shared = RunSlotPool(capacity=4, queue_timeout_s=settings.triage_queue_timeout_s)
+    held = HeldSlots(capacity=2, queue_timeout_s=0.02)
+    run = _factory(shared).build(
+        _scenario(overrides=Overrides(held_slots=held), expected_outcome="shed")
+    )
+
+    outcome = await run.triage(trace=trace)
+
+    assert isinstance(outcome, Shed)
+    assert _kinds(trace.events) == [
+        "scenario_setup",
+        "trace_started",
+        "cache_lookup",
+        "run_slot",
+        "trace_finished",
+    ]
+    hold, slot = trace.events[0], trace.events[3]
+    assert isinstance(hold, ScenarioSetup)
+    assert (hold.step, hold.count) == ("hold_run_slots", 2)
+    assert isinstance(slot, RunSlot)
+    assert (slot.acquired, slot.capacity) == (False, 2)
+    assert run.slots is not shared
+    assert run.slots.free == 2  # the held slots were given back after the run
+    assert shared.free == 4
