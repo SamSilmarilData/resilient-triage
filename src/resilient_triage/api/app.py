@@ -20,12 +20,14 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from resilient_triage import __version__
 from resilient_triage.config import settings
 from resilient_triage.runtime import AppRuntime, build_runtime
+from resilient_triage.scenarios.catalogue import public_catalogue
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
     CircuitSnapshot,
     HealthResponse,
     LLMQuotaSnapshot,
     ResilienceStatusResponse,
+    ScenarioCatalogue,
     TriageRequest,
     TriageResponse,
 )
@@ -197,6 +199,12 @@ async def triage_incident_stream(
     """Triage like POST /triage, streaming the execution trace as SSE; ends in trace_finished."""
     async for event in events:
         yield ServerSentEvent(event=event.kind, data=event)
+
+
+@router.get("/scenarios", response_model=ScenarioCatalogue)
+async def list_scenarios() -> ScenarioCatalogue:
+    """List the scenario catalogue's public view: chapters and scenarios in display order."""
+    return public_catalogue()
 
 
 @router.post("/chaos/inject", response_model=ChaosConfig, dependencies=[Depends(verify_admin_key)])
