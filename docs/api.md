@@ -216,7 +216,7 @@ data: {"kind":"trace_finished","seq":41,"t_ms":2150.7,"outcome":"analyzed","resp
 
 - **Exactly one `trace_finished`, always last.** Its `response` is the `TriageResponse` that `POST /triage` would return for the same request (none when `outcome` is `shed`). The status is 200 once the stream starts, so failures arrive inside it, never as an HTTP error: a shed request ends `run_slot(acquired=false)`, `trace_finished(outcome=shed)` (where `POST /triage` answers 503); a run deadline records `deadline_exceeded` before the fallback; an unexpected exception ends the stream with a `SEVERELY_DEGRADED` synthesis fallback in `trace_finished` (`outcome=analyzed`, not cached). A request body that fails validation is still a 422 before any stream starts.
 - **No headers, no ids, no resume.** The cache outcome is in `trace_finished` (`outcome`, `response.cached`), not in `X-Cache` headers. There is no run id, no `GET` and no `Last-Event-ID` resume: a dropped connection loses its trace, and re-sending the request may now be a cache hit.
-- **A client disconnect cancels the run.** The run's slot is released, nothing is cached, and the request counts once in `resilient_triage_abandoned_requests_total` on [`/metrics`](#5-get-metrics), not as a hit, miss or saturated request.
+- **A client disconnect cancels the run.** The run's slot is released, nothing is cached (a cancel that lands during the cache store evicts the entry again), and the request counts once, whenever the disconnect lands, in `resilient_triage_abandoned_requests_total` on [`/metrics`](#5-get-metrics), not as a hit, miss or saturated request.
 
 #### Example cURL
 ```bash
