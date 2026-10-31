@@ -21,6 +21,8 @@ from resilient_triage.scenarios import (
 )
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
+from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
+from resilient_triage.telemetry.probe import TelemetryProbe
 from resilient_triage.trace.events import (
     DeadlineExceeded,
     ModelCall,
@@ -218,6 +220,15 @@ async def test_a_run_deadline_override_is_shown_as_scenario_setup() -> None:
     assert trace.events[0] == ScenarioSetup(step="set_run_deadline", count=1, deadline_s=3)
 
 
+async def _chaos_manager(telemetry: TelemetryProbe) -> ChaosManager:
+    """The ChaosManager behind a probe's Cluster Sentinel source."""
+
+    async def manager(source: ClusterSentinelSource) -> ChaosManager:
+        return source.manager
+
+    return await telemetry.call_source(ClusterSentinelSource, manager)
+
+
 async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
     runtime: AppRuntime,
 ) -> None:
@@ -246,6 +257,9 @@ async def test_concurrent_runs_share_nothing_and_leave_the_shared_runtime_alone(
         assert getattr(a, private) is not getattr(runtime, private, None), private
     assert a.deps.llm is not b.deps.llm
     assert a.deps.llm is not runtime.llm
+    chaos_a, chaos_b = [await _chaos_manager(run.deps.telemetry) for run in (a, b)]
+    assert chaos_a is not chaos_b
+    assert chaos_a is not runtime.chaos and chaos_b is not runtime.chaos
     assert a.deps.telemetry is not runtime.deps.telemetry
     assert (a.cache.count, b.cache.count) == (2, 1)  # A's seed and answer; B's answer
     assert a.breakers.get_all_statuses()["statuspage"].is_open
