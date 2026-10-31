@@ -31,6 +31,7 @@ from resilient_triage.trace.events import (
     ValidationFailed,
     parse_trace_event,
 )
+from resilient_triage.trace.recorder import ListTrace, NullTrace, TraceRecorder
 
 
 def _report(summary: str = "Payment API elevated errors") -> IncidentTriageReport:
@@ -156,3 +157,66 @@ def test_shed_trace_finished_has_no_response_and_others_must() -> None:
 def test_confidence_is_a_bounded_number() -> None:
     with pytest.raises(ValidationError):
         NodeFinished(node="validate_report", duration_ms=1.0, confidence=1.7)
+
+
+class FakeClock:
+    """A monotonic clock that the test advances by hand, in seconds."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_list_trace_stamps_seq_and_ms_since_it_began() -> None:
+    clock = FakeClock()
+    trace = ListTrace(clock=clock)
+    clock.now += 0.0125
+    trace.record(NodeStarted(node="analyze_query"))
+    clock.now += 0.25
+    trace.record(NodeFinished(node="analyze_query", duration_ms=250.0))
+
+    assert [(e.seq, e.t_ms, e.kind) for e in trace.events] == [
+        (0, 12.5, "node_started"),
+        (1, 262.5, "node_finished"),
+    ]
+
+
+def test_record_swallows_an_exception_from_a_broken_sink(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken_sink(event: TraceEvent) -> None:
+        raise RuntimeError("sink is gone")
+
+    trace = ListTrace(sink=broken_sink)
+    trace.record(NodeStarted(node="analyze_query"))
+    trace.record(NodeStarted(node="collect_telemetry"))
+
+    assert [e.seq for e in trace.events] == [0, 1]
+    assert "sink is gone" in caplog.text
+
+
+def test_record_swallows_an_exception_from_a_clock_that_breaks_mid_trace() -> None:
+    readings = iter([100.0])
+
+    def clock() -> float:
+        return next(readings)  # StopIteration after the first reading
+
+    trace = ListTrace(clock=clock)
+    trace.record(NodeStarted(node="analyze_query"))
+
+
+def test_sink_sees_each_stamped_event_in_order() -> None:
+    seen: list[TraceEvent] = []
+    trace = ListTrace(sink=seen.append)
+    trace.record(NodeStarted(node="analyze_query"))
+    trace.record(NodeStarted(node="collect_telemetry"))
+
+    assert seen == list(trace.events)
+
+
+def test_null_trace_records_nothing_and_never_raises() -> None:
+    recorder: TraceRecorder = NullTrace()
+    for event in one_of_each_kind():
+        recorder.record(event)
