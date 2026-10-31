@@ -105,6 +105,23 @@ async def test_pre_run_failures_open_the_private_breaker_at_exactly_fail_max() -
     assert [(r.phase, r.outcome, r.attempts) for r in run_reads] == [(None, "tripped", 0)]
 
 
+async def test_setup_runs_before_the_clock_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Real-sized retry waits make the tripping setup take a noticeable time; none of it may
+    # count towards the run's clock, which starts at trace_started (#112).
+    monkeypatch.setattr(settings, "retry_min_wait_seconds", 0.02)
+    monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.02)
+    trace = ListTrace()
+    scenario = _scenario(statuspage=None, setup=Setup(tripped_sources=("statuspage",)))
+
+    await _factory().build(scenario).triage(trace=trace)
+
+    start = _kinds(trace.events).index("trace_started")
+    setup_ms = sum(e.duration_ms for e in trace.events[:start] if isinstance(e, TelemetryRead))
+    assert setup_ms >= 100  # the setup really waited
+    assert all(e.t_ms == 0 for e in trace.events[: start + 1])
+    assert trace.events[-1].t_ms < setup_ms
+
+
 async def test_a_seeded_scenario_is_answered_from_its_private_cache() -> None:
     trace = ListTrace()
     seed = CacheSeed(query=SCENARIO_QUERY, report=SEED_REPORT)
