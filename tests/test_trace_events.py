@@ -43,6 +43,14 @@ from resilient_triage.trace.events import (
     parse_trace_event,
 )
 from resilient_triage.trace.recorder import ListTrace, NullTrace, TraceRecorder
+from resilient_triage.trace.summary import (
+    ModelCallSummary,
+    NodeVisit,
+    SourceRead,
+    SummaryTimings,
+    TraceSummary,
+    summarize,
+)
 
 
 def _report(summary: str = "Payment API elevated errors") -> IncidentTriageReport:
@@ -410,3 +418,241 @@ def test_reconciled_records_status_breakers_and_raised_approvals() -> None:
         breakers_after=["statuspage"],
         approval_raised=[1],
     )
+
+
+def _numbered(events: list[TraceEvent]) -> list[TraceEvent]:
+    """Stamp seq in order (t_ms is set per event by the test)."""
+    return [e.model_copy(update={"seq": i}) for i, e in enumerate(events)]
+
+
+REFINE_RUN_CHANGES = ReconcileChanges(
+    degradation_before=DegradationStatus.HEALTHY,
+    degradation_after=DegradationStatus.PARTIALLY_DEGRADED,
+    breakers_changed=False,
+    breakers_after=[],
+    approval_raised=[0],
+)
+
+
+def _refine_run_events() -> list[TraceEvent]:
+    """A scenario run: setup, cache miss, a degraded read, failover, refine, reconcile."""
+    return _numbered(
+        [
+            TelemetryRead(
+                t_ms=1,
+                source="statuspage",
+                phase="setup",
+                outcome="unavailable",
+                attempts=3,
+                breaker_before="closed",
+                breaker_after="closed",
+                signals=1,
+                duration_ms=1,
+            ),
+            TraceStarted(t_ms=10, scenario_id="refine"),
+            CacheLookup(t_ms=12, backend="in_memory", hit=False, threshold=0.9, duration_ms=2),
+            RunSlot(t_ms=13, acquired=True, waited_ms=0.5, capacity=4),
+            NodeStarted(t_ms=14, node="collect_telemetry"),
+            TelemetryRead(
+                t_ms=40,
+                source="statuspage",
+                outcome="unavailable",
+                attempts=3,
+                breaker_before="closed",
+                breaker_after="closed",
+                signals=1,
+                duration_ms=25,
+            ),
+            NodeFinished(t_ms=41, node="collect_telemetry", duration_ms=27),
+            NodeStarted(t_ms=41, node="generate_report"),
+            ModelCall(
+                t_ms=60,
+                model="qwen/qwen3.8-27b",
+                role="primary",
+                outcome="rate_limited",
+                rate_limit_scope="minute",
+                retry_after_s=30,
+                duration_ms=18,
+            ),
+            ModelCall(
+                t_ms=100,
+                model="llama-3.1-8b-instant",
+                role="fallback",
+                outcome="completion",
+                duration_ms=40,
+            ),
+            NodeFinished(t_ms=100, node="generate_report", duration_ms=59),
+            NodeStarted(t_ms=100, node="validate_report"),
+            NodeFinished(t_ms=101, node="validate_report", duration_ms=1, confidence=0.45),
+            RouteDecided(
+                t_ms=101, source="validate_report", target="refine_reflection", route="refine"
+            ),
+            NodeStarted(t_ms=101, node="refine_reflection"),
+            NodeFinished(t_ms=102, node="refine_reflection", duration_ms=1),
+            NodeStarted(t_ms=102, node="finalize_report"),
+            Reconciled(t_ms=103, changes=REFINE_RUN_CHANGES),
+            NodeFinished(t_ms=103, node="finalize_report", duration_ms=1),
+            CacheStore(t_ms=105, backend="in_memory", outcome="stored", duration_ms=2),
+            TraceFinished(
+                t_ms=106,
+                outcome="analyzed",
+                response=TriageResponse(
+                    report=_report().model_copy(
+                        update={"degradation_status": DegradationStatus.PARTIALLY_DEGRADED}
+                    ),
+                    execution_time_ms=96.0,
+                ),
+            ),
+        ]
+    )
+
+
+def test_summary_of_an_analyzed_run() -> None:
+    summary = summarize(_refine_run_events())
+
+    assert summary == TraceSummary(
+        scenario_id="refine",
+        outcome="analyzed",
+        nodes=[
+            NodeVisit(node="collect_telemetry", duration_ms=27),
+            NodeVisit(node="generate_report", duration_ms=59),
+            NodeVisit(node="validate_report", duration_ms=1),
+            NodeVisit(node="refine_reflection", duration_ms=1),
+            NodeVisit(node="finalize_report", duration_ms=1),
+        ],
+        routes=["refine"],
+        model_calls=[
+            ModelCallSummary(
+                model="qwen/qwen3.8-27b", role="primary", outcome="rate_limited", duration_ms=18
+            ),
+            ModelCallSummary(
+                model="llama-3.1-8b-instant", role="fallback", outcome="completion", duration_ms=40
+            ),
+        ],
+        failovers=1,
+        telemetry=[SourceRead(source="statuspage", outcome="unavailable", attempts=3)],
+        repair_rounds=0,
+        refine_rounds=1,
+        reconciliation=REFINE_RUN_CHANGES,
+        degradation=DegradationStatus.PARTIALLY_DEGRADED,
+        deadline_exceeded=False,
+        timings=SummaryTimings(
+            total_ms=96, cache_lookup_ms=2, slot_wait_ms=0.5, run_ms=89, model_ms=58
+        ),
+    )
+
+
+def test_summary_is_the_same_before_trace_finished_except_for_the_finish() -> None:
+    events = _refine_run_events()
+
+    before_finish = summarize(events[:-1])
+
+    assert before_finish.outcome == "analyzed"
+    assert before_finish.degradation == DegradationStatus.PARTIALLY_DEGRADED
+    assert before_finish.timings.total_ms == 95
+    assert before_finish.model_dump(exclude={"timings"}) == summarize(events).model_dump(
+        exclude={"timings"}
+    )
+
+
+def test_summary_of_a_cache_hit() -> None:
+    events = _numbered(
+        [
+            TraceStarted(t_ms=0.5),
+            CacheLookup(
+                t_ms=3,
+                backend="redisearch",
+                hit=True,
+                similarity=0.97,
+                threshold=0.9,
+                duration_ms=2.5,
+            ),
+            TraceFinished(
+                t_ms=3.5,
+                outcome="cache_hit",
+                response=TriageResponse(
+                    report=_report(), cached=True, cache_similarity=0.97, execution_time_ms=3
+                ),
+            ),
+        ]
+    )
+
+    summary = summarize(events)
+
+    assert (summary.outcome, summary.nodes, summary.degradation) == (
+        "cache_hit",
+        [],
+        DegradationStatus.HEALTHY,
+    )
+    assert summary.timings == SummaryTimings(
+        total_ms=3, cache_lookup_ms=2.5, slot_wait_ms=None, run_ms=None, model_ms=0
+    )
+
+
+def test_summary_of_a_shed_request_without_trace_finished() -> None:
+    events = _numbered(
+        [
+            TraceStarted(t_ms=0),
+            CacheLookup(t_ms=1, backend="in_memory", hit=False, threshold=0.9, duration_ms=1),
+            RunSlot(t_ms=1501, acquired=False, waited_ms=1500, capacity=2),
+        ]
+    )
+
+    summary = summarize(events)
+
+    assert (summary.outcome, summary.timings.slot_wait_ms, summary.degradation) == (
+        "shed",
+        1500,
+        None,
+    )
+
+
+def test_summary_of_a_deadline_counts_repairs_and_unfinished_nodes() -> None:
+    events = _numbered(
+        [
+            TraceStarted(t_ms=0, force_refresh=True),
+            RunSlot(t_ms=0, acquired=True, waited_ms=0, capacity=4),
+            NodeStarted(t_ms=1, node="validate_report"),
+            ValidationFailed(
+                t_ms=2, attempt=1, error_count=1, fields=[], error_types=["json_invalid"]
+            ),
+            NodeFinished(t_ms=2, node="validate_report", duration_ms=1),
+            RouteDecided(t_ms=2, source="validate_report", target="self_repair", route="repair"),
+            NodeStarted(t_ms=2, node="self_repair"),
+            NodeFinished(t_ms=3, node="self_repair", duration_ms=1),
+            NodeStarted(t_ms=3, node="generate_report"),
+            NodeFinished(t_ms=3000, node="generate_report", duration_ms=2997, status="cancelled"),
+            DeadlineExceeded(t_ms=3000, deadline_s=3),
+        ]
+    )
+
+    summary = summarize(events)
+
+    assert summary.repair_rounds == 1
+    assert summary.deadline_exceeded is True
+    assert summary.nodes[-1] == NodeVisit(
+        node="generate_report", duration_ms=2997, status="cancelled"
+    )
+    assert summary.routes == ["repair"]
+
+
+def test_summary_of_no_events_is_empty() -> None:
+    summary = summarize([])
+
+    assert (summary.outcome, summary.nodes, summary.timings.total_ms) == (None, [], 0)
+
+
+def test_list_trace_summary_matches_summarize_of_its_events() -> None:
+    trace = ListTrace()
+    for event in _refine_run_events():
+        trace.record(event)
+
+    assert trace.summary() == summarize(trace.events)
+
+
+def test_no_summary_field_can_hold_free_text() -> None:
+    schema = TraceSummary.model_json_schema()
+    strings = _string_schemas(schema, schema.get("$defs", {}), "TraceSummary")
+
+    assert strings
+    assert [p for p, s in strings if not ({"enum", "const", "pattern"} & s.keys())] == []
