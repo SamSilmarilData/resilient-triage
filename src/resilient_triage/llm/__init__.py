@@ -16,7 +16,13 @@ from resilient_triage.llm.gateway import (
     QuotaHeaders,
 )
 from resilient_triage.llm.groq import GroqAdapter
-from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, SIMULATION_LABEL, ScriptedAdapter
+from resilient_triage.llm.scripted import (
+    DEFAULT_REPORT_JSON,
+    SIMULATION_LABEL,
+    ScriptedAdapter,
+    ScriptedReply,
+    ScriptEntry,
+)
 
 __all__ = [
     "DEFAULT_REPORT_JSON",
@@ -31,7 +37,9 @@ __all__ = [
     "RateLimitScope",
     "RateLimited",
     "Rejected",
+    "ScriptEntry",
     "ScriptedAdapter",
+    "ScriptedReply",
     "Unavailable",
     "build_llm_gateway",
 ]

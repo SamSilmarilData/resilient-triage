@@ -45,6 +45,7 @@ from resilient_triage.trace.recorder import (
     record_event,
 )
 from resilient_triage.trace.summary import TraceSummary
+from resilient_triage.triage.slots import RunSlotPool
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +126,24 @@ class TriageGateway:
     """Answers a triage query from the cache, or by a run in a bounded slot, or sheds it."""
 
     def __init__(
-        self, cache: SemanticCacheManager, run_graph: GraphRunner, settings: Settings
+        self,
+        cache: SemanticCacheManager,
+        run_graph: GraphRunner,
+        settings: Settings,
+        *,
+        slots: RunSlotPool | None = None,
+        scenario_id: str | None = None,
     ) -> None:
+        # Without a slot pool the gateway builds its own from settings; a scenario run's
+        # gateway is handed one, and names its scenario on every trace_started (ADR-009).
         self._cache = cache
         self._run_graph = run_graph
         self._settings = settings
-        self._run_slots = asyncio.Semaphore(settings.triage_max_concurrent_runs)
+        self._run_slots = slots or RunSlotPool(
+            capacity=settings.triage_max_concurrent_runs,
+            queue_timeout_s=settings.triage_queue_timeout_s,
+        )
+        self._scenario_id = scenario_id
         self._metrics = TriageMetrics()
 
     @property
@@ -153,7 +166,10 @@ class TriageGateway:
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
         started = time.monotonic()
         record_event(
-            recorder, lambda: TraceStarted(scoped=bool(scope), force_refresh=force_refresh)
+            recorder,
+            lambda: TraceStarted(
+                scenario_id=self._scenario_id, scoped=bool(scope), force_refresh=force_refresh
+            ),
         )
         try:
             answer = await self._answer(query, scope, force_refresh=force_refresh, trace=recorder)
@@ -164,16 +180,23 @@ class TriageGateway:
 
     @asynccontextmanager
     async def stream(
-        self, query: str, scope: str | None, *, force_refresh: bool = False
+        self,
+        query: str,
+        scope: str | None,
+        *,
+        force_refresh: bool = False,
+        trace: StreamingTrace | None = None,
     ) -> AsyncIterator[AsyncIterator[TraceEvent]]:
         """Run a request; yield its live trace events, the last always its one trace_finished."""
+        # A caller may pass a trace it already recorded on (a scenario run's setup); those
+        # events stream first, before trace_started.
         # The request runs as its own task so events reach the client while it runs. Leaving
         # this context, normally or by cancellation (a client disconnect), cancels that task
         # and waits for it. The context, not the event iterator, owns the task: an iterator
         # parked at a `yield` is only closed whenever it is garbage-collected.
         # A task cancelled before its first step never runs triage(), which counts its own
         # cancellation, so this context counts that one instead: exactly once either way.
-        trace = StreamingTrace()
+        trace = trace if trace is not None else StreamingTrace()
         began = asyncio.Event()
         run = asyncio.create_task(
             self._triage_or_fallback(query, scope, force_refresh, trace, began)
@@ -267,15 +290,9 @@ class TriageGateway:
     async def _acquire_run_slot(self, trace: TraceRecorder) -> bool:
         """Wait up to the queue timeout for a run slot; record the wait and whether it came."""
         wait_started = time.monotonic()
-        try:
-            await asyncio.wait_for(
-                self._run_slots.acquire(), timeout=self._settings.triage_queue_timeout_s
-            )
-            acquired = True
-        except TimeoutError:
-            acquired = False
+        acquired = await self._run_slots.acquire()
         waited_ms = ms_since(wait_started)
-        capacity = self._settings.triage_max_concurrent_runs
+        capacity = self._run_slots.capacity
         record_event(
             trace, lambda: RunSlot(acquired=acquired, waited_ms=waited_ms, capacity=capacity)
         )
