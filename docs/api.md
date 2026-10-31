@@ -45,6 +45,7 @@ Every HTTP response returned by the API includes the following observability hea
 | `GET` | [`/chaos/config`](#8-get-chaosconfig) | Retrieve active runtime chaos simulation configuration | Public |
 | `GET` | [`/chaos/probe`](#9-get-chaosprobe) | Upstream probe target to test circuit tripping | Public |
 | `POST` | [`/cache/clear`](#10-post-cacheclear) | Flush Redis and in-memory semantic cache | Admin (`X-Admin-Key`) |
+| `GET` | [`/static/{path}`](#11-get-staticpath) | The page's static files, vendored libraries and fonts included | Public |
 
 ---
 
@@ -567,3 +568,33 @@ curl -X POST http://127.0.0.1:8000/cache/clear \
   -H "X-Admin-Key: secret-admin-key"
 ```
 
+---
+
+### 11. `GET /static/{path}`
+Serves the files under `src/resilient_triage/api/static/` from the installed package (ADR-010). `HEAD` works too; any other method is `405`, and a missing file or a path that climbs out of `static/` is `404`.
+
+Third-party files live under `/static/vendor/<package>@<version>/<path>`, where `<path>` is the file's path inside the npm package, with the package's `LICENSE` alongside. `/static/vendor/manifest.json` lists every vendored file with its sha256 (see [deployment](deployment.md#vendored-frontend-files)).
+
+| File kind | `Content-Type` |
+| :--- | :--- |
+| `.mjs`, `.js` | `text/javascript; charset=utf-8` |
+| `.woff2` | `font/woff2` |
+| `.css` | `text/css; charset=utf-8` |
+| `.json` | `application/json` |
+| `.html` | `text/html; charset=utf-8` |
+| `.svg` | `image/svg+xml` |
+| `LICENSE` (no suffix), `.txt` | `text/plain; charset=utf-8` |
+
+These types come from a fixed table in `api/static_assets.py`, not the host's MIME database, so a slim image with no `/etc/mime.types` still serves fonts as `font/woff2`.
+
+| Path | `Cache-Control` |
+| :--- | :--- |
+| `/static/vendor/…` | `public, max-age=31536000, immutable` (the version is in the path, so a new version is a new URL) |
+| any other `/static/…` file | `no-cache` (the URL is stable across releases, so the browser revalidates with `ETag` / `Last-Modified` and usually gets a `304`) |
+
+A `304 Not Modified` carries the same `Cache-Control`.
+
+#### Example cURL
+```bash
+curl -I http://127.0.0.1:8000/static/vendor/preact@10.29.8/dist/preact.mjs
+```
