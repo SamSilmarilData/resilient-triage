@@ -198,18 +198,25 @@ def route_labels(graph: CompiledStateGraph[Any, Any, Any, Any]) -> dict[tuple[st
     """Map each conditional (source, target) node pair to its router key, from get_graph().
 
     Raises ValueError if a pair has two keys: the trace derives a route from the pair alone
-    (ADR-008), so every pair must name exactly one.
+    (ADR-008), so every pair must name exactly one. get_graph() draws one edge per pair and
+    keeps only the first key, so the check reads every key from the builder's path maps.
     """
+    keys: dict[tuple[str, str], set[str]] = {}
+    for source, branches in graph.builder.branches.items():
+        for branch in branches.values():
+            for key, target in (branch.ends or {}).items():
+                keys.setdefault((source, target), set()).add(str(key))
+    ambiguous = {pair: sorted(found) for pair, found in keys.items() if len(found) > 1}
+    if ambiguous:
+        raise ValueError(f"Node pairs with more than one route key are ambiguous: {ambiguous}")
+
     labels: dict[tuple[str, str], str] = {}
     for edge in graph.get_graph().edges:
-        if not edge.conditional:
-            continue
-        # get_graph() leaves the label out when the router key is the target's own name.
-        label = str(edge.data) if edge.data is not None else edge.target
-        pair = (edge.source, edge.target)
-        if labels.get(pair, label) != label:
-            raise ValueError(f"Node pair {pair} is ambiguous: {labels[pair]!r} or {label!r}")
-        labels[pair] = label
+        if edge.conditional:
+            # get_graph() leaves the label out when the router key is the target's own name.
+            labels[(edge.source, edge.target)] = (
+                str(edge.data) if edge.data is not None else edge.target
+            )
     return labels
 
 
