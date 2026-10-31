@@ -1,17 +1,26 @@
 """Scenario: the frozen definition of one catalogued scenario run (ADR-009).
 
 A scenario is data: the request (query, scope), the model's scripted replies, what Statuspage
-reads, the scenario setup done before the run, per-run overrides, and the caption and outcome
-the page shows. `ScenarioFactory` turns one into a private, runnable `ScenarioRun`.
+reads, the scenario setup done before the run, per-run overrides, the page copy (chapter, title,
+caption, setup notes) and the outcome its run must show. `ScenarioFactory` turns one into a
+private, runnable `ScenarioRun`; `public_view()` is all the page may see of it.
 """
 
 import re
 from dataclasses import dataclass, field
 
+from pydantic import BaseModel, ConfigDict
+
 from resilient_triage.llm import ScriptEntry
-from resilient_triage.schemas.incident import IncidentTriageReport
+from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
-from resilient_triage.trace.fields import TriageOutcomeKind
+from resilient_triage.trace.fields import (
+    ModelOutcome,
+    ModelRole,
+    ReadOutcome,
+    StoreOutcome,
+    TriageOutcomeKind,
+)
 
 # Same shape as the trace's Identifier, since the id travels on trace_started.
 _SCENARIO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
@@ -65,10 +74,50 @@ class Overrides:
 
 
 @dataclass(frozen=True)
+class ExpectedOutcome:
+    """What a scenario run must show: its path through the graph and the answer's key facts."""
+
+    outcome: TriageOutcomeKind
+    # The answer's degradation status; None when shed (no answer).
+    degradation: DegradationStatus | None = None
+    nodes: tuple[str, ...] = ()  # graph nodes visited, in order
+    routes: tuple[tuple[str, str], ...] = ()  # (router's source node, route key), in order
+    model_calls: tuple[tuple[ModelRole, ModelOutcome], ...] = ()
+    telemetry: tuple[tuple[str, ReadOutcome], ...] = ()  # run-time reads, not setup's
+    breakers_tripped: tuple[str, ...] = ()  # the answer's circuit_breakers_tripped
+    approval_raised: tuple[int, ...] = ()  # action indexes reconcile made require approval
+    confidence: float | None = None  # the answer's confidence_score
+    cache_store: StoreOutcome | None = None  # None when the run never reached the store
+    deadline_exceeded: bool = False
+
+
+class ScenarioView(BaseModel):
+    """What the page may see of a scenario: its copy, never its script or expected outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    chapter: str
+    title: str
+    caption: str
+    setup_notes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Chapter:
+    """A group of scenarios on the page, shown under its title in catalogue order."""
+
+    id: str
+    title: str
+
+
+@dataclass(frozen=True)
 class Scenario:
     """One catalogued scenario: request, scripted replies and Statuspage, setup and overrides."""
 
     id: str
+    chapter: str  # the id of the Chapter it is shown under
+    title: str
     query: str
     scope: str | None
     # The model's replies in call order, each with an optional delay (a ScriptedReply);
@@ -77,11 +126,13 @@ class Scenario:
     # What Statuspage reads; None means every Statuspage read fails (an unavailable source).
     statuspage: StatuspageSummary | None
     caption: str
-    expected_outcome: TriageOutcomeKind
+    expected_outcome: ExpectedOutcome
     # Cluster Sentinel failing or slow, set on the run's private ChaosManager; None: healthy.
     cluster_sentinel: ChaosConfig | None = None
     setup: Setup = field(default_factory=Setup)
     overrides: Overrides = field(default_factory=Overrides)
+    # What is true before the run, in words for the page (the setup and overrides, the faults).
+    setup_notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _SCENARIO_ID.match(self.id):
@@ -98,3 +149,13 @@ class Scenario:
         for source in self.setup.tripped_sources:
             if not failing.get(source, False):
                 raise ValueError(f"Scenario setup cannot trip {source!r}: it does not fail here")
+
+    def public_view(self) -> ScenarioView:
+        """The page copy for GET /scenarios: no script, query or expected outcome."""
+        return ScenarioView(
+            id=self.id,
+            chapter=self.chapter,
+            title=self.title,
+            caption=self.caption,
+            setup_notes=self.setup_notes,
+        )

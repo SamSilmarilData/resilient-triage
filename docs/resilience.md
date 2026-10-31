@@ -181,14 +181,14 @@ A cached answer's identity includes its service scope (`normalize_scope()`: stri
 
 Large Language Models frequently emit JSON with minor syntax or schema defects. The self-repair loop ensures 100% schema compliance:
 
-1. **Cycle Limit**: Hard-bounded to a maximum of 2 self-repair attempts per incident query.
+1. **Cycle Limit**: `max_self_repair_retries` (2) counts invalid replies, so a run gets at most one self-repair round: the first invalid reply is sent back for repair, a second goes to the fallback.
 2. **Traceback Extraction**:
    ```python
    errors = [f"{e['loc']}: {e['msg']}" for e in validation_error.errors()]
    ```
 3. **Corrective Feedback**: Appends human message containing the exact error fields back into `TriageState["messages"]`.
 4. **Retry Exhaustion (`FallbackReportNode`)**:
-   - If the model fails after 2 repair attempts, execution routes to `fallback_report_node`.
+   - If the repaired reply is invalid too (the second invalid reply), execution routes to `fallback_report_node`.
    - Synthesizes a deterministic `IncidentTriageReport`:
      - Severity: `UNKNOWN` or inferred from query keywords.
      - Degradation Status: `SEVERELY_DEGRADED`, set by report reconciliation in `finalize` because the node records `synthesis_fell_back: True` (see below).
