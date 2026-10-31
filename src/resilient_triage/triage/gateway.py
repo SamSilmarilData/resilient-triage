@@ -328,18 +328,19 @@ class TriageGateway:
 
 
 async def _cancel_and_wait(task: "asyncio.Task[None]") -> None:
-    """Cancel a task and wait until it has finished, even if this wait is itself cancelled."""
+    """Cancel a task and wait, unbounded, until it finishes; re-raise a cancel of this wait."""
     # A cancelled stream may be re-cancelled at every await (anyio cancel scopes), so the wait
-    # repeats until the task is done, then re-raises the cancellation: no task outlives it.
+    # repeats until the task is done, then re-raises the first cancellation it caught: no task
+    # outlives it. The wait has no bound of its own: it relies on a cancelled run ending.
     task.cancel()
-    cancelled = False
+    cancelled: asyncio.CancelledError | None = None
     while not task.done():
         try:
             await asyncio.wait({task})
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        raise asyncio.CancelledError
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+    if cancelled is not None:
+        raise cancelled
 
 
 def _raise_if_cancelled() -> None:
