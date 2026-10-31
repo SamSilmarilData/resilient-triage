@@ -4,6 +4,7 @@ Sequences are compared on (kind, key fields) only: no timing assertions.
 """
 
 import asyncio
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -26,7 +27,13 @@ from resilient_triage.resilience.circuit_breaker import CircuitBreakerRegistry, 
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.telemetry.probe import TelemetryProbe
-from resilient_triage.trace.events import ModelCall, TelemetryRead
+from resilient_triage.trace.events import (
+    ModelCall,
+    NodeFinished,
+    Reconciled,
+    TelemetryRead,
+    ValidationFailed,
+)
 from resilient_triage.trace.recorder import ListTrace
 
 MESSAGES: list[BaseMessage] = [HumanMessage(content="Is checkout down?")]
@@ -87,6 +94,196 @@ async def test_healthy_run_records_every_node_and_each_conditional_route() -> No
         ("route_decided", "validate_report", "finalize_report", "finalize"),
         *_node("finalize_report"),
     ]
+
+
+def _report_json(confidence: float) -> str:
+    report = json.loads(DEFAULT_REPORT_JSON)
+    report["confidence_score"] = confidence
+    return json.dumps(report)
+
+
+def _route(source: str, target: str, route: str) -> tuple[Any, ...]:
+    return ("route_decided", source, target, route)
+
+
+def _telemetry(source: str, outcome: str) -> list[tuple[Any, ...]]:
+    return [
+        *_node("analyze_query"),
+        ("node_started", "collect_telemetry"),
+        ("telemetry_read", source, outcome),
+        ("node_finished", "collect_telemetry", "ok"),
+    ]
+
+
+def _generate(*calls: tuple[str, str]) -> list[tuple[Any, ...]]:
+    return [
+        ("node_started", "generate_report"),
+        *(("model_call", role, outcome) for role, outcome in calls),
+        ("node_finished", "generate_report", "ok"),
+    ]
+
+
+def _validate(*, failed_attempt: int | None = None) -> list[tuple[Any, ...]]:
+    failed = [("validation_failed", failed_attempt)] if failed_attempt else []
+    return [
+        _route("generate_report", "validate_report", "validate"),
+        ("node_started", "validate_report"),
+        *failed,
+        ("node_finished", "validate_report", "ok"),
+    ]
+
+
+def _finalize(source: str) -> list[tuple[Any, ...]]:
+    return [
+        _route(source, "finalize_report", "finalize"),
+        ("node_started", "finalize_report"),
+        ("reconciled",),
+        ("node_finished", "finalize_report", "ok"),
+    ]
+
+
+COMPLETION = ("primary", "completion")
+SYNTHESIZE = [
+    _route("collect_telemetry", "synthesize_telemetry", "synthesize"),
+    *_node("synthesize_telemetry"),
+]
+
+
+def _confidences(trace: ListTrace) -> list[float | None]:
+    return [
+        e.confidence
+        for e in trace.events
+        if isinstance(e, NodeFinished) and e.node == "validate_report"
+    ]
+
+
+async def test_healthy_path_sequence() -> None:
+    keys, trace, _ = await _traced_run(make_triage_deps(llm_adapter=ScriptedAdapter()))
+
+    assert keys == [
+        *_telemetry("statuspage", "read"),
+        *SYNTHESIZE,
+        *_generate(COMPLETION),
+        *_validate(),
+        *_finalize("validate_report"),
+    ]
+    assert _confidences(trace) == [0.9]
+    reconciled = next(e for e in trace.events if isinstance(e, Reconciled))
+    assert reconciled.changes.degradation_after == "HEALTHY"
+    assert reconciled.changes.approval_raised == []
+
+
+async def test_self_repair_path_sequence() -> None:
+    adapter = ScriptedAdapter(['{"severity": "CATASTROPHIC"}', DEFAULT_REPORT_JSON])
+
+    keys, trace, _ = await _traced_run(make_triage_deps(llm_adapter=adapter))
+
+    assert keys == [
+        *_telemetry("statuspage", "read"),
+        *SYNTHESIZE,
+        *_generate(COMPLETION),
+        *_validate(failed_attempt=1),
+        _route("validate_report", "self_repair", "repair"),
+        *_node("self_repair"),
+        *_generate(COMPLETION),
+        *_validate(),
+        *_finalize("validate_report"),
+    ]
+    assert _confidences(trace) == [None, 0.9]
+    failed = next(e for e in trace.events if isinstance(e, ValidationFailed))
+    assert (failed.fields, failed.error_types) == (["severity"], ["enum"])
+
+
+async def test_refine_path_sequence() -> None:
+    adapter = ScriptedAdapter([_report_json(0.4), _report_json(0.8)])
+
+    keys, trace, _ = await _traced_run(make_triage_deps(llm_adapter=adapter))
+
+    assert keys == [
+        *_telemetry("statuspage", "read"),
+        *SYNTHESIZE,
+        *_generate(COMPLETION),
+        *_validate(),
+        _route("validate_report", "refine_reflection", "refine"),
+        *_node("refine_reflection"),
+        *_generate(COMPLETION),
+        *_validate(),
+        *_finalize("validate_report"),
+    ]
+    assert _confidences(trace) == [0.4, 0.8]
+
+
+async def test_refine_then_provider_failure_finalizes_the_pre_refine_report() -> None:
+    down = Unavailable(detail="503")
+    adapter = ScriptedAdapter([_report_json(0.4), down, down, down])
+
+    keys, trace, state = await _traced_run(make_triage_deps(llm_adapter=adapter))
+
+    assert keys == [
+        *_telemetry("statuspage", "read"),
+        *SYNTHESIZE,
+        *_generate(COMPLETION),
+        *_validate(),
+        _route("validate_report", "refine_reflection", "refine"),
+        *_node("refine_reflection"),
+        *_generate(
+            ("primary", "unavailable"), ("primary", "unavailable"), ("fallback", "unavailable")
+        ),
+        *_finalize("generate_report"),
+    ]
+    assert state["final_report"].confidence_score == 0.4
+
+
+async def test_degraded_path_sequence() -> None:
+    breakers = CircuitBreakerRegistry()
+    deps = make_triage_deps(breakers=breakers)
+    force_open_for_tests(breakers.get_or_create("chaos"))
+
+    keys, trace, _ = await _traced_run(
+        deps, "Internal database chaos probe failing", service_filter="auth-service"
+    )
+
+    assert keys == [
+        *_telemetry("chaos", "tripped"),
+        _route("collect_telemetry", "compensate_blindspots", "compensate"),
+        *_node("compensate_blindspots"),
+        *_node("degraded_fallback"),
+        *_node("synthesize_telemetry"),
+        *_generate(COMPLETION),
+        *_validate(),
+        *_finalize("validate_report"),
+    ]
+    reconciled = next(e for e in trace.events if isinstance(e, Reconciled))
+    assert reconciled.changes.breakers_after == ["chaos"]
+    assert reconciled.changes.degradation_after != "HEALTHY"
+
+
+async def test_provider_failure_path_routes_to_fallback() -> None:
+    down = Unavailable(detail="503")
+    adapter = ScriptedAdapter([down, down, down])
+
+    keys, _, _ = await _traced_run(make_triage_deps(llm_adapter=adapter))
+
+    assert keys[-7:] == [
+        ("node_finished", "generate_report", "ok"),
+        _route("generate_report", "fallback_report", "fallback"),
+        *_node("fallback_report"),
+        ("node_started", "finalize_report"),
+        ("reconciled",),
+        ("node_finished", "finalize_report", "ok"),
+    ]
+
+
+async def test_no_event_carries_query_text_prompts_or_model_output() -> None:
+    secret = "SECRETWORD"
+    adapter = ScriptedAdapter([f'{{"summary": "{secret}", "{secret}": 1}}', DEFAULT_REPORT_JSON])
+
+    _, trace, _ = await _traced_run(
+        make_triage_deps(llm_adapter=adapter), f"GitHub Actions {secret} outage"
+    )
+
+    assert trace.events
+    assert all(secret not in event.model_dump_json() for event in trace.events)
 
 
 def test_every_conditional_edge_maps_its_node_pair_to_one_route_label() -> None:
