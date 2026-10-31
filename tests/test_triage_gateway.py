@@ -400,3 +400,28 @@ async def test_a_timeout_raised_inside_the_graph_is_a_graph_exception_not_the_de
     assert outcome.report.degradation_status == DegradationStatus.SEVERELY_DEGRADED
     assert "failed unexpectedly" in outcome.report.root_cause_analysis
     assert "Run deadline" not in outcome.report.root_cause_analysis
+
+
+async def test_a_stream_left_before_its_run_starts_counts_one_abandoned_request(cache):
+    graph = ReturningGraph({"final_report": _report()})
+    gateway = _gateway(cache, graph)
+
+    async with gateway.stream(QUERY, None):
+        pass  # left before the run task takes its first step: triage() never starts
+
+    assert graph.calls == []
+    assert gateway.metrics == TriageMetrics(abandoned=1)
+    assert await cache.lookup(QUERY) is None
+
+
+async def test_a_stream_left_mid_run_counts_one_abandoned_request_and_frees_its_slot(cache):
+    graph = BlockingGraph()
+    gateway = _gateway(cache, graph, _one_slot(deadline_s=5.0))
+
+    async with gateway.stream(QUERY, None):
+        await graph.started.wait()
+
+    assert gateway.metrics == TriageMetrics(abandoned=1)
+    assert await cache.lookup(QUERY) is None
+    graph.release.set()
+    assert isinstance(await gateway.triage("Checkout latency spike in eu-west-1", None), Analyzed)
