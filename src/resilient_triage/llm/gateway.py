@@ -19,7 +19,7 @@ from resilient_triage.llm.failures import (
     Unavailable,
 )
 from resilient_triage.schemas.api import LLMQuotaSnapshot
-from resilient_triage.trace.recorder import NullTrace, TraceRecorder, record_event
+from resilient_triage.trace.recorder import NullTrace, TraceRecorder, ms_since, record_event
 
 if TYPE_CHECKING:
     from resilient_triage.trace.fields import ModelRole
@@ -127,11 +127,9 @@ class LLMGateway:
     async def complete(
         self, messages: list[BaseMessage], *, trace: TraceRecorder | None = None
     ) -> Completion | ProviderFailure:
-        """Return a completion or a provider failure; raises nothing but CancelledError.
-
-        Each adapter attempt is recorded on trace as one `model_call` (ADR-008); with no
-        trace (the default, e.g. for /chaos/*), nothing is recorded.
-        """
+        """Return a completion or a provider failure; raises nothing but CancelledError."""
+        # Each adapter attempt is one `model_call` (ADR-008); with no trace (the default,
+        # e.g. for /chaos/*), nothing is recorded.
         attempts: list[Attempt] = []
         result: Completion | ProviderFailure
         try:
@@ -217,7 +215,7 @@ class LLMGateway:
         # Imported here: trace.events imports schemas.api, which imports this package.
         from resilient_triage.trace.events import ModelCall
 
-        duration_ms = round((time.monotonic() - started) * 1000, 3)
+        duration_ms = ms_since(started)
         role: ModelRole = "fallback" if model == self.fallback else "primary"
         record_event(
             trace,

@@ -22,6 +22,8 @@ ModelOutcome = Literal[
     "completion", "rate_limited", "unavailable", "rejected", "malformed_response"
 ]
 ReadOutcome = Literal["read", "tripped", "unavailable"]
+ReadPhase = Literal["setup"]
+StoreOutcome = Literal["stored", "skipped_fallback", "failed"]
 NodeStatus = Literal["ok", "error", "cancelled"]
 TriageOutcomeKind = Literal["cache_hit", "analyzed", "shed"]
 

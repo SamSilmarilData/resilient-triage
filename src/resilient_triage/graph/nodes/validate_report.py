@@ -44,11 +44,9 @@ def clean_json_string(raw: str) -> str:
 
 
 def validate_report_node(state: TriageState, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
-    """Validate candidate report strictly against Pydantic schema.
-
-    A failure is recorded on the run's trace as validation_failed: field names and error
-    types only, never the candidate's values (ADR-008).
-    """
+    """Validate candidate report strictly against Pydantic schema."""
+    # A failure is recorded on the run's trace as validation_failed: field names and error
+    # types only, never the candidate's values (ADR-008).
     candidate_raw = state.get("candidate_report_raw") or ""
     repair_attempts = state.get("repair_attempts", 0)
 

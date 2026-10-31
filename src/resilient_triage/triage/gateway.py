@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Protocol, assert_never, cast
+from typing import Any, Protocol, assert_never, cast
 
 from resilient_triage.cache.semantic_cache import CacheMatch, SemanticCacheManager
 from resilient_triage.config import Settings
@@ -30,8 +30,14 @@ from resilient_triage.trace.events import (
     TraceFinished,
     TraceStarted,
 )
-from resilient_triage.trace.fields import TriageOutcomeKind
-from resilient_triage.trace.recorder import ListTrace, NullTrace, TraceRecorder, record_event
+from resilient_triage.trace.fields import StoreOutcome, TriageOutcomeKind
+from resilient_triage.trace.recorder import (
+    ListTrace,
+    NullTrace,
+    TraceRecorder,
+    ms_since,
+    record_event,
+)
 from resilient_triage.trace.summary import TraceSummary
 
 logger = logging.getLogger(__name__)
@@ -42,8 +48,6 @@ _GRAPH_EXCEPTION_REASON = (
 _DEADLINE_REASON = (
     "Run deadline exceeded before analysis finished. Safe heuristic fallback engaged."
 )
-
-StoreOutcome = Literal["stored", "skipped_fallback", "failed"]
 
 
 class GraphRunner(Protocol):
@@ -134,11 +138,9 @@ class TriageGateway:
         force_refresh: bool = False,
         trace: TraceRecorder | None = None,
     ) -> TriageOutcome:
-        """Return how this request ended, counting it and recording its trace on `trace`.
-
-        Unless cancelled, a request ends in exactly one `trace_finished` carrying the
-        outcome's response (None when shed). A cancellation propagates, unrecorded.
-        """
+        """Return how this request ended, counting it and recording its trace on `trace`."""
+        # Unless cancelled, a request ends in exactly one `trace_finished` carrying the
+        # outcome's response (None when shed). A cancellation propagates, unrecorded.
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
         started = time.monotonic()
         record_event(
@@ -171,7 +173,7 @@ class TriageGateway:
         if not force_refresh:
             lookup_started = time.monotonic()
             match = await self._cache.lookup(query=query, service_filter=scope)
-            lookup_ms = _ms_since(lookup_started)
+            lookup_ms = ms_since(lookup_started)
             record_event(
                 trace,
                 lambda: CacheLookup(
@@ -204,7 +206,7 @@ class TriageGateway:
             acquired = True
         except TimeoutError:
             acquired = False
-        waited_ms = _ms_since(wait_started)
+        waited_ms = ms_since(wait_started)
         capacity = self._settings.triage_max_concurrent_runs
         record_event(
             trace, lambda: RunSlot(acquired=acquired, waited_ms=waited_ms, capacity=capacity)
@@ -224,7 +226,7 @@ class TriageGateway:
             except Exception:
                 logger.exception("Caching the run's report failed; answering it uncached.")
                 stored = "failed"
-        store_ms = _ms_since(store_started)
+        store_ms = ms_since(store_started)
         record_event(
             trace,
             lambda: CacheStore(backend=self._cache.driver, outcome=stored, duration_ms=store_ms),
@@ -273,7 +275,7 @@ def _response(
         report=report,
         cached=similarity is not None,
         cache_similarity=similarity,
-        execution_time_ms=round(_ms_since(started), 2),
+        execution_time_ms=round(ms_since(started), 2),
         trace=_summary(trace),
     )
 
@@ -302,11 +304,6 @@ def _summary(trace: TraceRecorder) -> TraceSummary | None:
         return None
 
 
-def _ms_since(started: float) -> float:
-    """Milliseconds since `started`, rounded to microseconds like the recorder's t_ms."""
-    return round(max((time.monotonic() - started) * 1000.0, 0.0), 3)
-
-
 def _synthesis_fallback(
     query: str, state: dict[str, Any], trace: TraceRecorder
 ) -> IncidentTriageReport:
@@ -315,9 +312,7 @@ def _synthesis_fallback(
     run_state = cast(TriageState, state)
     report = fallback_report_from_state(query, run_state)
     evidence = DegradationEvidence.from_state(run_state)
-    reconciled = reconcile(report, replace(evidence, synthesis_fell_back=True))
-    record_event(trace, lambda: Reconciled.between(report, reconciled))
-    return reconciled
+    return _reconcile(report, replace(evidence, synthesis_fell_back=True), trace)
 
 
 def _reconciled_fallback(query: str, reason: str, trace: TraceRecorder) -> IncidentTriageReport:
@@ -326,6 +321,13 @@ def _reconciled_fallback(query: str, reason: str, trace: TraceRecorder) -> Incid
     evidence = DegradationEvidence(
         tripped_breakers=frozenset(), unavailable_sources=frozenset(), synthesis_fell_back=True
     )
+    return _reconcile(report, evidence, trace)
+
+
+def _reconcile(
+    report: IncidentTriageReport, evidence: DegradationEvidence, trace: TraceRecorder
+) -> IncidentTriageReport:
+    """Reconcile a synthesis fallback outside the graph and record what reconcile changed."""
     reconciled = reconcile(report, evidence)
     record_event(trace, lambda: Reconciled.between(report, reconciled))
     return reconciled

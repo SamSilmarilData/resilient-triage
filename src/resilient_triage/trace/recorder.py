@@ -62,10 +62,10 @@ class ListTrace:
     def record(self, event: "TraceEvent") -> None:
         """Stamp seq and monotonic t_ms, keep the event, then feed the sink; never raises."""
         try:
-            t_ms = round((self._clock() - self._started) * 1000, 3)
+            t_ms = ms_since(self._started, self._clock)
             if self._events:
                 t_ms = max(t_ms, self._events[-1].t_ms)
-            stamped = event.model_copy(update={"seq": len(self._events), "t_ms": max(t_ms, 0.0)})
+            stamped = event.model_copy(update={"seq": len(self._events), "t_ms": t_ms})
             self._events.append(stamped)
             if self._sink is not None:
                 self._sink(stamped)
@@ -73,12 +73,15 @@ class ListTrace:
             logger.exception("Trace recorder dropped a %s event.", event.kind)
 
 
-def record_event(trace: TraceRecorder, build: "Callable[[], TraceEvent]") -> None:
-    """Build an event and record it; never raises, so tracing can't change a run's result.
+def ms_since(started: float, clock: Callable[[], float] = time.monotonic) -> float:
+    """Milliseconds from `started` to now on `clock`, never negative, rounded to microseconds."""
+    return round(max((clock() - started) * 1000.0, 0.0), 3)
 
-    Instrumented code calls this rather than `trace.record()`: it also guards the event's
-    construction, and a recorder that breaks the never-raises contract.
-    """
+
+def record_event(trace: TraceRecorder, build: "Callable[[], TraceEvent]") -> None:
+    """Build an event and record it; never raises, so tracing can't change a run's result."""
+    # Instrumented code calls this rather than `trace.record()`: it also guards the event's
+    # construction, and a recorder that breaks the never-raises contract.
     try:
         trace.record(build())
     except Exception:

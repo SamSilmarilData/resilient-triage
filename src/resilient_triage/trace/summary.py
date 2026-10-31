@@ -25,6 +25,7 @@ from resilient_triage.trace.fields import (
 if TYPE_CHECKING:  # trace.events imports schemas.api, which will import this module
     from resilient_triage.trace.events import TraceEvent
 
+# Node names as registered in graph/builder.py (build_triage_graph); keep them in step.
 _SELF_REPAIR_NODE = "self_repair"
 _REFINE_NODE = "refine_reflection"
 
