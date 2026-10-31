@@ -1,11 +1,14 @@
 """Scenario factory: each scenario run gets fully private collaborators (ADR-009)."""
 
+import asyncio
 from dataclasses import replace
 from typing import Any
 
+import pytest
+
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import settings
-from resilient_triage.llm import DEFAULT_REPORT_JSON
+from resilient_triage.llm import DEFAULT_REPORT_JSON, ScriptedReply
 from resilient_triage.scenarios import (
     CacheSeed,
     HeldSlots,
@@ -17,6 +20,7 @@ from resilient_triage.scenarios import (
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import StatuspageSummary
 from resilient_triage.trace.events import (
+    ModelCall,
     RunSlot,
     ScenarioSetup,
     TelemetryRead,
@@ -140,3 +144,25 @@ async def test_held_slots_shed_the_run_on_a_private_pool_and_are_released() -> N
     assert run.slots is not shared
     assert run.slots.free == 2  # the held slots were given back after the run
     assert shared.free == 4
+
+
+@pytest.mark.real_scripted_delays
+async def test_a_declared_reply_delay_shows_up_in_the_trace_timings() -> None:
+    trace = ListTrace()
+    script = (ScriptedReply(DEFAULT_REPORT_JSON, delay_s=0.2),)
+
+    await _factory().build(_scenario(script=script)).triage(trace=trace)
+
+    started = trace.events[0]
+    call = next(e for e in trace.events if isinstance(e, ModelCall))
+    assert call.duration_ms >= 200
+    assert call.t_ms - started.t_ms >= 200
+
+
+async def test_declared_reply_delays_are_zeroed_in_tests_by_default() -> None:
+    script = (ScriptedReply(DEFAULT_REPORT_JSON, delay_s=60),)
+
+    async with asyncio.timeout(5):
+        outcome = await _factory().build(_scenario(script=script)).triage()
+
+    assert isinstance(outcome, Analyzed)
