@@ -132,6 +132,9 @@ class ScenarioFactory:
     def build(self, scenario: Scenario) -> ScenarioRun:
         """Build a run's private collaborators; performs no I/O."""
         settings = self._settings
+        deadline_s = scenario.overrides.run_deadline_s
+        if deadline_s is not None:  # a copy for this run only
+            settings = settings.model_copy(update={"triage_run_deadline_s": deadline_s})
         held = scenario.overrides.held_slots
         slots = (
             RunSlotPool(capacity=held.capacity, queue_timeout_s=held.queue_timeout_s)
