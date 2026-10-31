@@ -26,12 +26,7 @@ from resilient_triage.telemetry.canned import CannedStatuspageSource, FailingSta
 from resilient_triage.telemetry.chaos import ChaosManager, ClusterSentinelSource
 from resilient_triage.telemetry.probe import TelemetryProbe, TelemetrySource
 from resilient_triage.trace.events import ScenarioSetup, TraceEvent
-from resilient_triage.trace.recorder import (
-    NullTrace,
-    StreamingTrace,
-    TraceRecorder,
-    record_event,
-)
+from resilient_triage.trace.recorder import TraceRecorder, record_event
 from resilient_triage.triage.gateway import TriageGateway, TriageOutcome
 from resilient_triage.triage.slots import RunSlotPool
 
@@ -60,17 +55,18 @@ class ScenarioRun:
         self.slots = slots
         self._held = 0  # slots this run's setup holds, given back when the run ends
         self.deps = TriageDeps(llm=llm, telemetry=telemetry, history=cache)
-        self.gateway = TriageGateway(
-            cache, self._run_graph, settings, slots=slots, scenario_id=scenario.id
-        )
+        self.gateway = TriageGateway(cache, self._run_graph, settings, slots=slots)
 
     async def triage(self, *, trace: TraceRecorder | None = None) -> TriageOutcome:
-        """Run the scenario's request through its private gateway, recording on `trace`."""
-        recorder: TraceRecorder = trace if trace is not None else NullTrace()
+        """Do the setup, then run the request through the private gateway, recording on `trace`."""
+        # The gateway runs the setup before trace_started and contains its failure (ADR-009).
         try:
-            await self._setup(recorder)
             return await self.gateway.triage(
-                self.scenario.query, self.scenario.scope, trace=recorder
+                self.scenario.query,
+                self.scenario.scope,
+                trace=trace,
+                scenario_id=self.scenario.id,
+                setup=self._setup,
             )
         finally:
             self._release_held()
@@ -78,13 +74,14 @@ class ScenarioRun:
     @asynccontextmanager
     async def stream(self) -> AsyncIterator[AsyncIterator[TraceEvent]]:
         """Do the setup, then run the request; yield every live event, setup first."""
-        # Setup records on the stream's own trace, so its events stream before trace_started;
-        # the gateway's stream owns the run task and its cancellation, as for free play.
-        trace = StreamingTrace()
+        # The gateway's stream runs the setup and the request in one task it owns and cancels,
+        # as for free play, so setup events stream live and a disconnect cancels the setup too.
         try:
-            await self._setup(trace)
             async with self.gateway.stream(
-                self.scenario.query, self.scenario.scope, trace=trace
+                self.scenario.query,
+                self.scenario.scope,
+                scenario_id=self.scenario.id,
+                setup=self._setup,
             ) as events:
                 yield events
         finally:
