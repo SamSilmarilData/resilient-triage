@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from resilient_triage.trace.events import TraceEvent
+from resilient_triage.trace.summary import TraceSummary, summarize
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,10 @@ class ListTrace:
     def events(self) -> tuple[TraceEvent, ...]:
         """The events recorded so far, in seq order."""
         return tuple(self._events)
+
+    def summary(self) -> TraceSummary:
+        """The trace summary of the events recorded so far."""
+        return summarize(self._events)
 
     def record(self, event: TraceEvent) -> None:
         """Stamp seq and monotonic t_ms, keep the event, then feed the sink; never raises."""

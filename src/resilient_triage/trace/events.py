@@ -9,15 +9,7 @@ or Pydantic error `input` can travel in one. The report travels once, in `trace_
 
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StringConstraints,
-    TypeAdapter,
-    ValidationError,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from resilient_triage.llm.failures import (
     MalformedResponse,
@@ -28,26 +20,25 @@ from resilient_triage.llm.failures import (
     Unavailable,
 )
 from resilient_triage.schemas.api import TriageResponse
-from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
+from resilient_triage.schemas.incident import IncidentTriageReport
+from resilient_triage.trace.fields import (
+    BreakerState,
+    CacheBackend,
+    Identifier,
+    Milliseconds,
+    ModelOutcome,
+    ModelRole,
+    NodeStatus,
+    ReadOutcome,
+    ReconcileChanges,
+    TriageOutcomeKind,
+)
 
 if TYPE_CHECKING:
     from resilient_triage.llm.gateway import Completion
 
 # Bumped only when a kind or field is renamed or removed; adding either is not a bump.
 TRACE_SCHEMA_VERSION = 1
-
-# A code-defined name (node, route key, source, model, field, error type, scenario): never
-# free text. The pattern keeps whitespace and prose out of every id on the wire.
-Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")]
-Milliseconds = Annotated[float, Field(ge=0)]
-
-CacheBackend = Literal["redisearch", "redis_hash_fallback", "in_memory"]
-BreakerState = Literal["closed", "open", "half-open"]
-ModelRole = Literal["primary", "fallback"]
-ModelOutcome = Literal[
-    "completion", "rate_limited", "unavailable", "rejected", "malformed_response"
-]
-TriageOutcomeKind = Literal["cache_hit", "analyzed", "shed"]
 
 
 class _TraceEvent(BaseModel):
@@ -115,7 +106,7 @@ class NodeFinished(_TraceEvent):
     kind: Literal["node_finished"] = "node_finished"
     node: Identifier
     duration_ms: Milliseconds
-    status: Literal["ok", "error", "cancelled"] = "ok"
+    status: NodeStatus = "ok"
     confidence: float | None = Field(
         default=None,
         ge=0,
@@ -173,7 +164,7 @@ class TelemetryRead(_TraceEvent):
     phase: Literal["setup"] | None = Field(
         default=None, description="'setup' for a scenario's pre-run read, else None"
     )
-    outcome: Literal["read", "tripped", "unavailable"]
+    outcome: ReadOutcome
     attempts: int = Field(ge=0, description="Read attempts made; 0 if the breaker refused")
     breaker_before: BreakerState
     breaker_after: BreakerState
@@ -205,20 +196,6 @@ class ValidationFailed(_TraceEvent):
             fields=sorted(fields),
             error_types=sorted({e["type"] for e in errors}),
         )
-
-
-class ReconcileChanges(BaseModel):
-    """What reconcile changed in a report: statuses, breaker ids and action indexes only."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    degradation_before: DegradationStatus
-    degradation_after: DegradationStatus
-    breakers_changed: bool
-    breakers_after: list[Identifier] = Field(description="Tripped breakers after reconcile")
-    approval_raised: list[Annotated[int, Field(ge=0)]] = Field(
-        description="Indexes of recommended actions whose requires_approval was raised"
-    )
 
 
 class Reconciled(_TraceEvent):
