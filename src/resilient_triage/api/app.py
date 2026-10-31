@@ -13,12 +13,18 @@ import anyio
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Security, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
 from fastapi.security import APIKeyHeader
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from resilient_triage import __version__
-from resilient_triage.api.static_assets import StaticAssets
+from resilient_triage.api.static_assets import REVALIDATE, StaticAssets
 from resilient_triage.config import settings
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.scenarios.catalogue import get_scenario, public_catalogue
@@ -39,7 +45,6 @@ from resilient_triage.triage.gateway import Analyzed, CacheHit, Shed
 
 logger = logging.getLogger(__name__)
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
 RuntimeFactory = Callable[[], AppRuntime]
@@ -312,18 +317,13 @@ async def probe_chaos(runtime: RuntimeDep) -> ChaosTelemetryResponse:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def get_sre_console() -> HTMLResponse:
-    """Serve the interactive SRE Incident Command Center demo UI.
-
-    Returns:
-        HTMLResponse: Rendered single-page SRE management console.
-    """
-    index_file = TEMPLATES_DIR / "index.html"
-    if not index_file.exists():
-        return HTMLResponse(
-            content="<h1>Resilient Triage API is running. Visit /docs for OpenAPI specs.</h1>"
-        )
-    return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
+async def get_page() -> FileResponse:
+    """Serve the explorable page shell, static/index.html (ADR-010); revalidated on each visit."""
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        media_type="text/html",
+        headers={"Cache-Control": REVALIDATE},
+    )
 
 
 @router.get("/health", response_model=HealthResponse)

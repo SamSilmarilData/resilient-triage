@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="An incident-triage agent that never returns a 500 and never stalls. Break its dependencies and watch a real run degrade instead of failing.">
+  <title>resilient-triage: break its dependencies, it still answers</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <!-- One URL per bare name, written from static/vendor/manifest.json (a test keeps them equal). -->
+  <script type="importmap">
+  {
+    "imports": {
+      "preact": "/static/vendor/preact@10.29.8/dist/preact.mjs",
+      "preact/hooks": "/static/vendor/preact@10.29.8/hooks/dist/hooks.mjs",
+      "htm": "/static/vendor/htm@3.1.1/dist/htm.mjs",
+      "htm/preact": "/static/vendor/htm@3.1.1/preact/index.mjs",
+      "@preact/signals-core": "/static/vendor/@preact/signals-core@1.14.5/dist/signals-core.mjs",
+      "@preact/signals": "/static/vendor/@preact/signals@2.11.4/dist/signals.mjs"
+    }
+  }
+  </script>
+  <script type="module" src="/static/app.mjs"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap site-header__inner">
+      <a class="brand" href="/">resilient-triage</a>
+      <nav aria-label="Sections">
+        <ul class="site-nav">
+          <li><a href="#guided">Scenarios</a></li>
+          <li><a href="#free-play">Free play</a></li>
+          <li><a href="#how-its-built">How it's built</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section id="hook" class="hook" aria-labelledby="hook-title">
+      <div class="wrap hook__inner">
+        <p class="eyebrow">Fault-tolerant incident triage</p>
+        <h1 id="hook-title">Break its dependencies. It still answers.</h1>
+        <p class="lede">
+          This incident-triage agent never returns a 500 and never stalls. When Redis, Statuspage
+          or the language model fails, it degrades instead: a slower path, a flagged source, a
+          fallback report. Pick a scenario to watch a real run. Every node, branch, model call
+          and breaker you see comes from the code serving this page.
+        </p>
+        <noscript>
+          <p class="notice">
+            The scenarios, the live trace and free play need JavaScript. Everything else on this
+            page reads fine without it, and the API stays at <a href="/docs">/docs</a>.
+          </p>
+        </noscript>
+      </div>
+    </section>
+
+    <section id="guided" class="guided" aria-labelledby="guided-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 id="guided-title">Guided scenarios</h2>
+          <p class="section-intro">
+            Each chapter breaks something else. A scenario runs the real graph on this server
+            with a fault injected and the model's replies scripted, and streams its trace here
+            as it happens.
+          </p>
+        </div>
+        <div class="guided__body">
+          <section class="stage" aria-labelledby="stage-title">
+            <h3 id="stage-title" class="panel-title">Live trace</h3>
+            <div id="stage-root" class="stage__root" aria-busy="true"></div>
+          </section>
+          <div id="chapters-root" class="chapters" aria-busy="true"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="free-play" class="free-play" aria-labelledby="free-play-title">
+      <div class="wrap prose">
+        <h2 id="free-play-title">Free play</h2>
+        <p>
+          Ask your own question. Free play runs the same graph against the live model,
+          Statuspage and cache, with nothing injected, so what you see is what a real request
+          gets.
+        </p>
+        <div id="free-play-root" aria-busy="true"></div>
+      </div>
+    </section>
+
+    <section id="how-its-built" class="built" aria-labelledby="built-title">
+      <div class="wrap prose">
+        <h2 id="built-title">How it's built</h2>
+        <p>
+          A FastAPI gateway checks a semantic cache, then runs a LangGraph state machine that
+          reads telemetry, asks the model for a report and validates it against a strict schema.
+          Each piece has a written decision record in the repository.
+        </p>
+        <ul class="built__list">
+          <li><b>A cyclic state machine</b> with no checkpointer, so every run is self-contained (ADR 0001, ADR 0007).</li>
+          <li><b>A semantic cache</b> on Redis vector search, falling back to memory when Redis is down (ADR 0002).</li>
+          <li><b>Circuit breakers and retries</b> around every telemetry source, under a deadline (ADR 0003).</li>
+          <li><b>Strict report contracts</b> with self-repair when the model's JSON doesn't validate (ADR 0004).</li>
+          <li><b>One model gateway</b> that owns failover and per-model cooldowns (ADR 0005, ADR 0006).</li>
+          <li><b>An execution trace</b>, streamed as server-sent events, that draws everything on this page (ADR 0008, ADR 0009).</li>
+          <li><b>A build-free page</b>: native modules, Preact and one stylesheet, all served from this origin (ADR 0010).</li>
+        </ul>
+        <p>The HTTP API is documented at <a href="/docs">/docs</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>resilient-triage · <a href="/docs">API docs</a> · <a href="https://github.com/SamSilmarilData/resilient-triage">Source on GitHub</a></p>
+    </div>
+  </footer>
+</body>
+</html>

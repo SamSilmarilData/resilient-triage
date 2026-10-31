@@ -41,7 +41,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # static/** needs setuptools 62.3+ (recursive globs).
-"resilient_triage.api" = ["templates/*.html", "static/**"]
+"resilient_triage.api" = ["static/**"]
 
 
 [tool.pytest.ini_options]
