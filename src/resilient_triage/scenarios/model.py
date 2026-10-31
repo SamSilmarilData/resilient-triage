@@ -1,12 +1,15 @@
 """Scenario: the frozen definition of one catalogued scenario run (ADR-009).
 
 A scenario is data: the request (query, scope), the model's scripted replies, what Statuspage
-reads, the scenario setup done before the run, per-run overrides, and the caption and outcome
-the page shows. `ScenarioFactory` turns one into a private, runnable `ScenarioRun`.
+reads, the scenario setup done before the run, per-run overrides, the page copy (chapter, title,
+caption, setup notes) and the outcome its run must show. `ScenarioFactory` turns one into a
+private, runnable `ScenarioRun`; `public_view()` is all the page may see of it.
 """
 
 import re
 from dataclasses import dataclass, field
+
+from pydantic import BaseModel, ConfigDict
 
 from resilient_triage.llm import ScriptEntry
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
@@ -88,6 +91,18 @@ class ExpectedOutcome:
     deadline_exceeded: bool = False
 
 
+class ScenarioView(BaseModel):
+    """What the page may see of a scenario: its copy, never its script or expected outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    chapter: str
+    title: str
+    caption: str
+    setup_notes: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class Chapter:
     """A group of scenarios on the page, shown under its title in catalogue order."""
@@ -134,3 +149,13 @@ class Scenario:
         for source in self.setup.tripped_sources:
             if not failing.get(source, False):
                 raise ValueError(f"Scenario setup cannot trip {source!r}: it does not fail here")
+
+    def public_view(self) -> ScenarioView:
+        """The page copy for GET /scenarios: no script, query or expected outcome."""
+        return ScenarioView(
+            id=self.id,
+            chapter=self.chapter,
+            title=self.title,
+            caption=self.caption,
+            setup_notes=self.setup_notes,
+        )

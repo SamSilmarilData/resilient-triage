@@ -109,7 +109,7 @@ def test_every_scripted_reply_declares_the_prototype_delay() -> None:
 def test_the_public_view_shows_the_page_copy_and_never_the_script(scenario: Scenario) -> None:
     view = scenario.public_view()
 
-    dumped = view.model_dump()
+    dumped = view.model_dump(mode="json")
     assert set(dumped) == {"id", "chapter", "title", "caption", "setup_notes"}
     assert (dumped["id"], dumped["chapter"]) == (scenario.id, scenario.chapter)
     assert dumped["setup_notes"] == list(scenario.setup_notes)

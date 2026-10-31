@@ -8,6 +8,7 @@ from resilient_triage.scenarios.model import (
     HeldSlots,
     Overrides,
     Scenario,
+    ScenarioView,
     Setup,
 )
 
@@ -20,5 +21,6 @@ __all__ = [
     "Scenario",
     "ScenarioFactory",
     "ScenarioRun",
+    "ScenarioView",
     "Setup",
 ]
