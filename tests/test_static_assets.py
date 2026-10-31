@@ -7,6 +7,7 @@ import importlib.resources
 import importlib.util
 import io
 import json
+import math
 import mimetypes
 import re
 import shutil
@@ -656,3 +657,177 @@ def test_page_entry_module_is_type_checked():
     assert ours
     for module in ours:
         assert module.read_text(encoding="utf-8").startswith("// @ts-check\n"), module.name
+
+
+# --- Same origin only, and the stylesheet's contract (#116, ADR 0010) ---
+
+# Attributes through which a page makes the browser fetch something. An <a href> is a link the
+# visitor may follow, not a request the page makes, so it may point elsewhere.
+_FETCHING_ATTRIBUTES = {"src", "srcset", "href", "poster", "data", "action", "formaction"}
+
+
+def _same_origin(url: str) -> bool:
+    return not re.match(r"^(?:[a-z][a-z0-9+.-]*:|//)", url.strip(), re.IGNORECASE)
+
+
+def _css() -> str:
+    return (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+
+def test_same_origin_check_flags_other_origins():
+    """The origin check rejects absolute, protocol-relative and data URLs."""
+    assert _same_origin("/static/app.mjs") and _same_origin("vendor/x.woff2")
+    for url in ("https://cdn.example/x.js", "//cdn.example/x.js", "HTTP://x", "data:text/css,"):
+        assert not _same_origin(url), url
+
+
+def test_page_html_fetches_nothing_from_another_origin():
+    """Every URL the page's HTML makes the browser fetch, import map included, is same-origin."""
+    page = _page()
+    fetched = [
+        value
+        for tag, attrs in page.tags
+        for name, value in attrs.items()
+        if value is not None and name in _FETCHING_ATTRIBUTES and tag != "a"
+    ]
+    fetched += list(_import_map()["imports"].values())
+
+    assert "/static/styles.css" in fetched and "/static/app.mjs" in fetched
+    assert [url for url in fetched if not _same_origin(url)] == []
+    assert "@import" not in (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
+def _css_urls(css: str) -> list[str]:
+    return [m.group(2) for m in re.finditer(r"""url\(\s*(["']?)([^"')]+)\1\s*\)""", css)]
+
+
+def test_stylesheet_fetches_only_files_it_ships():
+    """Every url() in styles.css is a same-origin file under static/; there is no @import."""
+    css = _css()
+    urls = _css_urls(css)
+
+    assert urls, "the stylesheet loads the self-hosted fonts"
+    assert "@import" not in css
+    for url in urls:
+        assert _same_origin(url), url
+        assert (STATIC_DIR / url).resolve().is_file(), f"{url} does not exist under static/"
+
+
+def _blocks(css: str) -> list[tuple[str, str]]:
+    """Every `{…}` block in the stylesheet as (header, body), nested blocks included."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    blocks: list[tuple[str, str]] = []
+    stack: list[tuple[str, int]] = []
+    start = 0
+    for i, char in enumerate(css):
+        if char == "{":
+            header = re.split(r"[;{}]", css[start:i])[-1].strip()
+            stack.append((header, i + 1))
+            start = i + 1
+        elif char == "}":
+            header, body_start = stack.pop()
+            blocks.append((header, css[body_start:i]))
+            start = i + 1
+        elif char == ";":
+            start = i + 1
+    assert not stack, "unbalanced braces in styles.css"
+    return blocks
+
+
+def _tokens(header: str) -> dict[str, str]:
+    """The custom properties declared directly in the one block with this header."""
+    bodies = [body for head, body in _blocks(_css()) if head == header]
+    assert len(bodies) == 1, f"expected one {header!r} block, found {len(bodies)}"
+    top_level = re.sub(r"\{[^{}]*\}", "", bodies[0])
+    return dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", top_level))
+
+
+LIGHT = ":root"
+DARK = ':root[data-theme="dark"]'
+DARK_BY_PREFERENCE = ':root:not([data-theme="light"])'
+
+
+def test_stylesheet_uses_layers_tokens_and_nesting():
+    """One cascade-layer order, OKLCH colour tokens on :root and native nesting."""
+    css = _css()
+    tokens = _tokens(LIGHT)
+
+    assert re.search(r"^@layer [\w-]+(, [\w-]+)+;", css, re.MULTILINE)
+    colours = {name: value for name, value in tokens.items() if value.startswith("oklch(")}
+    assert len(colours) >= 8
+    assert any(head.startswith("&") for head, _ in _blocks(css)), "no native nesting found"
+
+
+def test_dark_theme_follows_the_system_unless_overridden():
+    """Dark tokens apply under prefers-color-scheme: dark (unless data-theme="light") and under
+    data-theme="dark", with the same values, and every colour token has a dark value."""
+    css = _css()
+    media = [body for head, body in _blocks(css) if head == "@media (prefers-color-scheme: dark)"]
+    dark = _tokens(DARK)
+
+    assert media and any(DARK_BY_PREFERENCE in body for body in media)
+    assert _tokens(DARK_BY_PREFERENCE) == dark
+    light_colours = {k for k, v in _tokens(LIGHT).items() if v.startswith("oklch(")}
+    assert light_colours == {k for k, v in dark.items() if v.startswith("oklch(")}
+
+
+def test_motion_is_gated_on_reduced_motion():
+    """The stylesheet turns motion off for visitors who ask for less."""
+    assert "@media (prefers-reduced-motion: reduce)" in _css()
+
+
+def test_fonts_are_self_hosted_and_swap():
+    """Both vendored families are declared with font-display: swap from vendored files."""
+    faces = [body for head, body in _blocks(_css()) if head == "@font-face"]
+    families = set()
+    for body in faces:
+        assert re.search(r"font-display:\s*swap;", body), body
+        families.add(re.search(r"font-family:\s*\"([^\"]+)\"", body).group(1))  # type: ignore[union-attr]
+        assert all(url.startswith("vendor/@fontsource-variable/") for url in _css_urls(body))
+
+    assert families == {"Inter Variable", "JetBrains Mono Variable"}
+
+
+def _luminance(oklch: str) -> float:
+    """WCAG relative luminance of an `oklch(L C H)` colour (sRGB, clipped to gamut)."""
+    match = re.fullmatch(r"oklch\(\s*([\d.]+)(%?)\s+([\d.]+)\s+([\d.]+)\s*\)", oklch.strip())
+    assert match, f"unparsed colour {oklch!r}"
+    lightness = float(match.group(1)) / (100 if match.group(2) else 1)
+    chroma, hue = float(match.group(3)), math.radians(float(match.group(4)))
+    a, b = chroma * math.cos(hue), chroma * math.sin(hue)
+    l_ = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3
+    m_ = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3
+    s_ = (lightness - 0.0894841775 * a - 1.2914855480 * b) ** 3
+    red = 4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_
+    green = -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_
+    blue = -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_
+    red, green, blue = (min(max(c, 0.0), 1.0) for c in (red, green, blue))
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _contrast(fg: str, bg: str) -> float:
+    high, low = sorted((_luminance(fg), _luminance(bg)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_contrast_helper_matches_known_values():
+    """Black on white is 21:1; #767676 on white is 4.54:1 (a grey's OKLab L is cbrt(Y))."""
+    assert _contrast("oklch(0 0 0)", "oklch(1 0 0)") == pytest.approx(21, abs=0.01)
+    assert _contrast("oklch(0.5659 0 0)", "oklch(1 0 0)") == pytest.approx(4.54, abs=0.03)
+
+
+@pytest.mark.parametrize("theme", [LIGHT, DARK])
+def test_theme_tokens_meet_wcag_aa_contrast(theme: str):
+    """Text tokens reach 4.5:1 on every surface and the focus ring 3:1, in both themes."""
+    tokens = _tokens(LIGHT) | (_tokens(DARK) if theme == DARK else {})
+    surfaces = ["--bg", "--surface", "--sunken"]
+    failures = [
+        f"{fg} on {bg}: {_contrast(tokens[fg], tokens[bg]):.2f} < {minimum}"
+        for fg, minimum in [("--fg", 4.5), ("--muted", 4.5), ("--accent", 4.5), ("--focus", 3.0)]
+        for bg in surfaces
+        if _contrast(tokens[fg], tokens[bg]) < minimum
+    ]
+    if _contrast(tokens["--accent-fg"], tokens["--accent"]) < 4.5:
+        failures.append("--accent-fg on --accent")
+
+    assert failures == []
