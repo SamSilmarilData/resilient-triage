@@ -1,13 +1,16 @@
 """Tests for the vendored frontend assets: manifest check, update step and serving (#115)."""
 
 import base64
+import glob
 import hashlib
+import importlib.resources
 import importlib.util
 import io
 import json
 import mimetypes
 import shutil
 import tarfile
+import tomllib
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 
@@ -419,3 +422,30 @@ async def test_unversioned_static_file_is_revalidated(tmp_path: Path):
     assert page_module.headers["cache-control"] == "no-cache"
     assert page_module.headers["content-type"] == "text/javascript; charset=utf-8"
     assert vendored.headers["cache-control"] == IMMUTABLE
+
+
+def test_package_data_ships_every_static_file():
+    """pyproject's package-data globs (as setuptools expands them) cover every file in static/."""
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    patterns = pyproject["tool"]["setuptools"]["package-data"]["resilient_triage.api"]
+    api_dir = VENDOR_DIR.parents[1]
+    shipped = {
+        Path(match).as_posix()
+        for pattern in patterns
+        for match in glob.glob(pattern, root_dir=api_dir, recursive=True)
+        if (api_dir / match).is_file()
+    }
+    on_disk = {
+        p.relative_to(api_dir).as_posix() for p in (api_dir / "static").rglob("*") if p.is_file()
+    }
+
+    assert on_disk
+    assert on_disk <= shipped
+
+
+def test_installed_package_contains_the_vendored_files():
+    """The importable package carries static/vendor/manifest.json and every file it lists."""
+    installed = importlib.resources.files("resilient_triage.api") / "static/vendor/manifest.json"
+
+    assert installed.is_file()
+    assert vendor.verify(vendor.installed_vendor_dir()) == []
