@@ -158,8 +158,7 @@ class TriageGateway:
         try:
             answer = await self._answer(query, scope, force_refresh=force_refresh, trace=recorder)
         except asyncio.CancelledError:
-            logger.info("Triage request abandoned before it ended (cancelled).")
-            self._metrics = replace(self._metrics, abandoned=self._metrics.abandoned + 1)
+            self._count_abandoned()
             raise
         outcome = _outcome(answer, started, recorder)
         self._count(outcome)
@@ -177,18 +176,33 @@ class TriageGateway:
         # this context, normally or by cancellation (a client disconnect), cancels that task
         # and waits for it. The context, not the event iterator, owns the task: an iterator
         # parked at a `yield` is only closed whenever it is garbage-collected.
+        # A task cancelled before its first step never runs triage(), which counts its own
+        # cancellation, so this context counts that one instead: exactly once either way.
         trace = StreamingTrace()
-        run = asyncio.create_task(self._triage_or_fallback(query, scope, force_refresh, trace))
+        began = asyncio.Event()
+        run = asyncio.create_task(
+            self._triage_or_fallback(query, scope, force_refresh, trace, began)
+        )
         run.add_done_callback(lambda _: trace.close())
         try:
             yield trace.follow()
         finally:
-            await _cancel_and_wait(run)
+            try:
+                await _cancel_and_wait(run)
+            finally:
+                if not began.is_set():
+                    self._count_abandoned()
 
     async def _triage_or_fallback(
-        self, query: str, scope: str | None, force_refresh: bool, trace: StreamingTrace
+        self,
+        query: str,
+        scope: str | None,
+        force_refresh: bool,
+        trace: StreamingTrace,
+        began: asyncio.Event,
     ) -> None:
         """Run triage(); if it raises, still finish the trace with a synthesis fallback."""
+        began.set()
         started = time.monotonic()
         try:
             await self.triage(query, scope, force_refresh=force_refresh, trace=trace)
@@ -203,6 +217,11 @@ class TriageGateway:
             record_event(
                 trace, lambda: TraceFinished(outcome="analyzed", response=outcome.response)
             )
+
+    def _count_abandoned(self) -> None:
+        """Count a request cancelled before it ended; it is not a triage outcome."""
+        logger.info("Triage request abandoned before it ended (cancelled).")
+        self._metrics = replace(self._metrics, abandoned=self._metrics.abandoned + 1)
 
     def _count(self, outcome: TriageOutcome) -> None:
         m = self._metrics
