@@ -38,6 +38,32 @@ class Setup:
 
 
 @dataclass(frozen=True)
+class HeldSlots:
+    """A private run slot pool whose every slot is held before the run (the shed request)."""
+
+    capacity: int
+    queue_timeout_s: float
+
+    def __post_init__(self) -> None:
+        if self.capacity < 1 or self.queue_timeout_s <= 0:
+            raise ValueError("Held slots need at least one slot and a positive queue timeout")
+
+
+@dataclass(frozen=True)
+class Overrides:
+    """Scenario-only overrides, for this run only and shown as scenario setup."""
+
+    # A short run deadline in seconds, in place of triage_run_deadline_s.
+    run_deadline_s: float | None = None
+    # A private, pre-filled slot pool in place of the shared scenario slot pool.
+    held_slots: HeldSlots | None = None
+
+    def __post_init__(self) -> None:
+        if self.run_deadline_s is not None and self.run_deadline_s <= 0:
+            raise ValueError("A run deadline override must be positive")
+
+
+@dataclass(frozen=True)
 class Scenario:
     """One catalogued scenario: request, scripted replies and Statuspage, setup and overrides."""
 
@@ -51,6 +77,7 @@ class Scenario:
     caption: str
     expected_outcome: TriageOutcomeKind
     setup: Setup = field(default_factory=Setup)
+    overrides: Overrides = field(default_factory=Overrides)
 
     def __post_init__(self) -> None:
         if not _SCENARIO_ID.match(self.id):

@@ -51,6 +51,7 @@ class ScenarioRun:
         self.chaos = chaos
         self.cache = cache
         self.slots = slots
+        self._held = 0  # slots this run's setup holds, given back when the run ends
         self.deps = TriageDeps(llm=llm, telemetry=telemetry, history=cache)
         self.gateway = TriageGateway(
             cache, self._run_graph, settings, slots=slots, scenario_id=scenario.id
@@ -59,8 +60,13 @@ class ScenarioRun:
     async def triage(self, *, trace: TraceRecorder | None = None) -> TriageOutcome:
         """Run the scenario's request through its private gateway, recording on `trace`."""
         recorder: TraceRecorder = trace if trace is not None else NullTrace()
-        await self._setup(recorder)
-        return await self.gateway.triage(self.scenario.query, self.scenario.scope, trace=recorder)
+        try:
+            await self._setup(recorder)
+            return await self.gateway.triage(
+                self.scenario.query, self.scenario.scope, trace=recorder
+            )
+        finally:
+            self._release_held()
 
     async def _setup(self, trace: TraceRecorder) -> None:
         """Do the scenario setup, recording it on `trace` before the request's trace_started."""
@@ -71,6 +77,21 @@ class ScenarioRun:
             record_event(trace, lambda: ScenarioSetup(step="seed_cache", count=len(setup.seeds)))
         for source in setup.tripped_sources:
             await self._trip(source, trace)
+        if self.scenario.overrides.held_slots is not None:
+            await self._hold_every_slot(trace)
+
+    async def _hold_every_slot(self, trace: TraceRecorder) -> None:
+        """Take every slot of this run's private pool, so its request queues and is shed."""
+        while self.slots.free and await self.slots.acquire():
+            self._held += 1
+        held = self._held
+        record_event(trace, lambda: ScenarioSetup(step="hold_run_slots", count=held))
+
+    def _release_held(self) -> None:
+        """Give back every slot the setup held, so none leaks, even on cancellation."""
+        while self._held:
+            self._held -= 1
+            self.slots.release()
 
     async def _trip(self, source: str, trace: TraceRecorder) -> None:
         """Fail real reads of `source` until its private breaker opens (fail_max of them)."""
@@ -111,6 +132,12 @@ class ScenarioFactory:
     def build(self, scenario: Scenario) -> ScenarioRun:
         """Build a run's private collaborators; performs no I/O."""
         settings = self._settings
+        held = scenario.overrides.held_slots
+        slots = (
+            RunSlotPool(capacity=held.capacity, queue_timeout_s=held.queue_timeout_s)
+            if held is not None
+            else self._slots
+        )
         breakers = CircuitBreakerRegistry()
         chaos = ChaosManager()
         statuspage: TelemetrySource = (
@@ -135,6 +162,6 @@ class ScenarioFactory:
             breakers=breakers,
             chaos=chaos,
             cache=cache,
-            slots=self._slots,
+            slots=slots,
             settings=settings,
         )
