@@ -18,6 +18,7 @@ from fastapi.security import APIKeyHeader
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from resilient_triage import __version__
+from resilient_triage.api.static_assets import StaticAssets
 from resilient_triage.config import settings
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.scenarios.catalogue import get_scenario, public_catalogue
@@ -39,6 +40,7 @@ from resilient_triage.triage.gateway import Analyzed, CacheHit, Shed
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+STATIC_DIR = Path(__file__).parent / "static"
 
 RuntimeFactory = Callable[[], AppRuntime]
 
@@ -552,6 +554,7 @@ def create_app(runtime_factory: RuntimeFactory = _default_runtime) -> FastAPI:
     app.middleware("http")(process_time_and_correlation_middleware)
     app.add_exception_handler(Exception, global_exception_handler)
     app.include_router(router)
+    app.mount("/static", StaticAssets(directory=STATIC_DIR), name="static")
     return app
 
 

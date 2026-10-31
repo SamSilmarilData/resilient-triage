@@ -13,9 +13,10 @@ from types import ModuleType
 
 import httpx
 import pytest
-from resilient_triage.api.static_assets import StaticAssets
 from starlette.applications import Starlette
 from starlette.routing import Mount
+
+from resilient_triage.api.static_assets import StaticAssets
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static" / "vendor"
