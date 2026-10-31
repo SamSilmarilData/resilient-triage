@@ -28,9 +28,14 @@ from resilient_triage.graph.nodes import (
 )
 from resilient_triage.graph.nodes.validate_report import self_repair_exhausted
 from resilient_triage.schemas.state import TriageState
-from resilient_triage.trace.events import NodeFinished, NodeStarted, RouteDecided
+from resilient_triage.trace.events import (
+    NodeFinished,
+    NodeStarted,
+    Reconciled,
+    RouteDecided,
+)
 from resilient_triage.trace.fields import NodeStatus
-from resilient_triage.trace.recorder import record_event
+from resilient_triage.trace.recorder import TraceRecorder, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -240,22 +245,48 @@ def _traced(
         record_event(trace, lambda: NodeStarted(node=name))
         started = time.monotonic()
         status: NodeStatus = "error"
+        result: dict[str, Any] = {}
         try:
             result = node(state, runtime) if takes_runtime else node(state)
             if inspect.isawaitable(result):
                 result = await result
             status = "ok"
+            if name == "finalize_report":
+                _record_reconciled(trace, state, result)
         except asyncio.CancelledError:
             status = "cancelled"
             raise
         finally:
             duration_ms = round((time.monotonic() - started) * 1000, 3)
             record_event(
-                trace, lambda: NodeFinished(node=name, duration_ms=duration_ms, status=status)
+                trace,
+                lambda: NodeFinished(
+                    node=name,
+                    duration_ms=duration_ms,
+                    status=status,
+                    confidence=_router_confidence(name, result),
+                ),
             )
         return {**result, "previous_node": name}
 
     return traced_node
+
+
+def _router_confidence(name: str, update: Mapping[str, Any]) -> float | None:
+    """validate_report's output report confidence: what route_after_validation reads."""
+    report = update.get("final_report") if name == "validate_report" else None
+    return report.confidence_score if report is not None else None
+
+
+def _record_reconciled(trace: TraceRecorder, state: TriageState, update: Mapping[str, Any]) -> None:
+    """Record what finalize_report's reconcile() changed, if it had a report to reconcile.
+
+    finalize_report stays a pure function of state, so its caller (this wrapper) records
+    the event from the node's input and output reports.
+    """
+    before, after = state.get("final_report"), update.get("final_report")
+    if before is not None and after is not None:
+        record_event(trace, lambda: Reconciled.between(before, after))
 
 
 triage_graph = build_triage_graph()
