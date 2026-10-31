@@ -7,8 +7,8 @@ a private `ChaosManager` for Cluster Sentinel), `CircuitBreakerRegistry`, in-mem
 injected. The graph, routers, reconciliation, cache and breaker code all run for real.
 """
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from typing import Any
 
@@ -60,7 +60,7 @@ class ScenarioRun:
     async def triage(self, *, trace: TraceRecorder | None = None) -> TriageOutcome:
         """Do the setup, then run the request through the private gateway, recording on `trace`."""
         # The gateway runs the setup before trace_started and contains its failure (ADR-009).
-        try:
+        with self._releasing_held_slots():
             return await self.gateway.triage(
                 self.scenario.query,
                 self.scenario.scope,
@@ -68,15 +68,13 @@ class ScenarioRun:
                 scenario_id=self.scenario.id,
                 setup=self._setup,
             )
-        finally:
-            self._release_held()
 
     @asynccontextmanager
     async def stream(self) -> AsyncIterator[AsyncIterator[TraceEvent]]:
         """Do the setup, then run the request; yield every live event, setup first."""
         # The gateway's stream runs the setup and the request in one task it owns and cancels,
         # as for free play, so setup events stream live and a disconnect cancels the setup too.
-        try:
+        with self._releasing_held_slots():
             async with self.gateway.stream(
                 self.scenario.query,
                 self.scenario.scope,
@@ -84,8 +82,6 @@ class ScenarioRun:
                 setup=self._setup,
             ) as events:
                 yield events
-        finally:
-            self._release_held()
 
     async def _setup(self, trace: TraceRecorder) -> None:
         """Do the scenario setup, recording it on `trace` before the request's trace_started."""
@@ -112,11 +108,15 @@ class ScenarioRun:
         held = self._held
         record_event(trace, lambda: ScenarioSetup(step="hold_run_slots", count=held))
 
-    def _release_held(self) -> None:
-        """Give back every slot the setup held, so none leaks, even on cancellation."""
-        while self._held:
-            self._held -= 1
-            self.slots.release()
+    @contextmanager
+    def _releasing_held_slots(self) -> Iterator[None]:
+        """On leaving, give back every slot the setup held, so none leaks, even on cancellation."""
+        try:
+            yield
+        finally:
+            while self._held:
+                self._held -= 1
+                self.slots.release()
 
     async def _trip(self, source: str, trace: TraceRecorder) -> None:
         """Fail real reads of `source` until its private breaker opens (fail_max of them)."""
