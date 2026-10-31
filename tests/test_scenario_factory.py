@@ -12,6 +12,7 @@ from resilient_triage.llm import DEFAULT_REPORT_JSON, ScriptedReply
 from resilient_triage.runtime import AppRuntime
 from resilient_triage.scenarios import (
     CacheSeed,
+    ExpectedOutcome,
     HeldSlots,
     Overrides,
     Scenario,
@@ -51,7 +52,7 @@ def _scenario(**changes: Any) -> Scenario:
         script=(),
         statuspage=GITHUB_DEGRADED,
         caption="A plain scenario run.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(outcome="analyzed"),
     )
     return replace(base, **changes)
 
@@ -107,7 +108,9 @@ async def test_pre_run_failures_open_the_private_breaker_at_exactly_fail_max() -
 async def test_a_seeded_scenario_is_answered_from_its_private_cache() -> None:
     trace = ListTrace()
     seed = CacheSeed(query=SCENARIO_QUERY, report=SEED_REPORT)
-    run = _factory().build(_scenario(setup=Setup(seeds=(seed,)), expected_outcome="cache_hit"))
+    run = _factory().build(
+        _scenario(setup=Setup(seeds=(seed,)), expected_outcome=ExpectedOutcome(outcome="cache_hit"))
+    )
 
     outcome = await run.triage(trace=trace)
 
@@ -127,7 +130,9 @@ async def test_held_slots_shed_the_run_on_a_private_pool_and_are_released() -> N
     shared = RunSlotPool(capacity=4, queue_timeout_s=settings.triage_queue_timeout_s)
     held = HeldSlots(capacity=2, queue_timeout_s=0.02)
     run = _factory(shared).build(
-        _scenario(overrides=Overrides(held_slots=held), expected_outcome="shed")
+        _scenario(
+            overrides=Overrides(held_slots=held), expected_outcome=ExpectedOutcome(outcome="shed")
+        )
     )
 
     outcome = await run.triage(trace=trace)

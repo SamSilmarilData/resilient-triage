@@ -13,17 +13,19 @@ from resilient_triage.llm.failures import ProviderFailure, RateLimited, Unavaila
 from resilient_triage.scenarios.model import (
     CacheSeed,
     Chapter,
+    ExpectedOutcome,
     HeldSlots,
     Overrides,
     Scenario,
     Setup,
 )
-from resilient_triage.schemas.incident import IncidentTriageReport
+from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 from resilient_triage.schemas.telemetry import (
     ChaosConfig,
     StatuspageComponent,
     StatuspageSummary,
 )
+from resilient_triage.trace.fields import ModelOutcome, ModelRole, ReadOutcome
 
 REPLY_DELAY_S = 0.9
 FAILURE_DELAY_S = 0.18
@@ -78,6 +80,39 @@ CACHED_QUERY = "GitHub Actions jobs stuck in the queued state"
 SENTINEL_SLOW = ChaosConfig(active=True, latency_ms=5000)
 SENTINEL_DOWN = ChaosConfig(active=True, inject_503=True)
 
+HEALTHY = DegradationStatus.HEALTHY
+PARTIALLY_DEGRADED = DegradationStatus.PARTIALLY_DEGRADED
+SEVERELY_DEGRADED = DegradationStatus.SEVERELY_DEGRADED
+FALLBACK_CONFIDENCE = 0.2  # every fallback report's confidence_score
+
+# Routes as (router's source node, route key): finalize and fallback each exist on two routers.
+SYNTHESIZE = ("collect_telemetry", "synthesize")
+COMPENSATE = ("collect_telemetry", "compensate")
+VALIDATE = ("generate_report", "validate")
+FINALIZE = ("validate_report", "finalize")
+REPAIR = ("validate_report", "repair")
+REFINE = ("validate_report", "refine")
+
+TO_VALIDATE = (
+    "analyze_query",
+    "collect_telemetry",
+    "synthesize_telemetry",
+    "generate_report",
+    "validate_report",
+)
+FINISH = "finalize_report"
+PLAIN_PATH = (*TO_VALIDATE, FINISH)
+COMPENSATED_PATH = (
+    "analyze_query",
+    "collect_telemetry",
+    "compensate_blindspots",
+    "degraded_fallback",
+    *TO_VALIDATE[2:],
+    FINISH,
+)
+PRIMARY_ANSWERS: tuple[ModelRole, ModelOutcome] = ("primary", "completion")
+STATUSPAGE_READ: tuple[str, ReadOutcome] = ("statuspage", "read")
+
 CHAPTERS: tuple[Chapter, ...] = (
     Chapter(id="fast-paths", title="Fast paths"),
     Chapter(id="model-misbehaves", title="When the model misbehaves"),
@@ -96,7 +131,16 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(VALID),),
         statuspage=GITHUB_DEGRADED,
         caption="Every dependency answers: one model call, one valid report, cached for next time.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=HEALTHY,
+            nodes=PLAIN_PATH,
+            routes=(SYNTHESIZE, VALIDATE, FINALIZE),
+            model_calls=(PRIMARY_ANSWERS,),
+            telemetry=(STATUSPAGE_READ,),
+            confidence=0.9,
+            cache_store="stored",
+        ),
     ),
     Scenario(
         id="cache-hit",
@@ -107,7 +151,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(),
         statuspage=GITHUB_DEGRADED,
         caption="A question already answered is served from the semantic cache, with no run.",
-        expected_outcome="cache_hit",
+        expected_outcome=ExpectedOutcome(outcome="cache_hit", degradation=HEALTHY, confidence=0.9),
         setup=Setup(seeds=(CacheSeed(query=CACHED_QUERY, report=SEED_REPORT),)),
         setup_notes=("An answer to this question is already in the cache.",),
     ),
@@ -120,7 +164,16 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_fail(PRIMARY_RATE_LIMITED), _reply(VALID)),
         statuspage=GITHUB_DEGRADED,
         caption="The primary model is rate-limited, so the gateway fails over to the fallback.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=HEALTHY,
+            nodes=PLAIN_PATH,
+            routes=(SYNTHESIZE, VALIDATE, FINALIZE),
+            model_calls=(("primary", "rate_limited"), ("fallback", "completion")),
+            telemetry=(STATUSPAGE_READ,),
+            confidence=0.9,
+            cache_store="stored",
+        ),
         setup_notes=("The primary model is out of quota.",),
     ),
     # Chapter: model-misbehaves
@@ -133,7 +186,16 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(NOT_JSON), _reply(VALID)),
         statuspage=GITHUB_DEGRADED,
         caption="An invalid reply is sent back with its errors, and the model repairs it.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=HEALTHY,
+            nodes=(*TO_VALIDATE, "self_repair", "generate_report", "validate_report", FINISH),
+            routes=(SYNTHESIZE, VALIDATE, REPAIR, VALIDATE, FINALIZE),
+            model_calls=(PRIMARY_ANSWERS, PRIMARY_ANSWERS),
+            telemetry=(STATUSPAGE_READ,),
+            confidence=0.9,
+            cache_store="stored",
+        ),
         setup_notes=("The model's first reply is not valid JSON.",),
     ),
     Scenario(
@@ -145,7 +207,16 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(LOW_CONFIDENCE), _reply(REFINED)),
         statuspage=GITHUB_DEGRADED,
         caption="A valid but low-confidence report earns one reflection round to firm it up.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=HEALTHY,
+            nodes=(*TO_VALIDATE, "refine_reflection", "generate_report", "validate_report", FINISH),
+            routes=(SYNTHESIZE, VALIDATE, REFINE, VALIDATE, FINALIZE),
+            model_calls=(PRIMARY_ANSWERS, PRIMARY_ANSWERS),
+            telemetry=(STATUSPAGE_READ,),
+            confidence=0.8,
+            cache_store="stored",
+        ),
         setup_notes=("The model's first report has a confidence of 0.45.",),
     ),
     Scenario(
@@ -162,7 +233,21 @@ SCENARIOS: tuple[Scenario, ...] = (
         ),
         statuspage=GITHUB_DEGRADED,
         caption="When the refine round cannot reach a model, the valid pre-refine report is kept.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=HEALTHY,
+            nodes=(*TO_VALIDATE, "refine_reflection", "generate_report", FINISH),
+            routes=(SYNTHESIZE, VALIDATE, REFINE, ("generate_report", "finalize")),
+            model_calls=(
+                PRIMARY_ANSWERS,
+                ("primary", "unavailable"),
+                ("primary", "unavailable"),
+                ("fallback", "unavailable"),
+            ),
+            telemetry=(STATUSPAGE_READ,),
+            confidence=0.45,  # the pre-refine report, kept
+            cache_store="stored",
+        ),
         setup_notes=(
             "The model's first report has a confidence of 0.45.",
             "After that, both models are unavailable.",
@@ -177,7 +262,23 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(NOT_JSON), _reply(WRONG_TYPE)),
         statuspage=GITHUB_DEGRADED,
         caption="When repair fails too, a safe low-confidence fallback is returned, uncached.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=SEVERELY_DEGRADED,
+            nodes=(
+                *TO_VALIDATE,
+                "self_repair",
+                "generate_report",
+                "validate_report",
+                "fallback_report",
+                FINISH,
+            ),
+            routes=(SYNTHESIZE, VALIDATE, REPAIR, VALIDATE, ("validate_report", "fallback")),
+            model_calls=(PRIMARY_ANSWERS, PRIMARY_ANSWERS),
+            telemetry=(STATUSPAGE_READ,),
+            confidence=FALLBACK_CONFIDENCE,
+            cache_store="skipped_fallback",
+        ),
         setup_notes=("Both of the model's replies are invalid.",),
     ),
     Scenario(
@@ -189,7 +290,17 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(UNAPPROVED_REMEDIATION),),
         statuspage=GITHUB_DEGRADED,
         caption="The model marks a remediation as safe to run; reconcile requires approval anyway.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=HEALTHY,
+            nodes=PLAIN_PATH,
+            routes=(SYNTHESIZE, VALIDATE, FINALIZE),
+            model_calls=(PRIMARY_ANSWERS,),
+            telemetry=(STATUSPAGE_READ,),
+            approval_raised=(1,),  # the remediative action now requires approval
+            confidence=0.9,
+            cache_store="stored",
+        ),
         setup_notes=("The model's report claims a remediative action needs no approval.",),
     ),
     # Chapter: dependencies-fail
@@ -202,7 +313,16 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(VALID),),
         statuspage=None,
         caption="Statuspage fails after its retries; the run goes on and is partially degraded.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=PARTIALLY_DEGRADED,
+            nodes=PLAIN_PATH,
+            routes=(SYNTHESIZE, VALIDATE, FINALIZE),
+            model_calls=(PRIMARY_ANSWERS,),
+            telemetry=(("statuspage", "unavailable"),),
+            confidence=0.9,
+            cache_store="stored",
+        ),
         setup_notes=("Statuspage fails every read.",),
     ),
     Scenario(
@@ -214,7 +334,17 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(VALID),),
         statuspage=None,
         caption="An open breaker refuses the read at once; compensation fills the blind spot.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=PARTIALLY_DEGRADED,
+            nodes=COMPENSATED_PATH,
+            routes=(COMPENSATE, VALIDATE, FINALIZE),
+            model_calls=(PRIMARY_ANSWERS,),
+            telemetry=(("statuspage", "tripped"),),
+            breakers_tripped=("statuspage",),
+            confidence=0.9,
+            cache_store="stored",
+        ),
         setup=Setup(tripped_sources=("statuspage",)),
         setup_notes=("Statuspage failed three reads in a row, so its breaker is open.",),
     ),
@@ -227,7 +357,14 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(VALID),),
         statuspage=GITHUB_DEGRADED,
         caption="A run that cannot finish in time is cut off and answered with a fallback report.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=SEVERELY_DEGRADED,
+            nodes=("analyze_query", "collect_telemetry"),  # cut off while reading
+            confidence=FALLBACK_CONFIDENCE,
+            cache_store="skipped_fallback",
+            deadline_exceeded=True,
+        ),
         cluster_sentinel=SENTINEL_SLOW,
         overrides=Overrides(run_deadline_s=3.0),
         setup_notes=(
@@ -244,7 +381,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_reply(VALID),),
         statuspage=GITHUB_DEGRADED,
         caption="With every run slot busy, the request waits briefly, then is shed, not queued.",
-        expected_outcome="shed",
+        expected_outcome=ExpectedOutcome(outcome="shed"),
         overrides=Overrides(held_slots=HeldSlots(capacity=2, queue_timeout_s=1.0)),
         setup_notes=("Both run slots are busy, and a request waits at most 1 s for one.",),
     ),
@@ -258,7 +395,17 @@ SCENARIOS: tuple[Scenario, ...] = (
         script=(_fail(PRIMARY_RATE_LIMITED), _fail(FALLBACK_RATE_LIMITED)),
         statuspage=None,
         caption="Redis, both sources and both models down: still a valid, degraded answer.",
-        expected_outcome="analyzed",
+        expected_outcome=ExpectedOutcome(
+            outcome="analyzed",
+            degradation=SEVERELY_DEGRADED,
+            nodes=(*COMPENSATED_PATH[:-2], "fallback_report", FINISH),
+            routes=(COMPENSATE, ("generate_report", "fallback")),
+            model_calls=(("primary", "rate_limited"), ("fallback", "rate_limited")),
+            telemetry=(("statuspage", "tripped"), ("chaos", "tripped")),
+            breakers_tripped=("chaos", "statuspage"),
+            confidence=FALLBACK_CONFIDENCE,
+            cache_store="skipped_fallback",
+        ),
         cluster_sentinel=SENTINEL_DOWN,
         setup=Setup(tripped_sources=("statuspage", "chaos")),
         setup_notes=(

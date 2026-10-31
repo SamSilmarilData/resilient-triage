@@ -9,9 +9,15 @@ import re
 from dataclasses import dataclass, field
 
 from resilient_triage.llm import ScriptEntry
-from resilient_triage.schemas.incident import IncidentTriageReport
+from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
-from resilient_triage.trace.fields import TriageOutcomeKind
+from resilient_triage.trace.fields import (
+    ModelOutcome,
+    ModelRole,
+    ReadOutcome,
+    StoreOutcome,
+    TriageOutcomeKind,
+)
 
 # Same shape as the trace's Identifier, since the id travels on trace_started.
 _SCENARIO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
@@ -65,6 +71,24 @@ class Overrides:
 
 
 @dataclass(frozen=True)
+class ExpectedOutcome:
+    """What a scenario run must show: its path through the graph and the answer's key facts."""
+
+    outcome: TriageOutcomeKind
+    # The answer's degradation status; None when shed (no answer).
+    degradation: DegradationStatus | None = None
+    nodes: tuple[str, ...] = ()  # graph nodes visited, in order
+    routes: tuple[tuple[str, str], ...] = ()  # (router's source node, route key), in order
+    model_calls: tuple[tuple[ModelRole, ModelOutcome], ...] = ()
+    telemetry: tuple[tuple[str, ReadOutcome], ...] = ()  # run-time reads, not setup's
+    breakers_tripped: tuple[str, ...] = ()  # the answer's circuit_breakers_tripped
+    approval_raised: tuple[int, ...] = ()  # action indexes reconcile made require approval
+    confidence: float | None = None  # the answer's confidence_score
+    cache_store: StoreOutcome | None = None  # None when the run never reached the store
+    deadline_exceeded: bool = False
+
+
+@dataclass(frozen=True)
 class Chapter:
     """A group of scenarios on the page, shown under its title in catalogue order."""
 
@@ -87,7 +111,7 @@ class Scenario:
     # What Statuspage reads; None means every Statuspage read fails (an unavailable source).
     statuspage: StatuspageSummary | None
     caption: str
-    expected_outcome: TriageOutcomeKind
+    expected_outcome: ExpectedOutcome
     # Cluster Sentinel failing or slow, set on the run's private ChaosManager; None: healthy.
     cluster_sentinel: ChaosConfig | None = None
     setup: Setup = field(default_factory=Setup)
