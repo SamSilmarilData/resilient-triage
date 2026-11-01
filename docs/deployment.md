@@ -102,13 +102,24 @@ cp .env.example .env
 - Interactive API Docs: `http://127.0.0.1:8000/docs`
 - Health Endpoint: `http://127.0.0.1:8000/health`
 
+### Check the package without Docker
+
+`./scripts/check_package.sh` (or `./scripts/check.sh --package`) runs CI's docker-job checks on the installed wheel instead of an image, so a Mac needs no Docker:
+
+1. builds the wheel (`pip wheel . --no-deps`) and installs it, non-editable, into a fresh venv in a temporary directory outside the repo;
+2. runs `scripts/vendor.py verify --installed` with that venv's Python, from a directory where `src/` isn't importable;
+3. starts the installed app with that venv's uvicorn on a free loopback port, with no Groq key (the scripted LLM answers) and `REDIS_URL` on a closed port (the in-memory cache serves), waits for `/health`, and runs `scripts/smoke_test.py` against it;
+4. stops the app and deletes the temporary directory on exit.
+
+It needs no Redis and no Groq key. Building the wheel and installing its dependencies use pip's index or cache, and the first start may download the FastEmbed model. **The image's OS layer (python:3.12-slim, apt packages, the embedded Redis in `docker-entrypoint.sh`) and its non-root user are checked only by CI's docker job.**
+
 ---
 
 ## Vendored frontend files
 
 The page's third-party JavaScript and fonts are committed under `src/resilient_triage/api/static/vendor/` and ship inside the package, so a deployment makes no third-party requests and needs no Node or build step (ADR-010). The Docker image gets them through `pip install .` (package-data `static/**`, setuptools 62.3+); `/app/src` is not on the runtime path.
 
-- **Check a deployment**: `docker run --rm --entrypoint python <image> scripts/vendor.py verify --installed` re-hashes the installed package's copy (in site-packages) against its manifest; CI runs it on every image, and checks the image does not run as root. `python scripts/smoke_test.py` also fetches every vendored file over HTTP and checks its sha256, media type and `Cache-Control`.
+- **Check a deployment**: `docker run --rm --entrypoint python <image> scripts/vendor.py verify --installed` re-hashes the installed package's copy (in site-packages) against its manifest; CI runs it on every image, and checks the image does not run as root. Without Docker, `./scripts/check_package.sh` runs the same check on the installed wheel (above). `python scripts/smoke_test.py` also fetches every vendored file over HTTP and checks its sha256, media type and `Cache-Control`.
 - **Check the checkout**: `python scripts/vendor.py verify` (offline; `./scripts/check.sh` runs the same check in pytest).
 - **Update or bump a package** (manual, needs network, never run by tests or CI): edit its `version` in `static/vendor/manifest.json`, then run `python scripts/vendor.py update`. It reads the version's tarball URL and integrity from `registry.npmjs.org`, refuses a version whose integrity differs from the one already recorded, checks the tarball's sha512, extracts only the listed files, records their sha256 and removes files no package lists. Commit the manifest and files together. Adding a package or file means adding its entry by hand first, and needs approval (CODING_STANDARDS "Frontend").
 - **Caching**: `/static/vendor/…` is served `Cache-Control: public, max-age=31536000, immutable`, so a CDN or browser keeps it for a year; a bump changes the URL. Other `/static/` files are `no-cache`.

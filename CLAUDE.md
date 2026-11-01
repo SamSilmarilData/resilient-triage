@@ -18,7 +18,8 @@ Statuspage, or the LLM is down — degrade instead.
   to pytest. Redis is optional: tests fall back to the in-memory cache. `--browser` runs only the
   Playwright tier (needs `.[browser]` + `playwright install chromium`).
 - Run: `./scripts/run_local.sh` (UI :8000, docs /docs, /health)
-- Docker: `docker compose up`; smoke test: `python scripts/smoke_test.py`
+- Docker: `docker compose up`; smoke test: `python scripts/smoke_test.py`. Without Docker:
+  `./scripts/check_package.sh` checks the installed wheel as CI's docker job does (not the OS layer or non-root user)
 - CI (`.github/workflows/ci.yml`) runs exactly: `test` job: ruff check, ruff format --check, mypy src/,
   pytest; `browser` job: `check.sh --browser` on Chromium; `docker` job: docker build, image
   `vendor.py verify --installed` + non-root check, /health, smoke test
