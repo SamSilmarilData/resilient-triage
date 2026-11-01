@@ -15,7 +15,8 @@ Statuspage, or the LLM is down — degrade instead.
 - Setup: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[test,lint]"`, then
   `git config core.hooksPath .githooks` (pre-commit runs ruff)
 - Check: `./scripts/check.sh` — ruff, ruff format, mypy, pytest, as CI runs them; extra args go
-  to pytest. Redis is optional: tests fall back to the in-memory cache.
+  to pytest. Redis is optional: tests fall back to the in-memory cache. `--browser` runs only the
+  Playwright tier (needs `.[browser]` + `playwright install chromium`).
 - Run: `./scripts/run_local.sh` (UI :8000, docs /docs, /health)
 - Docker: `docker compose up`; smoke test: `python scripts/smoke_test.py`
 - CI (`.github/workflows/ci.yml`) runs exactly: ruff check, ruff format --check, mypy src/, pytest, docker build + /health
