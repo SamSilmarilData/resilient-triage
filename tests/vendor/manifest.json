@@ -1,0 +1,18 @@
+{
+  "$comment": "Test-only vendored files (#117, ADR 0010), never served by the app or shipped. Same shape as static/vendor/manifest.json; tests/test_axe_vendor.py checks it with scripts/vendor.py's verify (`python scripts/vendor.py verify --dir tests/vendor`). To bump, edit the version, tarball, integrity and sha256 values from the npm tarball by hand and re-run verify.",
+  "packages": [
+    {
+      "name": "axe-core",
+      "version": "4.14.0",
+      "license": "MPL-2.0",
+      "license_file": "LICENSE",
+      "tarball": "https://registry.npmjs.org/axe-core/-/axe-core-4.14.0.tgz",
+      "integrity": "sha512-9WTZxEjsZ7b13TH8JPmbV2z8CHbl80/2hm3XPEG4JgNdQLK81IBRXmSxHfMAOkSqQeRxT/0dwNDz2GOm3zzpcQ==",
+      "files": [
+        {"path": "LICENSE", "sha256": "af175b9d96ee93c21a036152e1b905b0b95304d4ae8c2c921c7609100ba8df7e"},
+        {"path": "LICENSE-3RD-PARTY.txt", "sha256": "4f8563870d0fca38bbc3e00b6f670cb7fa9f380ba9f26a7f7d1184a6b18b1653"},
+        {"path": "axe.min.js", "sha256": "20c09fe157a8a34a30e241aaa1fcdade657734f08ab379ecfbeb7d45cc46e878"}
+      ]
+    }
+  ]
+}
