@@ -25,9 +25,9 @@ import json
 import sys
 import tarfile
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NotRequired, TypedDict, cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static" / "vendor"
@@ -39,18 +39,44 @@ FETCH_TIMEOUT_S = 60
 Fetch = Callable[[str], bytes]
 
 
+class FileEntry(TypedDict):
+    """One vendored file: its path in the tarball's `package/`, sha256 and import-map name."""
+
+    path: str
+    sha256: NotRequired[str]
+    specifier: NotRequired[str]
+
+
+class Package(TypedDict):
+    """One pinned npm package; `update` records its tarball URL and integrity."""
+
+    name: str
+    version: str
+    license: str
+    license_file: str
+    tarball: NotRequired[str]
+    integrity: NotRequired[str]
+    files: list[FileEntry]
+
+
+class Manifest(TypedDict):
+    """The manifest file's shape (other top-level keys, such as `$comment`, are kept as is)."""
+
+    packages: list[Package]
+
+
 class VendorError(Exception):
     """An update that cannot proceed safely; nothing has been written."""
 
 
-def package_dir(package: dict[str, Any]) -> str:
+def package_dir(package: Package) -> str:
     """Return a package's directory under vendor/: `<name>@<version>`."""
     return f"{package['name']}@{package['version']}"
 
 
-def load_manifest(vendor_dir: Path) -> dict[str, Any]:
+def load_manifest(vendor_dir: Path) -> Manifest:
     """Read the manifest in `vendor_dir`."""
-    manifest: dict[str, Any] = json.loads((vendor_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    manifest: Manifest = json.loads((vendor_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
     return manifest
 
 
@@ -125,7 +151,7 @@ def _check_integrity(data: bytes, integrity: str, label: str) -> None:
         raise VendorError(f"{label}: tarball does not match its registry integrity")
 
 
-def _download(package: dict[str, Any], fetch: Fetch) -> dict[str, bytes]:
+def _download(package: Package, fetch: Fetch) -> dict[str, bytes]:
     """Fetch one pinned package and return its listed files; pin tarball, integrity, sha256."""
     label = package_dir(package)
     if not _is_safe(label):
@@ -163,18 +189,22 @@ def _download(package: dict[str, Any], fetch: Fetch) -> dict[str, bytes]:
     return files
 
 
-def _canonical(package: dict[str, Any]) -> dict[str, Any]:
+def _ordered(entry: Mapping[str, Any], first: tuple[str, ...]) -> dict[str, Any]:
+    """Copy a manifest entry with the `first` keys leading, then any others as they come."""
+    return {k: entry[k] for k in first if k in entry} | {
+        k: v for k, v in entry.items() if k not in first
+    }
+
+
+def _canonical(package: Package) -> Package:
     """Order a package's keys for a stable, readable manifest."""
     keys = ("name", "version", "license", "license_file", "tarball", "integrity")
-    ordered = {key: package[key] for key in keys if key in package}
-    ordered.update({k: v for k, v in package.items() if k not in ordered and k != "files"})
-    file_keys = ("path", "specifier", "sha256")
+    ordered = _ordered(package, keys)
+    del ordered["files"]  # re-added last
     ordered["files"] = [
-        {k: entry[k] for k in file_keys if k in entry}
-        | {k: v for k, v in entry.items() if k not in file_keys}
-        for entry in package["files"]
+        _ordered(entry, ("path", "specifier", "sha256")) for entry in package["files"]
     ]
-    return ordered
+    return cast(Package, ordered)
 
 
 def _remove_unlisted(vendor_dir: Path, keep: set[str]) -> None:
