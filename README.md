@@ -103,6 +103,8 @@ cp .env.example .env
 - **Interactive OpenAPI Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - **Live Health Endpoint**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
+To check the installed package as CI's Docker job does, without Docker, run `./scripts/check_package.sh` (or `./scripts/check.sh --package`): it builds the wheel, installs it into a throwaway venv, verifies the vendored files and runs the smoke test against it, with no Redis or Groq key. The image's OS layer and non-root user are checked in CI only. See [docs/deployment.md](docs/deployment.md#check-the-package-without-docker).
+
 ---
 
 ### Option 2: Docker Compose

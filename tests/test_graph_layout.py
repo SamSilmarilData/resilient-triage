@@ -7,23 +7,17 @@ conditional edges keyed by their router label as in the execution trace (ADR 000
 
 import itertools
 import json
-from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from repo_scripts import STATIC_DIR
 
 from resilient_triage.graph.builder import route_labels, triage_graph
 
-LAYOUT_FILE = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "resilient_triage"
-    / "api"
-    / "static"
-    / "graph-layout.json"
-)
-# At 375 px with 16 px gutters the graph gets 343 px; node labels must stay at least this big.
+LAYOUT_FILE = STATIC_DIR / "graph-layout.json"
+# At 375 px with 16 px gutters the graph gets 343 px; labels must render at their nominal size
+# there (scale >= 1), and no label is nominally smaller than this.
 PHONE_GRAPH_WIDTH_PX = 343
 MIN_PHONE_LABEL_PX = 11
 LABEL_PADDING = 8  # each side of a node's name inside its box
@@ -111,10 +105,13 @@ def test_nodes_fit_their_names_and_do_not_overlap(layout: dict[str, Any]):
 
 
 def test_labels_stay_full_size_at_phone_width(layout: dict[str, Any]):
-    """Scaled to a 375 px phone's content width, node labels are still at least 11 px."""
-    width = layout["view_box"][2]
+    """Scaled to a 375 px phone's content width, node and router labels keep their nominal px."""
+    font = layout["font"]
+    scale = min(1, PHONE_GRAPH_WIDTH_PX / layout["view_box"][2])
 
-    assert layout["font"]["node_px"] * min(1, PHONE_GRAPH_WIDTH_PX / width) >= MIN_PHONE_LABEL_PX
+    for key in ("node_px", "label_px"):
+        assert font[key] >= MIN_PHONE_LABEL_PX, f"{key} is below {MIN_PHONE_LABEL_PX} px"
+        assert font[key] * scale >= font[key], f"{key} renders at {font[key] * scale:.1f} px"
 
 
 def _on_border(point: list[float], box: Box) -> bool:
@@ -137,8 +134,8 @@ def _crosses(start: list[float], end: list[float], box: Box) -> bool:
 
 
 def test_edges_are_orthogonal_paths_between_their_nodes(layout: dict[str, Any]):
-    """Each edge leaves its source's border, enters its target's, turns only at right angles,
-    stays in the view box and passes through no other node."""
+    """Each edge runs from its source's border to its target's through no other node."""
+    # Every segment is horizontal or vertical (right-angle turns only) and stays in the view box.
     for edge in layout["edges"]:
         name = f"{edge['source']} to {edge['target']}"
         points = edge["points"]

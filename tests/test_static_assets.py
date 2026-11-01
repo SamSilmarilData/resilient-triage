@@ -18,14 +18,13 @@ from urllib.parse import urljoin
 
 import httpx
 import pytest
-from repo_scripts import load_script
+from repo_scripts import REPO_ROOT, STATIC_DIR, load_script
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
 from resilient_triage.api.static_assets import StaticAssets
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-VENDOR_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static" / "vendor"
+VENDOR_DIR = STATIC_DIR / "vendor"
 
 
 vendor = load_script("vendor")
@@ -315,7 +314,7 @@ def test_manifest_pins_the_approved_packages():
         ("@fontsource-variable/jetbrains-mono", "5.3.0", "OFL-1.1"),
     }
     specifiers = {
-        f["specifier"]: f"{p['name']}@{p['version']}/{f['path']}"
+        f["specifier"]: f"{vendor.package_dir(p)}/{f['path']}"
         for p in manifest["packages"]
         for f in p["files"]
         if "specifier" in f
@@ -342,14 +341,14 @@ EXPECTED_CONTENT_TYPE = {
 def _vendored_paths() -> list[str]:
     manifest = json.loads((VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
     return [
-        f"{p['name']}@{p['version']}/{f['path']}" for p in manifest["packages"] for f in p["files"]
+        f"{vendor.package_dir(p)}/{f['path']}" for p in manifest["packages"] for f in p["files"]
     ]
 
 
 @pytest.fixture
 def host_without_mime_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make `mimetypes` know only Python's built-in table, like python:3.12-slim with no
-    /etc/mime.types (which has no `.woff2` entry)."""
+    """Make `mimetypes` know only Python's built-in table, which has no `.woff2` entry."""
+    # Like python:3.12-slim, which has no /etc/mime.types.
     monkeypatch.setattr(mimetypes, "_db", mimetypes.MimeTypes())
 
 
@@ -456,8 +455,6 @@ def test_installed_package_contains_the_vendored_files():
 
 
 # --- The page shell (#116) ---
-
-STATIC_DIR = VENDOR_DIR.parent
 
 
 class _PageParser(HTMLParser):
@@ -597,7 +594,7 @@ def _import_map() -> dict:
 def test_import_map_matches_the_manifest():
     """Each bare name in the manifest maps to its one same-origin vendored URL, and no more."""
     expected = {
-        entry["specifier"]: f"/static/vendor/{p['name']}@{p['version']}/{entry['path']}"
+        entry["specifier"]: f"/static/vendor/{vendor.package_dir(p)}/{entry['path']}"
         for p in _manifest()["packages"]
         for entry in p["files"]
         if "specifier" in entry
@@ -628,8 +625,9 @@ def _is_bare(specifier: str) -> bool:
 
 
 def test_every_module_import_resolves_to_a_file():
-    """Every import in our and vendored .mjs resolves to an existing static file; bare names
-    only through the import map, and vendored modules only by bare name (one Preact)."""
+    """Every import in our and vendored .mjs resolves to an existing static file."""
+    # Bare names resolve only through the import map, and vendored modules are imported only by
+    # bare name, so the page loads one Preact.
     imports = _import_map()["imports"]
     vendored = {_static_path(url).resolve() for url in imports.values()}
     modules = sorted(STATIC_DIR.rglob("*.mjs"))
@@ -764,8 +762,8 @@ def test_stylesheet_uses_layers_tokens_and_nesting():
 
 
 def test_dark_theme_follows_the_system_unless_overridden():
-    """Dark tokens apply under prefers-color-scheme: dark (unless data-theme="light") and under
-    data-theme="dark", with the same values, and every colour token has a dark value."""
+    """Dark tokens apply by the system unless data-theme="light", or by data-theme="dark"."""
+    # Both selectors carry the same values, and every colour token has a dark value.
     css = _css()
     media = [body for head, body in _blocks(css) if head == "@media (prefers-color-scheme: dark)"]
     dark = _tokens(DARK)

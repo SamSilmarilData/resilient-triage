@@ -7,18 +7,17 @@ browser tier, so the regular test run, which doesn't install it, can still colle
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 import time
 from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import uvicorn
 from fakes import fake_statuspage_http
+from repo_scripts import vendored_axe
 
 from resilient_triage.api.app import create_app
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
@@ -31,23 +30,12 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
-TEST_VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor"
 SERVER_START_TIMEOUT_S = 20.0
 # How long a coroutine run on the server's loop (LiveServer.run) may take.
 SERVER_LOOP_CALL_TIMEOUT_S = 20.0
 SERVER_STOP_TIMEOUT_S = 20.0
 SHELL_READY = 'html[data-shell="ready"]'
 BLOCKING_IMPACTS = ("serious", "critical")
-
-
-def _vendored_axe() -> Path:
-    """axe.min.js under tests/vendor/, at the version its manifest pins."""
-    manifest = json.loads((TEST_VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
-    (axe,) = [p for p in manifest["packages"] if p["name"] == "axe-core"]
-    return TEST_VENDOR_DIR / f"axe-core@{axe['version']}" / "axe.min.js"
-
-
-AXE_PATH = _vendored_axe()
 
 
 class HarnessError(RuntimeError):
@@ -135,10 +123,11 @@ class PageWatch:
 
     def off_origin(self) -> list[str]:
         """Requests to anywhere but the live app's own origin."""
-        return [url for url in self.requests if not url.startswith(self.origin + "/")]
+        return [url for url in self.requests if not same_origin(url, self.origin)]
 
 
-def _failure(request: Request) -> str:
+def _describe_failure(request: Request) -> str:
+    """One line for a failed request: method, URL and Playwright's failure text."""
     return f"{request.method} {request.url}: {request.failure}"
 
 
@@ -169,7 +158,7 @@ class GuardedPages:
         context.route("**/*", guard)
         page = context.new_page()
         page.on("request", lambda request: watch.requests.append(request.url))
-        page.on("requestfailed", lambda request: watch.failed.append(_failure(request)))
+        page.on("requestfailed", lambda request: watch.failed.append(_describe_failure(request)))
         page.on(
             "response",
             lambda response: (
@@ -207,9 +196,10 @@ def open_shell(page: Page, wait_for_requests: bool = True) -> None:
 
 def axe_violations(page: Page) -> list[dict[str, Any]]:
     """Inject axe-core from tests/vendor (never served by the app); return blocking violations."""
-    page.add_script_tag(path=str(AXE_PATH))
+    axe = vendored_axe()
+    page.add_script_tag(path=str(axe.path))
     result: dict[str, Any] = page.evaluate("axe.run(document, {resultTypes: ['violations']})")
-    assert result["testEngine"]["version"] == AXE_PATH.parent.name.split("@")[1]
+    assert result["testEngine"]["version"] == axe.version
     return [v for v in result["violations"] if v["impact"] in BLOCKING_IMPACTS]
 
 

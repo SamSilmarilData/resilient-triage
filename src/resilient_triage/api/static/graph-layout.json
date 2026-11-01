@@ -1,21 +1,21 @@
 {
   "$comment": "Hand-placed layout of triage_graph.get_graph(), one top-to-bottom layout at every width (ADR 0010, #101). Units are SVG user units. A node is a box centred on (x, y), `width` wide and `node_height` tall, sized for its name in the mono font at font.node_px; __start__ and __end__ are circles of radius r. Each edge is an orthogonal polyline from its source's border to its target's; a conditional edge has its router label in `route` (as in the trace's route_decided, ADR 0008) and that label's start-anchored baseline at `label`. tests/test_graph_layout.py checks it against get_graph() both ways.",
   "direction": "top-to-bottom",
-  "view_box": [0, 0, 360, 650],
+  "view_box": [0, 0, 340, 650],
   "node_height": 28,
   "font": { "node_px": 12, "label_px": 11, "mono_advance_em": 0.6 },
   "nodes": {
     "__start__": { "x": 84, "y": 10, "r": 5 },
     "analyze_query": { "x": 84, "y": 52, "width": 112 },
     "collect_telemetry": { "x": 84, "y": 108, "width": 140 },
-    "compensate_blindspots": { "x": 268, "y": 164, "width": 168 },
-    "degraded_fallback": { "x": 268, "y": 220, "width": 140 },
+    "compensate_blindspots": { "x": 250, "y": 164, "width": 168 },
+    "degraded_fallback": { "x": 250, "y": 220, "width": 140 },
     "synthesize_telemetry": { "x": 84, "y": 276, "width": 160 },
-    "refine_reflection": { "x": 268, "y": 316, "width": 140 },
+    "refine_reflection": { "x": 250, "y": 316, "width": 140 },
     "generate_report": { "x": 84, "y": 352, "width": 124 },
-    "self_repair": { "x": 268, "y": 404, "width": 96 },
+    "self_repair": { "x": 250, "y": 404, "width": 96 },
     "validate_report": { "x": 84, "y": 448, "width": 124 },
-    "fallback_report": { "x": 268, "y": 520, "width": 124 },
+    "fallback_report": { "x": 250, "y": 520, "width": 124 },
     "finalize_report": { "x": 84, "y": 592, "width": 124 },
     "__end__": { "x": 84, "y": 640, "r": 5 }
   },
@@ -24,14 +24,14 @@
     { "source": "analyze_query", "target": "collect_telemetry", "points": [[84, 66], [84, 94]] },
     {
       "source": "collect_telemetry", "target": "compensate_blindspots", "route": "compensate",
-      "points": [[154, 108], [268, 108], [268, 150]], "label": [176, 102]
+      "points": [[154, 108], [250, 108], [250, 150]], "label": [176, 102]
     },
     {
       "source": "collect_telemetry", "target": "synthesize_telemetry", "route": "synthesize",
       "points": [[84, 122], [84, 262]], "label": [90, 196]
     },
-    { "source": "compensate_blindspots", "target": "degraded_fallback", "points": [[268, 178], [268, 206]] },
-    { "source": "degraded_fallback", "target": "synthesize_telemetry", "points": [[268, 234], [268, 276], [164, 276]] },
+    { "source": "compensate_blindspots", "target": "degraded_fallback", "points": [[250, 178], [250, 206]] },
+    { "source": "degraded_fallback", "target": "synthesize_telemetry", "points": [[250, 234], [250, 276], [164, 276]] },
     { "source": "synthesize_telemetry", "target": "generate_report", "points": [[84, 290], [84, 338]] },
     {
       "source": "generate_report", "target": "validate_report", "route": "validate",
@@ -39,7 +39,7 @@
     },
     {
       "source": "generate_report", "target": "fallback_report", "route": "fallback",
-      "points": [[146, 352], [354, 352], [354, 520], [330, 520]], "label": [232, 368]
+      "points": [[146, 352], [336, 352], [336, 520], [312, 520]], "label": [232, 368]
     },
     {
       "source": "generate_report", "target": "finalize_report", "route": "finalize",
@@ -47,23 +47,23 @@
     },
     {
       "source": "validate_report", "target": "self_repair", "route": "repair",
-      "points": [[146, 442], [268, 442], [268, 418]], "label": [180, 436]
+      "points": [[146, 442], [250, 442], [250, 418]], "label": [180, 436]
     },
     {
       "source": "validate_report", "target": "refine_reflection", "route": "refine",
-      "points": [[146, 454], [346, 454], [346, 316], [338, 316]], "label": [180, 470]
+      "points": [[146, 454], [328, 454], [328, 316], [320, 316]], "label": [180, 470]
     },
     {
       "source": "validate_report", "target": "fallback_report", "route": "fallback",
-      "points": [[120, 462], [120, 520], [206, 520]], "label": [128, 514]
+      "points": [[120, 462], [120, 520], [188, 520]], "label": [128, 514]
     },
     {
       "source": "validate_report", "target": "finalize_report", "route": "finalize",
       "points": [[84, 462], [84, 578]], "label": [90, 552]
     },
-    { "source": "refine_reflection", "target": "generate_report", "points": [[198, 316], [174, 316], [174, 344], [146, 344]] },
-    { "source": "self_repair", "target": "generate_report", "points": [[220, 404], [174, 404], [174, 360], [146, 360]] },
-    { "source": "fallback_report", "target": "finalize_report", "points": [[268, 534], [268, 592], [146, 592]] },
+    { "source": "refine_reflection", "target": "generate_report", "points": [[180, 316], [174, 316], [174, 344], [146, 344]] },
+    { "source": "self_repair", "target": "generate_report", "points": [[202, 404], [174, 404], [174, 360], [146, 360]] },
+    { "source": "fallback_report", "target": "finalize_report", "points": [[250, 534], [250, 592], [146, 592]] },
     { "source": "finalize_report", "target": "__end__", "points": [[84, 606], [84, 635]] }
   ]
 }
