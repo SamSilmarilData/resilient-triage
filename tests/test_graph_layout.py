@@ -7,22 +7,15 @@ conditional edges keyed by their router label as in the execution trace (ADR 000
 
 import itertools
 import json
-from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from repo_scripts import STATIC_DIR
 
 from resilient_triage.graph.builder import route_labels, triage_graph
 
-LAYOUT_FILE = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "resilient_triage"
-    / "api"
-    / "static"
-    / "graph-layout.json"
-)
+LAYOUT_FILE = STATIC_DIR / "graph-layout.json"
 # At 375 px with 16 px gutters the graph gets 343 px; labels must render at their nominal size
 # there (scale >= 1), and no label is nominally smaller than this.
 PHONE_GRAPH_WIDTH_PX = 343

@@ -1,10 +1,13 @@
-"""Load the repo's `scripts/*.py` as modules: not a package, so tests import them by path."""
+"""Repo paths the tests share, and a loader for `scripts/*.py`, which isn't a package."""
 
 import importlib.util
 from pathlib import Path
 from types import ModuleType
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+# The page's static files, as the app serves them at /static.
+STATIC_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static"
 
 
 def load_script(name: str) -> ModuleType:

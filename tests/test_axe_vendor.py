@@ -1,13 +1,10 @@
 """The browser tier's vendored axe-core (#117): pinned by sha256, licensed, never shipped."""
 
 import json
-from pathlib import Path
 
-from repo_scripts import load_script
+from repo_scripts import REPO_ROOT, STATIC_DIR, load_script
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_VENDOR_DIR = REPO_ROOT / "tests" / "vendor"
-APP_STATIC_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static"
 
 
 vendor = load_script("vendor")
@@ -31,4 +28,4 @@ def test_axe_core_is_vendored_with_its_licenses():
 
 def test_axe_core_is_never_served_by_the_app():
     """The static tree holds no copy of axe-core: tests inject it, the app never serves it."""
-    assert not [p for p in APP_STATIC_DIR.rglob("*") if "axe" in p.name.lower()]
+    assert not [p for p in STATIC_DIR.rglob("*") if "axe" in p.name.lower()]

@@ -18,14 +18,13 @@ from urllib.parse import urljoin
 
 import httpx
 import pytest
-from repo_scripts import load_script
+from repo_scripts import REPO_ROOT, STATIC_DIR, load_script
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
 from resilient_triage.api.static_assets import StaticAssets
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-VENDOR_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static" / "vendor"
+VENDOR_DIR = STATIC_DIR / "vendor"
 
 
 vendor = load_script("vendor")
@@ -456,8 +455,6 @@ def test_installed_package_contains_the_vendored_files():
 
 
 # --- The page shell (#116) ---
-
-STATIC_DIR = VENDOR_DIR.parent
 
 
 class _PageParser(HTMLParser):
