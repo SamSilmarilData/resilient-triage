@@ -15,7 +15,6 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Securit
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
-    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     Response,
@@ -316,9 +315,17 @@ async def probe_chaos(runtime: RuntimeDep) -> ChaosTelemetryResponse:
         ) from exc
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get(
+    "/",
+    response_class=FileResponse,
+    responses={200: {"content": {"text/html": {"schema": {"type": "string"}}}}},
+)
 async def get_page() -> FileResponse:
-    """Serve the explorable page shell, static/index.html (ADR-010); revalidated on each visit."""
+    """Serve the explorable page shell, static/index.html (ADR-010); revalidated on each visit.
+
+    Returns:
+        FileResponse: static/index.html as text/html, with `Cache-Control: no-cache`.
+    """
     return FileResponse(
         STATIC_DIR / "index.html",
         media_type="text/html",
