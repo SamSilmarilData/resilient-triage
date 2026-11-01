@@ -1,25 +1,16 @@
 """The browser tier's vendored axe-core (#117): pinned by sha256, licensed, never shipped."""
 
-import importlib.util
 import json
 from pathlib import Path
-from types import ModuleType
+
+from repo_scripts import load_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_VENDOR_DIR = REPO_ROOT / "tests" / "vendor"
 APP_STATIC_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static"
 
 
-def _load_vendor_script() -> ModuleType:
-    script = REPO_ROOT / "scripts" / "vendor.py"
-    spec = importlib.util.spec_from_file_location("vendor_script", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-vendor = _load_vendor_script()
+vendor = load_script("vendor")
 
 
 def test_test_vendor_files_match_their_manifest():

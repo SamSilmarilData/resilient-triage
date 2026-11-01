@@ -2,11 +2,10 @@
 // Page shell (ADR 0010): renders the dynamic regions of index.html with their empty states.
 // The page's prose is static HTML; this module only fills the mount points. No logic lives
 // here: the trace-to-view reducer is the one logic module (CODING_STANDARDS.md, Frontend).
-import { signal } from "@preact/signals";
+// Installs Signals' Preact integration, so components re-render when a signal they read changes.
+import "@preact/signals";
 import { html } from "htm/preact";
 import { render } from "preact";
-
-/** @typedef {import("@preact/signals").Signal<null>} RunSignal */
 
 /**
  * A quiet bordered panel that says what will appear in it.
@@ -21,12 +20,8 @@ function EmptyState({ title, children }) {
   `;
 }
 
-/**
- * The live-trace column: graph above waterfall, empty until a run plays.
- * @param {{ run: RunSignal }} props
- */
-function Stage({ run }) {
-  if (run.value !== null) return null;
+/** The live-trace column: graph above waterfall, empty until a run plays. */
+function Stage() {
   return html`
     <div class="stage__panels">
       <${EmptyState} title="Graph">
@@ -68,9 +63,7 @@ function mount(id, view) {
 }
 
 function main() {
-  /** @type {RunSignal} */
-  const run = signal(null);
-  mount("stage-root", html`<${Stage} run=${run} />`);
+  mount("stage-root", html`<${Stage} />`);
   mount("chapters-root", html`<${Chapters} />`);
   mount("free-play-root", html`<${FreePlay} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.

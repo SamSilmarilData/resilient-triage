@@ -19,7 +19,9 @@ Statuspage, or the LLM is down — degrade instead.
   Playwright tier (needs `.[browser]` + `playwright install chromium`).
 - Run: `./scripts/run_local.sh` (UI :8000, docs /docs, /health)
 - Docker: `docker compose up`; smoke test: `python scripts/smoke_test.py`
-- CI (`.github/workflows/ci.yml`) runs exactly: ruff check, ruff format --check, mypy src/, pytest, docker build + /health
+- CI (`.github/workflows/ci.yml`) runs exactly: `test` job: ruff check, ruff format --check, mypy src/,
+  pytest; `browser` job: `check.sh --browser` on Chromium; `docker` job: docker build, image
+  `vendor.py verify --installed` + non-root check, /health, smoke test
 
 ## Project Map (`src/resilient_triage/`)
 - `api/app.py` — routes: `POST /triage`, `/health`, `/metrics`, `/resilience/status`, `/llm/quota`,

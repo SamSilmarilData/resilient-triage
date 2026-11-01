@@ -7,7 +7,7 @@ browser tier, so the regular test run, which doesn't install it, can still colle
 from __future__ import annotations
 
 import asyncio
-import ipaddress
+import json
 import threading
 import time
 from collections.abc import Coroutine, Iterator
@@ -31,25 +31,33 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
-AXE_PATH = Path(__file__).resolve().parents[1] / "vendor" / "axe-core@4.14.0" / "axe.min.js"
+TEST_VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor"
 SERVER_START_TIMEOUT_S = 20.0
+# How long a coroutine run on the server's loop (LiveServer.run) may take.
+SERVER_LOOP_CALL_TIMEOUT_S = 20.0
+SERVER_STOP_TIMEOUT_S = 20.0
 SHELL_READY = 'html[data-shell="ready"]'
 BLOCKING_IMPACTS = ("serious", "critical")
+
+
+def _vendored_axe() -> Path:
+    """axe.min.js under tests/vendor/, at the version its manifest pins."""
+    manifest = json.loads((TEST_VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
+    (axe,) = [p for p in manifest["packages"] if p["name"] == "axe-core"]
+    return TEST_VENDOR_DIR / f"axe-core@{axe['version']}" / "axe.min.js"
+
+
+AXE_PATH = _vendored_axe()
 
 
 class HarnessError(RuntimeError):
     """The live app server could not start."""
 
 
-def is_loopback(url: str) -> bool:
-    """Whether a URL's host is loopback (`localhost` or a loopback IP)."""
-    host = urlsplit(url).hostname
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host or "").is_loopback
-    except ValueError:
-        return False
+def same_origin(url: str, origin: str) -> bool:
+    """Whether a URL has exactly this origin: scheme, host and port."""
+    ours, theirs = urlsplit(origin), urlsplit(url)
+    return (ours.scheme, ours.netloc) == (theirs.scheme, theirs.netloc)
 
 
 @dataclass
@@ -63,7 +71,7 @@ class LiveServer:
 
     def run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine on the server's loop, where the runtime lives; return its result."""
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(SERVER_START_TIMEOUT_S)
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(SERVER_LOOP_CALL_TIMEOUT_S)
 
 
 def _wait_started(server: uvicorn.Server, thread: threading.Thread) -> None:
@@ -78,9 +86,9 @@ def _wait_started(server: uvicorn.Server, thread: threading.Thread) -> None:
 
 
 @contextmanager
-def serve_live_app(llm: ScriptedAdapter | None = None) -> Iterator[LiveServer]:
+def serve_live_app() -> Iterator[LiveServer]:
     """Serve `create_app` over a fresh scripted runtime on `127.0.0.1:<free port>`."""
-    adapter = llm if llm is not None else ScriptedAdapter()
+    adapter = ScriptedAdapter()
     built: list[AppRuntime] = []
 
     def runtime_factory() -> AppRuntime:
@@ -110,7 +118,7 @@ def serve_live_app(llm: ScriptedAdapter | None = None) -> Iterator[LiveServer]:
         yield live
     finally:
         server.should_exit = True
-        thread.join(SERVER_START_TIMEOUT_S)
+        thread.join(SERVER_STOP_TIMEOUT_S)
         loop.close()
 
 
@@ -136,7 +144,7 @@ def _failure(request: Request) -> str:
 
 @dataclass
 class GuardedPages:
-    """Opens Chromium pages on the live app, each in its own context behind the loopback guard."""
+    """Opens Chromium pages on the live app, each in its own context behind an origin guard."""
 
     browser: Browser
     server: LiveServer
@@ -152,7 +160,7 @@ class GuardedPages:
 
         def guard(route: Route) -> None:
             url = route.request.url
-            if is_loopback(url):
+            if same_origin(url, self.server.url):
                 route.continue_()
             else:
                 watch.blocked.append(url)
@@ -178,7 +186,7 @@ class GuardedPages:
         return page, watch
 
     def blocked(self) -> list[str]:
-        """Every request any page here made beyond loopback (each was aborted)."""
+        """Every request any page here made off the live app's origin (each was aborted)."""
         return [url for watch in self.watches for url in watch.blocked]
 
     def close(self) -> None:
