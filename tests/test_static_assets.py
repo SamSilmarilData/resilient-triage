@@ -4,7 +4,6 @@ import base64
 import glob
 import hashlib
 import importlib.resources
-import importlib.util
 import io
 import json
 import math
@@ -15,11 +14,11 @@ import tarfile
 import tomllib
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from types import ModuleType
 from urllib.parse import urljoin
 
 import httpx
 import pytest
+from repo_scripts import load_script
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
@@ -29,16 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_DIR = REPO_ROOT / "src" / "resilient_triage" / "api" / "static" / "vendor"
 
 
-def _load_vendor_script() -> ModuleType:
-    script = REPO_ROOT / "scripts" / "vendor.py"
-    spec = importlib.util.spec_from_file_location("vendor_script", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-vendor = _load_vendor_script()
+vendor = load_script("vendor")
 
 
 def _sha256(data: bytes) -> str:
