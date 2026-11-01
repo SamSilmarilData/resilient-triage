@@ -512,6 +512,13 @@ async def test_root_serves_the_page_shell(client: httpx.AsyncClient):
     assert response.content == (STATIC_DIR / "index.html").read_bytes()
 
 
+async def test_openapi_documents_the_page_as_html(client: httpx.AsyncClient):
+    """/docs lists `/` as answering text/html, not JSON."""
+    schema = (await client.get("/openapi.json")).json()
+
+    assert set(schema["paths"]["/"]["get"]["responses"]["200"]["content"]) == {"text/html"}
+
+
 def test_page_shell_has_landmarks_sections_and_a_noscript_note():
     """The static HTML has the landmarks, the four sections and a note for visitors with no JS."""
     page = _page()
