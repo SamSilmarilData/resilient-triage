@@ -35,6 +35,10 @@ lint = [
     "ruff>=0.3.0",
     "mypy>=1.9.0",
 ]
+# The browser test tier (#117): run `playwright install chromium` once after installing.
+browser = [
+    "playwright>=1.49",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -48,6 +52,11 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+# The browser tier needs Chromium: deselected here, run by `./scripts/check.sh --browser`.
+addopts = '-m "not browser"'
+markers = [
+    "browser: drives the page in Chromium through Playwright (./scripts/check.sh --browser)",
+]
 
 [tool.ruff]
 line-length = 100
