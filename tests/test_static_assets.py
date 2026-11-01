@@ -314,7 +314,7 @@ def test_manifest_pins_the_approved_packages():
         ("@fontsource-variable/jetbrains-mono", "5.3.0", "OFL-1.1"),
     }
     specifiers = {
-        f["specifier"]: f"{p['name']}@{p['version']}/{f['path']}"
+        f["specifier"]: f"{vendor.package_dir(p)}/{f['path']}"
         for p in manifest["packages"]
         for f in p["files"]
         if "specifier" in f
@@ -341,7 +341,7 @@ EXPECTED_CONTENT_TYPE = {
 def _vendored_paths() -> list[str]:
     manifest = json.loads((VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
     return [
-        f"{p['name']}@{p['version']}/{f['path']}" for p in manifest["packages"] for f in p["files"]
+        f"{vendor.package_dir(p)}/{f['path']}" for p in manifest["packages"] for f in p["files"]
     ]
 
 
@@ -594,7 +594,7 @@ def _import_map() -> dict:
 def test_import_map_matches_the_manifest():
     """Each bare name in the manifest maps to its one same-origin vendored URL, and no more."""
     expected = {
-        entry["specifier"]: f"/static/vendor/{p['name']}@{p['version']}/{entry['path']}"
+        entry["specifier"]: f"/static/vendor/{vendor.package_dir(p)}/{entry['path']}"
         for p in _manifest()["packages"]
         for entry in p["files"]
         if "specifier" in entry
