@@ -115,6 +115,17 @@ The page's third-party JavaScript and fonts are committed under `src/resilient_t
 
 ---
 
+## Browser tests
+
+The browser tier (`tests/browser/`) runs the page in headless Chromium through Playwright. It is optional locally and a separate CI job, `browser` (required on protected branches).
+
+- **Set up once**: `.venv/bin/pip install -e ".[test,browser]"`, then `.venv/bin/playwright install chromium` (downloads the browser; run it outside pytest).
+- **Run**: `./scripts/check.sh --browser` runs only this tier (extra arguments go to pytest). It fails, never skips, when Playwright or Chromium is missing; plain `./scripts/check.sh` never needs either.
+- **CI**: the `browser` job installs `.[test,browser]`, restores `~/.cache/ms-playwright` keyed by the Playwright version, runs `playwright install --with-deps --only-shell chromium` (system libraries are installed even on a cache hit) and then `./scripts/check.sh --browser`. It needs no Redis and no embedding model.
+- **axe-core** is test-only, under `tests/vendor/` with its licenses and `tests/vendor/manifest.json` (same format as the page's). `python scripts/vendor.py verify --dir tests/vendor` checks it offline, as the regular test run does. To bump it, update the version, tarball, integrity and sha256 values in that manifest by hand and replace the files.
+
+---
+
 ## Admin key
 
 The mutating admin routes (`POST /chaos/inject`, `/resilience/reset`, `/cache/clear`) fail closed: they answer `403` until `ADMIN_API_KEY` is set, and then need a matching `X-Admin-Key` header (`401` otherwise). Every other route, `/triage` included, needs no key.

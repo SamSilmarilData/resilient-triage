@@ -71,6 +71,47 @@ jobs:
         run: |
           pytest tests/ -v --durations=10
 
+  browser:
+    # Required (branch protection): the page in headless Chromium (tests/browser, #117).
+    name: Browser Tests (Playwright, Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # No Redis or embedding model needed: the harness uses the in-memory cache and the
+      # deterministic embedder.
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,browser]"
+
+      - name: Read Playwright Version
+        id: playwright
+        run: echo "version=$(python -c 'from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Browser builds are pinned per Playwright release, so its version keys the cache.
+      - name: Cache Playwright Browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+
+      # Runs on a cache hit too: --with-deps installs the system libraries, which aren't cached.
+      - name: Install Chromium
+        run: playwright install --with-deps --only-shell chromium
+
+      - name: Run Browser Tests
+        run: ./scripts/check.sh --browser -v
+
   docker:
     name: Build & Verify Docker Image
     runs-on: ubuntu-latest
