@@ -6,12 +6,12 @@ from harness import GuardedPages, axe_violations, describe, open_shell
 pytestmark = pytest.mark.browser
 
 # Each way the page can end up light or dark: the system preference, or <html data-theme>
-# overriding it either way.
+# overriding it either way. Values: (system color scheme, data-theme, expected theme).
 THEMES = {
-    "light-system": ("light", None),
-    "dark-system": ("dark", None),
-    "dark-attribute": ("light", "dark"),
-    "light-attribute": ("dark", "light"),
+    "light-system": ("light", None, "light"),
+    "dark-system": ("dark", None, "dark"),
+    "dark-attribute": ("light", "dark", "dark"),
+    "light-attribute": ("dark", "light", "light"),
 }
 
 # The page background's channels, read through a canvas so any CSS color syntax compares.
@@ -41,8 +41,7 @@ def test_shell_loads_clean(pages: GuardedPages):
 @pytest.mark.parametrize("theme", THEMES)
 def test_landing_state_has_no_serious_axe_violations(pages: GuardedPages, theme: str):
     """axe-core finds nothing serious or critical on the landing state, in every theme path."""
-    system, attribute = THEMES[theme]
-    expected = theme.split("-")[0]
+    system, attribute, expected = THEMES[theme]
     page, _ = pages.open(color_scheme=system)
     open_shell(page)
     if attribute is not None:
