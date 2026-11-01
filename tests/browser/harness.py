@@ -33,6 +33,9 @@ T = TypeVar("T")
 
 TEST_VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor"
 SERVER_START_TIMEOUT_S = 20.0
+# How long a coroutine run on the server's loop (LiveServer.run) may take.
+SERVER_LOOP_CALL_TIMEOUT_S = 20.0
+SERVER_STOP_TIMEOUT_S = 20.0
 SHELL_READY = 'html[data-shell="ready"]'
 BLOCKING_IMPACTS = ("serious", "critical")
 
@@ -68,7 +71,7 @@ class LiveServer:
 
     def run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine on the server's loop, where the runtime lives; return its result."""
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(SERVER_START_TIMEOUT_S)
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(SERVER_LOOP_CALL_TIMEOUT_S)
 
 
 def _wait_started(server: uvicorn.Server, thread: threading.Thread) -> None:
@@ -115,7 +118,7 @@ def serve_live_app() -> Iterator[LiveServer]:
         yield live
     finally:
         server.should_exit = True
-        thread.join(SERVER_START_TIMEOUT_S)
+        thread.join(SERVER_STOP_TIMEOUT_S)
         loop.close()
 
 
