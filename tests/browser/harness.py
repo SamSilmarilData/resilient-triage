@@ -7,6 +7,7 @@ browser tier, so the regular test run, which doesn't install it, can still colle
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import Coroutine, Iterator
@@ -30,10 +31,20 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
-AXE_PATH = Path(__file__).resolve().parents[1] / "vendor" / "axe-core@4.14.0" / "axe.min.js"
+TEST_VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor"
 SERVER_START_TIMEOUT_S = 20.0
 SHELL_READY = 'html[data-shell="ready"]'
 BLOCKING_IMPACTS = ("serious", "critical")
+
+
+def _vendored_axe() -> Path:
+    """axe.min.js under tests/vendor/, at the version its manifest pins."""
+    manifest = json.loads((TEST_VENDOR_DIR / "manifest.json").read_text(encoding="utf-8"))
+    (axe,) = [p for p in manifest["packages"] if p["name"] == "axe-core"]
+    return TEST_VENDOR_DIR / f"axe-core@{axe['version']}" / "axe.min.js"
+
+
+AXE_PATH = _vendored_axe()
 
 
 class HarnessError(RuntimeError):
