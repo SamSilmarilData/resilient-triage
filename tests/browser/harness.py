@@ -72,9 +72,9 @@ def _wait_started(server: uvicorn.Server, thread: threading.Thread) -> None:
 
 
 @contextmanager
-def serve_live_app(llm: ScriptedAdapter | None = None) -> Iterator[LiveServer]:
+def serve_live_app() -> Iterator[LiveServer]:
     """Serve `create_app` over a fresh scripted runtime on `127.0.0.1:<free port>`."""
-    adapter = llm if llm is not None else ScriptedAdapter()
+    adapter = ScriptedAdapter()
     built: list[AppRuntime] = []
 
     def runtime_factory() -> AppRuntime:
