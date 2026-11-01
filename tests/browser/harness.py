@@ -7,7 +7,6 @@ browser tier, so the regular test run, which doesn't install it, can still colle
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import threading
 import time
 from collections.abc import Coroutine, Iterator
@@ -41,15 +40,10 @@ class HarnessError(RuntimeError):
     """The live app server could not start."""
 
 
-def is_loopback(url: str) -> bool:
-    """Whether a URL's host is loopback (`localhost` or a loopback IP)."""
-    host = urlsplit(url).hostname
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host or "").is_loopback
-    except ValueError:
-        return False
+def same_origin(url: str, origin: str) -> bool:
+    """Whether a URL has exactly this origin: scheme, host and port."""
+    ours, theirs = urlsplit(origin), urlsplit(url)
+    return (ours.scheme, ours.netloc) == (theirs.scheme, theirs.netloc)
 
 
 @dataclass
@@ -136,7 +130,7 @@ def _failure(request: Request) -> str:
 
 @dataclass
 class GuardedPages:
-    """Opens Chromium pages on the live app, each in its own context behind the loopback guard."""
+    """Opens Chromium pages on the live app, each in its own context behind an origin guard."""
 
     browser: Browser
     server: LiveServer
@@ -152,7 +146,7 @@ class GuardedPages:
 
         def guard(route: Route) -> None:
             url = route.request.url
-            if is_loopback(url):
+            if same_origin(url, self.server.url):
                 route.continue_()
             else:
                 watch.blocked.append(url)
@@ -178,7 +172,7 @@ class GuardedPages:
         return page, watch
 
     def blocked(self) -> list[str]:
-        """Every request any page here made beyond loopback (each was aborted)."""
+        """Every request any page here made off the live app's origin (each was aborted)."""
         return [url for watch in self.watches for url in watch.blocked]
 
     def close(self) -> None:
