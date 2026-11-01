@@ -134,8 +134,8 @@ def _crosses(start: list[float], end: list[float], box: Box) -> bool:
 
 
 def test_edges_are_orthogonal_paths_between_their_nodes(layout: dict[str, Any]):
-    """Each edge leaves its source's border, enters its target's, turns only at right angles,
-    stays in the view box and passes through no other node."""
+    """Each edge runs from its source's border to its target's through no other node."""
+    # Every segment is horizontal or vertical (right-angle turns only) and stays in the view box.
     for edge in layout["edges"]:
         name = f"{edge['source']} to {edge['target']}"
         points = edge["points"]

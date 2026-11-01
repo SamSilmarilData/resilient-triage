@@ -347,8 +347,8 @@ def _vendored_paths() -> list[str]:
 
 @pytest.fixture
 def host_without_mime_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make `mimetypes` know only Python's built-in table, like python:3.12-slim with no
-    /etc/mime.types (which has no `.woff2` entry)."""
+    """Make `mimetypes` know only Python's built-in table, which has no `.woff2` entry."""
+    # Like python:3.12-slim, which has no /etc/mime.types.
     monkeypatch.setattr(mimetypes, "_db", mimetypes.MimeTypes())
 
 
@@ -625,8 +625,9 @@ def _is_bare(specifier: str) -> bool:
 
 
 def test_every_module_import_resolves_to_a_file():
-    """Every import in our and vendored .mjs resolves to an existing static file; bare names
-    only through the import map, and vendored modules only by bare name (one Preact)."""
+    """Every import in our and vendored .mjs resolves to an existing static file."""
+    # Bare names resolve only through the import map, and vendored modules are imported only by
+    # bare name, so the page loads one Preact.
     imports = _import_map()["imports"]
     vendored = {_static_path(url).resolve() for url in imports.values()}
     modules = sorted(STATIC_DIR.rglob("*.mjs"))
@@ -761,8 +762,8 @@ def test_stylesheet_uses_layers_tokens_and_nesting():
 
 
 def test_dark_theme_follows_the_system_unless_overridden():
-    """Dark tokens apply under prefers-color-scheme: dark (unless data-theme="light") and under
-    data-theme="dark", with the same values, and every colour token has a dark value."""
+    """Dark tokens apply by the system unless data-theme="light", or by data-theme="dark"."""
+    # Both selectors carry the same values, and every colour token has a dark value.
     css = _css()
     media = [body for head, body in _blocks(css) if head == "@media (prefers-color-scheme: dark)"]
     dark = _tokens(DARK)
