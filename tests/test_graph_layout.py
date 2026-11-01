@@ -23,7 +23,8 @@ LAYOUT_FILE = (
     / "static"
     / "graph-layout.json"
 )
-# At 375 px with 16 px gutters the graph gets 343 px; node labels must stay at least this big.
+# At 375 px with 16 px gutters the graph gets 343 px; labels must render at their nominal size
+# there (scale >= 1), and no label is nominally smaller than this.
 PHONE_GRAPH_WIDTH_PX = 343
 MIN_PHONE_LABEL_PX = 11
 LABEL_PADDING = 8  # each side of a node's name inside its box
@@ -111,10 +112,13 @@ def test_nodes_fit_their_names_and_do_not_overlap(layout: dict[str, Any]):
 
 
 def test_labels_stay_full_size_at_phone_width(layout: dict[str, Any]):
-    """Scaled to a 375 px phone's content width, node labels are still at least 11 px."""
-    width = layout["view_box"][2]
+    """Scaled to a 375 px phone's content width, node and router labels keep their nominal px."""
+    font = layout["font"]
+    scale = min(1, PHONE_GRAPH_WIDTH_PX / layout["view_box"][2])
 
-    assert layout["font"]["node_px"] * min(1, PHONE_GRAPH_WIDTH_PX / width) >= MIN_PHONE_LABEL_PX
+    for key in ("node_px", "label_px"):
+        assert font[key] >= MIN_PHONE_LABEL_PX, f"{key} is below {MIN_PHONE_LABEL_PX} px"
+        assert font[key] * scale >= font[key], f"{key} renders at {font[key] * scale:.1f} px"
 
 
 def _on_border(point: list[float], box: Box) -> bool:
