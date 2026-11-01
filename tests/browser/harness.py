@@ -123,10 +123,11 @@ class PageWatch:
 
     def off_origin(self) -> list[str]:
         """Requests to anywhere but the live app's own origin."""
-        return [url for url in self.requests if not url.startswith(self.origin + "/")]
+        return [url for url in self.requests if not same_origin(url, self.origin)]
 
 
-def _failure(request: Request) -> str:
+def _describe_failure(request: Request) -> str:
+    """One line for a failed request: method, URL and Playwright's failure text."""
     return f"{request.method} {request.url}: {request.failure}"
 
 
@@ -157,7 +158,7 @@ class GuardedPages:
         context.route("**/*", guard)
         page = context.new_page()
         page.on("request", lambda request: watch.requests.append(request.url))
-        page.on("requestfailed", lambda request: watch.failed.append(_failure(request)))
+        page.on("requestfailed", lambda request: watch.failed.append(_describe_failure(request)))
         page.on(
             "response",
             lambda response: (
