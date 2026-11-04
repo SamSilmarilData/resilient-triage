@@ -7,15 +7,24 @@
 import { signal } from "@preact/signals";
 import { html } from "htm/preact";
 import { render } from "preact";
+import { Chapters } from "./components/chapter.mjs";
 import { Stage } from "./components/stage.mjs";
-import { createRunController, idleRun } from "./trace-reducer.mjs";
+import { scenarioSource } from "./sse.mjs";
+import { createRunController, idleRun, nextScenario, scenarioRun } from "./trace-reducer.mjs";
 
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
+/** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
 
 /** The stage's current run, as the run controller last reported it. */
 const run = signal(idleRun());
 /** graph-layout.json once fetched. */
 const layout = signal(/** @type {GraphLayout | "loading" | "failed"} */ ("loading"));
+/** GET /scenarios once fetched: the chapters' copy. */
+const catalogue = signal(/** @type {Catalogue | "loading" | "failed"} */ ("loading"));
+/** The scenario opened inline, if any; one at a time. */
+const openId = signal(/** @type {string | null} */ (null));
+/** The scenario last played on the stage, if any. */
+const playedId = signal(/** @type {string | null} */ (null));
 
 /**
  * The page's one run controller: whatever plays (a scenario, free play) plays on the stage.
@@ -46,12 +55,41 @@ function LiveStage() {
   return html`<${Stage} run=${run.value} layout=${layout.value} onReplay=${() => stage.replay()} />`;
 }
 
-function Chapters() {
-  return html`
-    <${EmptyState} title="No scenarios yet">
-      The scenarios appear here in four chapters, each opening inline to play.
-    <//>
-  `;
+/** The guided chapters, bound to the catalogue and the stage's run. */
+function GuidedChapters() {
+  const loaded = catalogue.value;
+  return html`<${Chapters}
+    catalogue=${loaded}
+    onRetry=${loadCatalogue}
+    openId=${openId.value}
+    runOf=${(/** @type {string} */ id) => scenarioRun(run.value, playedId.value, id)}
+    nextOf=${(/** @type {string} */ id) => (typeof loaded === "object" ? nextScenario(loaded, id) : null)}
+    onToggle=${(/** @type {string} */ id) => {
+      openId.value = openId.value === id ? null : id;
+    }}
+    onPlay=${(/** @type {string} */ id) => {
+      playedId.value = id;
+      stage.play(scenarioSource(id));
+    }}
+    onSkip=${(/** @type {string} */ id) => {
+      const next = typeof loaded === "object" ? nextScenario(loaded, id) : null;
+      if (!next) return;
+      openId.value = next.id;
+      // Keyboard users land on the scenario they skipped to.
+      requestAnimationFrame(() => document.getElementById(`scenario-${next.id}-toggle`)?.focus());
+    }}
+  />`;
+}
+
+/** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */
+async function loadCatalogue() {
+  catalogue.value = "loading";
+  try {
+    const response = await fetch("/scenarios");
+    catalogue.value = response.ok ? await response.json() : "failed";
+  } catch {
+    catalogue.value = "failed";
+  }
 }
 
 function FreePlay() {
@@ -86,8 +124,9 @@ async function loadLayout() {
 
 function main() {
   loadLayout();
+  loadCatalogue();
   mount("stage-root", html`<${LiveStage} />`);
-  mount("chapters-root", html`<${Chapters} />`);
+  mount("chapters-root", html`<${GuidedChapters} />`);
   mount("free-play-root", html`<${FreePlay} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.
   document.documentElement.dataset.shell = "ready";

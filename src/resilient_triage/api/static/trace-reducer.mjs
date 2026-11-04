@@ -804,3 +804,40 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
     },
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Guided chapters (#119): GET /scenarios as the page draws it, and which run a scenario shows.
+
+/**
+ * GET /scenarios (schemas/api.py ScenarioCatalogue): the page's copy, never a script.
+ * @typedef {{ id: string, chapter: string, title: string, caption: string,
+ *             setup_notes: string[] }} ScenarioView
+ * @typedef {{ chapters: { id: string, title: string, intro: string,
+ *                         scenarios: ScenarioView[] }[] }} Catalogue
+ */
+
+/**
+ * The scenario after this one in catalogue order, across chapters; null after the last.
+ * @param {Catalogue} catalogue
+ * @param {string} id
+ * @returns {ScenarioView | null}
+ */
+export function nextScenario(catalogue, id) {
+  const all = catalogue.chapters.flatMap((chapter) => chapter.scenarios);
+  const index = all.findIndex((scenario) => scenario.id === id);
+  return index === -1 ? null : (all[index + 1] ?? null);
+}
+
+/**
+ * The stage's run if it is this scenario's: the scenario played last and, once the trace has
+ * started, the trace names it. Otherwise null, so a scenario never shows another run.
+ * @param {RunView} run
+ * @param {string | null} playedId
+ * @param {string} id
+ * @returns {RunView | null}
+ */
+export function scenarioRun(run, playedId, id) {
+  if (playedId !== id || run.status === "idle") return null;
+  const started = run.trace.events.find((event) => event.kind === "trace_started");
+  return started && started.scenario_id !== id ? null : run;
+}
