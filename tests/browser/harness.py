@@ -22,7 +22,7 @@ from repo_scripts import vendored_axe
 
 from resilient_triage.api.app import create_app
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
-from resilient_triage.config import settings
+from resilient_triage.config import Settings, settings
 from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.trace.events import TraceEvent
@@ -105,7 +105,7 @@ def _wait_started(server: uvicorn.Server, thread: threading.Thread) -> None:
 
 
 @contextmanager
-def serve_live_app() -> Iterator[LiveServer]:
+def serve_live_app(app_settings: Settings = settings) -> Iterator[LiveServer]:
     """Serve `create_app` over a fresh scripted runtime on `127.0.0.1:<free port>`."""
     adapter = ScriptedAdapter()
     built: list[AppRuntime] = []
@@ -113,7 +113,7 @@ def serve_live_app() -> Iterator[LiveServer]:
     def runtime_factory() -> AppRuntime:
         # Called by the app's lifespan, in the server's loop, which then owns the runtime.
         rt = build_runtime(
-            settings,
+            app_settings,
             llm_adapter=adapter,
             embedder=DeterministicEmbeddingProvider(),
             statuspage_http=fake_statuspage_http(),

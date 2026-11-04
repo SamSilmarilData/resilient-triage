@@ -727,4 +727,89 @@
       font-weight: 600;
     }
   }
+
+  /* Free play (#120): the question form, then the panel's own run, drawn like the stage. */
+  .free-play__panel {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .ask {
+    display: grid;
+    gap: 0.75rem;
+    padding: 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .ask__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.75rem 1rem;
+
+    & .ask__field {
+      flex: 1 1 12rem;
+    }
+  }
+
+  .ask__field {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .ask__label {
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  .ask__input {
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    font: 0.925rem/1.4 var(--sans);
+    resize: vertical;
+  }
+
+  .ask__check {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 2.1rem;
+    font-size: 0.875rem;
+  }
+
+  .button--primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-fg);
+
+    &:hover {
+      border-color: var(--fg);
+    }
+  }
+
+  .free-play__model {
+    color: var(--muted);
+    font: 0.8rem/1.4 var(--mono);
+  }
+
+  .free-play__run {
+    min-width: 0;
+    padding: 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+
+    /* Like the stage: at phone width the graph gets the full content width. */
+    @media (max-width: 30rem) {
+      padding: 0;
+      border: 0;
+      background: none;
+    }
+  }
 }

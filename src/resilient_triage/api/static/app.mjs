@@ -7,7 +7,9 @@
 import { signal } from "@preact/signals";
 import { html } from "htm/preact";
 import { render } from "preact";
+import { FreePlay } from "./components/free-play.mjs";
 import { Stage } from "./components/stage.mjs";
+import { freePlaySource } from "./sse.mjs";
 import { createRunController, idleRun } from "./trace-reducer.mjs";
 
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
@@ -25,6 +27,16 @@ const layout = signal(/** @type {GraphLayout | "loading" | "failed"} */ ("loadin
 export const stage = createRunController({
   onChange: (view) => {
     run.value = view;
+  },
+});
+
+/** The free-play panel's own run, so its errors and lost streams stay in that panel (#101). */
+const freePlayRun = signal(idleRun());
+
+/** The free-play panel's run controller: a visitor's question plays here, not on the stage. */
+export const freePlay = createRunController({
+  onChange: (view) => {
+    freePlayRun.value = view;
   },
 });
 
@@ -54,12 +66,14 @@ function Chapters() {
   `;
 }
 
-function FreePlay() {
-  return html`
-    <${EmptyState} title="Free play isn't open yet">
-      Your own question and its live trace will go here.
-    <//>
-  `;
+/** The free-play panel, bound to its own run and the shared graph layout. */
+function LiveFreePlay() {
+  return html`<${FreePlay}
+    run=${freePlayRun.value}
+    layout=${layout.value}
+    onSubmit=${(request) => freePlay.play(freePlaySource(request))}
+    onReplay=${() => freePlay.replay()}
+  />`;
 }
 
 /**
@@ -88,7 +102,7 @@ function main() {
   loadLayout();
   mount("stage-root", html`<${LiveStage} />`);
   mount("chapters-root", html`<${Chapters} />`);
-  mount("free-play-root", html`<${FreePlay} />`);
+  mount("free-play-root", html`<${LiveFreePlay} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.
   document.documentElement.dataset.shell = "ready";
 }

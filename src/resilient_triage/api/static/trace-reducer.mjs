@@ -804,3 +804,52 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
     },
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Free play (#120): the request a visitor's form makes, and what the free-play panel says
+// about its run beyond the stage's headline.
+
+/**
+ * The POST /triage/stream body from the free-play form's fields: the question trimmed, an
+ * empty service filter left out.
+ * @param {{ query: string, service_filter: string, force_refresh: boolean }} fields
+ * @returns {import("./sse.mjs").TriageRequest}
+ */
+export function freePlayRequest({ query, service_filter, force_refresh }) {
+  const filter = service_filter.trim();
+  return { query: query.trim(), service_filter: filter || null, force_refresh };
+}
+
+/**
+ * The model that wrote the run's report: the last model call that completed, or null when
+ * none did (a cache hit, a shed, or no model answered).
+ * @param {TraceView} trace
+ * @returns {string | null}
+ */
+export function answeringModel(trace) {
+  for (let i = trace.events.length - 1; i >= 0; i--) {
+    const e = trace.events[i];
+    if (e.kind === "model_call" && e.outcome === "completion") return e.model;
+  }
+  return null;
+}
+
+/**
+ * Why a run was shed and when to ask again, from its refused run_slot; null when it wasn't
+ * shed. Only a budget shed carries a retry-after (triage/gateway.py Shed).
+ * @typedef {{ reason: string, retryAfterS: number | null, line: string }} ShedNotice
+ * @param {TraceView} trace
+ * @returns {ShedNotice | null}
+ */
+export function shedNotice(trace) {
+  const slot = trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+  if (!slot) return null;
+  const reason = slot.reason ?? "capacity";
+  const retryAfterS = slot.retry_after_s ?? null;
+  const head =
+    reason === "budget"
+      ? "The free-play budget is spent for this minute."
+      : "Every run slot is busy right now.";
+  const when = retryAfterS === null ? "in a moment" : `in ${retryAfterS} s`;
+  return { reason, retryAfterS, line: `${head} Try again ${when}.` };
+}
