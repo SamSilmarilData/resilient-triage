@@ -37,6 +37,23 @@ SERVER_STOP_TIMEOUT_S = 20.0
 SHELL_READY = 'html[data-shell="ready"]'
 BLOCKING_IMPACTS = ("serious", "critical")
 
+# page.evaluate script: stream one run with the page's own SSE reader (sse.mjs) and fold its
+# events with the reducer. Argument: {scenario: id} or {query: text} (free play). Returns the
+# raw events, the reducer's summary and its summary line.
+STREAM_AND_FOLD = """async (run) => {
+  const sse = await import("/static/sse.mjs");
+  const reducer = await import("/static/trace-reducer.mjs");
+  const source = run.scenario
+    ? sse.scenarioSource(run.scenario)
+    : sse.freePlaySource({query: run.query});
+  const events = [];
+  for await (const message of source(new AbortController().signal)) {
+    if (message.kind === "event") events.push(message.event);
+  }
+  const summary = reducer.summarize(events);
+  return {events, summary, line: reducer.summaryLine(summary)};
+}"""
+
 
 class HarnessError(RuntimeError):
     """The live app server could not start."""
