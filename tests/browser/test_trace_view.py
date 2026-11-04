@@ -74,7 +74,7 @@ def _path_edges(path: list[str]) -> set[tuple[str, str]]:
     return {pair for pair in zip(walk, walk[1:], strict=False) if pair in LAYOUT_EDGES}
 
 
-@pytest.mark.parametrize("scenario_id", ["self-repair", "everything-down"])
+@pytest.mark.parametrize("scenario_id", ["self-repair", "everything-down", "run-deadline"])
 def test_a_played_scenario_lights_its_visited_nodes_and_taken_edges(
     pages: GuardedPages, scenario_id: str
 ):
@@ -93,6 +93,8 @@ def test_a_played_scenario_lights_its_visited_nodes_and_taken_edges(
     taken = page.evaluate(TAKEN_EDGES)
     assert {(edge["source"], edge["target"]) for edge in taken} == _path_edges(path)
     assert {edge["route"] for edge in taken if edge["route"]} == set(summary.routes)
+    end_state = page.locator('[data-node="__end__"]').get_attribute("data-state")
+    assert (end_state == "visited") is ((path[-1], "__end__") in LAYOUT_EDGES)
     assert watch.page_errors == []
     assert watch.console_errors == []
 
