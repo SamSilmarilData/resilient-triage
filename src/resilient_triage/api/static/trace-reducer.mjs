@@ -804,3 +804,60 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
     },
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Node inspector (#121): GET /graph/nodes, projected for the inspector and the node list.
+// Paths on the wire are repository-relative; links open them on GitHub.
+
+/**
+ * One node as GET /graph/nodes serves it (schemas/api.py NodeInspectorView).
+ * @typedef {{ name: string, purpose: string, file: string,
+ *             config_fields: { name: string, description: string }[], adrs: string[] }} GraphNode
+ */
+
+/**
+ * @typedef {{
+ *   name: string,
+ *   status: "ready" | "loading" | "failed",
+ *   purpose: string | null,
+ *   file: { path: string, url: string } | null,
+ *   configFields: { name: string, description: string }[],
+ *   adrs: { label: string, file: string, url: string }[],
+ * }} InspectorView
+ * `status` is the node list's: purpose, file and the lists stay empty until it is "ready".
+ */
+
+/** Where the repository's files are browsed. */
+export const REPO_BLOB_URL = "https://github.com/SamSilmarilData/resilient-triage/blob/main/";
+
+/**
+ * A repository-relative path's URL on GitHub.
+ * @param {string} path
+ */
+export function repoUrl(path) {
+  return REPO_BLOB_URL + path;
+}
+
+/**
+ * What the inspector shows for a node, or null when none is selected.
+ * @param {GraphNode[] | "loading" | "failed"} nodes
+ * @param {string | null} name
+ * @returns {InspectorView | null}
+ */
+export function inspectorView(nodes, name) {
+  if (name === null) return null;
+  const node = Array.isArray(nodes) ? nodes.find((n) => n.name === name) : undefined;
+  const status = Array.isArray(nodes) ? "ready" : nodes;
+  if (!node) return { name, status, purpose: null, file: null, configFields: [], adrs: [] };
+  return {
+    name,
+    status,
+    purpose: node.purpose,
+    file: { path: node.file, url: repoUrl(node.file) },
+    configFields: node.config_fields,
+    adrs: node.adrs.map((path) => {
+      const file = path.slice(path.lastIndexOf("/") + 1);
+      return { label: `ADR ${file.slice(0, 4)}`, file, url: repoUrl(path) };
+    }),
+  };
+}

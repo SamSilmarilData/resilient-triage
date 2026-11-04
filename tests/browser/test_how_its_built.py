@@ -61,7 +61,8 @@ def open_page(pages: GuardedPages, **options: object) -> "Page":
 def test_keyboard_opens_the_inspector_and_escape_returns_focus_to_the_node(pages: GuardedPages):
     page = open_page(pages)
 
-    page.focus('[data-node="generate_report"]')
+    # A graph node is a button named by its SVG <title>: its name, then whether it ran.
+    page.get_by_role("button", name="generate_report, not visited").focus()
     page.keyboard.press("Enter")
     page.wait_for_selector(f"{INSPECTOR}[open]")
 

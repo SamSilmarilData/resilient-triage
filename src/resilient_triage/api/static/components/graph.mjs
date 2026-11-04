@@ -47,7 +47,6 @@ function Node({ node, fontPx, onSelect }) {
       data-visits=${node.visits}
       role=${select ? "button" : undefined}
       tabindex=${select ? 0 : undefined}
-      aria-label=${select ? label : undefined}
       onClick=${select}
       onKeyDown=${select && ((/** @type {KeyboardEvent} */ e) => onKey(e, select))}
     >
