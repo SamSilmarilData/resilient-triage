@@ -176,11 +176,70 @@ function findLastOpenVisit(nodes, node) {
   return null;
 }
 
+// Display names of the Telemetry sources, by the id the trace carries (telemetry/*.py
+// `display_name`). An unknown id shows as itself.
+const SOURCE_NAMES = /** @type {Record<string, string>} */ ({
+  statuspage: "Statuspage",
+  chaos: "Cluster Sentinel",
+});
+
 /**
- * One line saying how a run ended.
+ * A source's display name.
+ * @param {string} source
+ */
+export function sourceName(source) {
+  return SOURCE_NAMES[source] ?? source;
+}
+
+/**
+ * A duration for people: "under 1 ms", "917 ms", "1.8 s".
+ * @param {number} ms
+ */
+export function formatMs(ms) {
+  if (ms < 0.5) return "under 1 ms";
+  if (ms < 999.5) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+/**
+ * "1 thing" or "3 things".
+ * @param {number} count
+ * @param {string} one
+ * @param {string} many
+ */
+function plural(count, one, many) {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/**
+ * One line saying how a run ended: its triage outcome, then what bent the run on the way.
+ * Built from the summary alone, never from the scenario (ADR 0008: no free text on the wire).
  * @param {TraceSummary} summary
  */
 export function summaryLine(summary) {
-  void summary;
-  return "";
+  const total = formatMs(summary.timings.total_ms);
+  if (summary.outcome === "cache_hit") return `Answered from cache in ${total}`;
+  if (summary.outcome === "shed") return `Shed after ${total}, before the graph ran`;
+  if (summary.outcome === null) return `No answer yet, ${total} in`;
+
+  const head = summary.degradation === "SEVERELY_DEGRADED" ? "Fallback report" : "Report";
+  /** @type {string[]} */
+  const parts = [`${head} in ${total}`];
+  if (summary.deadline_exceeded) parts.push("run deadline hit");
+  /** @type {Set<string>} */
+  const seen = new Set();
+  for (const read of summary.telemetry) {
+    if (read.outcome === "read") continue;
+    const part = `${sourceName(read.source)} ${read.outcome === "tripped" ? "breaker open" : "unavailable"}`;
+    if (!seen.has(part)) parts.push(part);
+    seen.add(part);
+  }
+  if (summary.repair_rounds) parts.push(plural(summary.repair_rounds, "self-repair round", "self-repair rounds"));
+  if (summary.refine_rounds) parts.push(plural(summary.refine_rounds, "refine round", "refine rounds"));
+  if (summary.failovers) parts.push(plural(summary.failovers, "model failover", "model failovers"));
+  const lastCall = summary.model_calls[summary.model_calls.length - 1];
+  if (lastCall && lastCall.outcome !== "completion") parts.push("no model answered");
+  const held = summary.reconciliation?.approval_raised?.length ?? 0;
+  if (held) parts.push(`${plural(held, "action", "actions")} held for approval`);
+  return parts.join(" · ");
 }
