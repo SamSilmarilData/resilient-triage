@@ -38,11 +38,11 @@ def test_scenarios_are_listed_by_chapter_in_display_order() -> None:
     ]
 
 
-def test_ids_are_unique_kebab_case_and_every_chapter_has_a_title() -> None:
+def test_ids_are_unique_kebab_case_and_every_chapter_has_a_title_and_intro() -> None:
     ids = [s.id for s in SCENARIOS] + [c.id for c in CHAPTERS]
     assert len(ids) == len(set(ids))
     assert all(KEBAB_CASE.match(i) for i in ids), ids
-    assert all(chapter.title for chapter in CHAPTERS)
+    assert all(chapter.title and chapter.intro for chapter in CHAPTERS)
     assert all(scenario.title and scenario.caption for scenario in SCENARIOS)
 
 

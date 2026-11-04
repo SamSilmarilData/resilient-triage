@@ -39,6 +39,8 @@ async def test_get_scenarios_lists_the_public_view_by_chapter_in_display_order(
     assert [c["id"] for c in chapters] == list(DISPLAY_ORDER)
     assert {c["id"]: [s["id"] for s in c["scenarios"]] for c in chapters} == DISPLAY_ORDER
     assert chapters[0]["title"] == "Fast paths"
+    assert set(chapters[0]) == {"id", "title", "intro", "scenarios"}
+    assert all(c["intro"] for c in chapters)
     healthy = chapters[0]["scenarios"][0]
     assert set(healthy) == {"id", "chapter", "title", "caption", "setup_notes"}
     assert healthy["chapter"] == "fast-paths"
