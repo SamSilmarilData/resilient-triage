@@ -10,7 +10,11 @@
 /** @typedef {import("./trace-reducer.mjs").TraceEvent} TraceEvent */
 /** @typedef {{ kind: "event", event: TraceEvent } | { kind: "ping" }} StreamMessage */
 /** @typedef {(signal: AbortSignal) => AsyncIterable<StreamMessage>} StreamSource */
-/** @typedef {{ query: string, service_filter?: string | null, force_refresh?: boolean }} TriageRequest */
+/**
+ * The body of POST /triage/stream (schemas/api.py TriageRequest).
+ * @typedef {{ query: string, service_filter?: string | null, force_refresh?: boolean }}
+ *   TriageRequest
+ */
 
 /** The stream was refused before it started (404 unknown scenario, 422 bad request). */
 export class StreamHttpError extends Error {
@@ -125,7 +129,8 @@ async function refusalMessage(response) {
  * @returns {StreamSource}
  */
 export function scenarioSource(scenarioId) {
-  return (signal) => postStream(`/scenarios/${encodeURIComponent(scenarioId)}/stream`, undefined, signal);
+  const url = `/scenarios/${encodeURIComponent(scenarioId)}/stream`;
+  return (signal) => postStream(url, undefined, signal);
 }
 
 /**

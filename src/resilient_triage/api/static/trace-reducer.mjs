@@ -291,7 +291,9 @@ function words(value) {
  */
 function readDetail(e) {
   const parts = [words(e.outcome), plural(e.attempts, "attempt", "attempts")];
-  if (e.breaker_before !== e.breaker_after) parts.push(`breaker ${e.breaker_before} to ${e.breaker_after}`);
+  if (e.breaker_before !== e.breaker_after) {
+    parts.push(`breaker ${e.breaker_before} to ${e.breaker_after}`);
+  }
   return parts.join(" · ");
 }
 
@@ -307,98 +309,126 @@ function readTone(outcome) {
  */
 export function waterfallView(trace) {
   const lastMs = trace.events.length ? Math.max(0, trace.events[trace.events.length - 1].t_ms) : 0;
-  /** @type {Omit<WaterfallRow, "leftPct" | "widthPct">[]} */
+  /** @typedef {Omit<WaterfallRow, "leftPct" | "widthPct">} PlacedRow */
+  /** @type {PlacedRow[]} */
   const rows = [];
-  let setupCursor = 0; // where the next setup read starts, laid end to end from 0
+  let setupCursor = 0; // where the next setup read starts: setup reads lie end to end from 0
   let stepStart = 0; // where the current setup step's first read started
-  let open = 0; // node visits started and not yet finished
-  /** @type {Map<number, number>} visit index to row index */
-  const visitRows = new Map();
-  let visitIndex = -1;
-  const depth = () => /** @type {0 | 1} */ (open > 0 ? 1 : 0);
+  let open = 0; // node visits started and not yet finished: steps inside one are indented
+  /** @type {number[]} row index of each node visit, in visit order */
+  const visitRows = [];
+
   /**
+   * Add a row; `startMs` and `durationMs` are on the run's clock unless kind is "setup".
+   * @param {TraceEvent} e
+   * @param {Pick<PlacedRow, "kind" | "name" | "detail" | "startMs" | "durationMs" | "tone">
+   *         & Partial<Pick<PlacedRow, "tag">>} fields
+   */
+  const add = (e, fields) => {
+    rows.push({ key: String(e.seq), tag: null, depth: open > 0 ? 1 : 0, ...fields });
+  };
+  /**
+   * A step stamped when it ended (t_ms) that took durationMs: where it started, and how long.
    * @param {TraceEvent} e
    * @param {number} durationMs
    */
-  const startOf = (e, durationMs) => Math.max(0, e.t_ms - durationMs);
+  const endedAt = (e, durationMs) => ({ startMs: Math.max(0, e.t_ms - durationMs), durationMs });
 
   for (const e of trace.events) {
-    const key = String(e.seq);
     switch (e.kind) {
-      case "scenario_setup":
+      case "scenario_setup": {
         // A step is sent once done, after the setup reads it made: its bar spans them.
-        rows.push({ key, kind: "setup", name: (SETUP_STEPS[e.step] ?? ((x) => words(x.step)))(e),
-          detail: "setup", tag: null, depth: 0, startMs: stepStart,
-          durationMs: setupCursor - stepStart, tone: "setup" });
+        const name = SETUP_STEPS[e.step]?.(e) ?? words(e.step);
+        const span = { startMs: stepStart, durationMs: setupCursor - stepStart };
+        add(e, { kind: "setup", name, detail: "setup", tone: "setup", ...span });
         stepStart = setupCursor;
         break;
-      case "telemetry_read":
+      }
+      case "telemetry_read": {
+        const name = `${sourceName(e.source)} read`;
         if (e.phase === "setup") {
-          rows.push({ key, kind: "setup", name: `${sourceName(e.source)} read`, detail: readDetail(e),
-            tag: null, depth: 0, startMs: setupCursor, durationMs: e.duration_ms, tone: "setup" });
+          const span = { startMs: setupCursor, durationMs: e.duration_ms };
+          add(e, { kind: "setup", name, detail: readDetail(e), tone: "setup", ...span });
           setupCursor += e.duration_ms;
         } else {
-          rows.push({ key, kind: "telemetry", name: `${sourceName(e.source)} read`, detail: readDetail(e),
-            tag: null, depth: depth(), startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms,
-            tone: readTone(e.outcome) });
+          const tone = readTone(e.outcome);
+          const span = endedAt(e, e.duration_ms);
+          add(e, { kind: "telemetry", name, detail: readDetail(e), tone, ...span });
         }
         break;
-      case "cache_lookup":
-        rows.push({ key, kind: "cache", name: "cache lookup",
-          detail: e.hit ? `hit · similarity ${e.similarity.toFixed(2)}` : "miss",
-          tag: null, depth: 0, startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms, tone: "ok" });
+      }
+      case "cache_lookup": {
+        const detail = e.hit ? `hit · similarity ${e.similarity.toFixed(2)}` : "miss";
+        const span = endedAt(e, e.duration_ms);
+        add(e, { kind: "cache", name: "cache lookup", detail, tone: "ok", ...span });
         break;
-      case "run_slot":
-        rows.push({ key, kind: "slot", name: "run slot",
-          detail: e.acquired ? `acquired · waited ${formatMs(e.waited_ms)}` : `shed · ${SHED_REASONS[e.reason] ?? "no slot"}`,
-          tag: null, depth: 0, startMs: startOf(e, e.waited_ms), durationMs: e.waited_ms,
-          tone: e.acquired ? "ok" : "warn" });
+      }
+      case "run_slot": {
+        const detail = e.acquired
+          ? `acquired · waited ${formatMs(e.waited_ms)}`
+          : `shed · ${SHED_REASONS[e.reason] ?? "no slot free"}`;
+        const tone = e.acquired ? "ok" : "warn";
+        add(e, { kind: "slot", name: "run slot", detail, tone, ...endedAt(e, e.waited_ms) });
         break;
-      case "node_started":
-        visitIndex++;
-        visitRows.set(visitIndex, rows.length);
-        rows.push({ key, kind: "node", name: e.node, detail: "running", tag: null, depth: 0,
-          startMs: e.t_ms, durationMs: Math.max(0, lastMs - e.t_ms), tone: "running" });
+      }
+      case "node_started": {
+        // Open until node_finished: its bar runs to the latest event.
+        const span = { startMs: e.t_ms, durationMs: Math.max(0, lastMs - e.t_ms) };
+        visitRows.push(rows.length);
+        add(e, { kind: "node", name: e.node, detail: "running", tone: "running", ...span });
         open++;
         break;
-      case "model_call":
-        rows.push({ key, kind: "model", name: e.model,
-          detail: `${e.role} · ${e.outcome === "completion" ? "reply" : words(e.outcome)}`,
-          tag: trace.scripted ? "scripted reply" : null, depth: depth(),
-          startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms,
-          tone: e.outcome === "completion" ? "ok" : "warn" });
+      }
+      case "node_finished":
+        open = Math.max(0, open - 1);
         break;
-      case "cache_store":
-        rows.push({ key, kind: "store", name: "cache store", detail: words(e.outcome), tag: null,
-          depth: 0, startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms,
-          tone: e.outcome === "stored" ? "ok" : "warn" });
+      case "model_call": {
+        const completed = e.outcome === "completion";
+        add(e, {
+          kind: "model",
+          name: e.model,
+          detail: `${e.role} · ${completed ? "reply" : words(e.outcome)}`,
+          tag: trace.scripted ? "scripted reply" : null,
+          tone: completed ? "ok" : "warn",
+          ...endedAt(e, e.duration_ms),
+        });
         break;
-      case "deadline_exceeded":
-        rows.push({ key, kind: "deadline", name: "run deadline", detail: `hit at ${e.deadline_s} s`,
-          tag: null, depth: 0, startMs: e.t_ms, durationMs: 0, tone: "bad" });
+      }
+      case "cache_store": {
+        const tone = e.outcome === "stored" ? "ok" : "warn";
+        const span = endedAt(e, e.duration_ms);
+        add(e, { kind: "store", name: "cache store", detail: words(e.outcome), tone, ...span });
         break;
+      }
+      case "deadline_exceeded": {
+        const detail = `hit at ${e.deadline_s} s`;
+        const span = { startMs: e.t_ms, durationMs: 0 };
+        add(e, { kind: "deadline", name: "run deadline", detail, tone: "bad", ...span });
+        break;
+      }
     }
-    if (e.kind === "node_finished") open = Math.max(0, open - 1);
   }
 
   // Close each finished visit's row with its real duration, status and confidence.
   trace.visits.forEach((visit, index) => {
-    const rowIndex = visitRows.get(index);
+    const rowIndex = visitRows[index];
     if (rowIndex === undefined || visit.endMs === null) return;
-    const parts = [formatMs(visit.endMs - visit.startMs)];
+    const durationMs = visit.endMs - visit.startMs;
+    const parts = [formatMs(durationMs)];
     if (visit.status !== "ok") parts.push(visit.status);
     if (visit.confidence !== null) parts.push(`confidence ${visit.confidence.toFixed(2)}`);
-    rows[rowIndex] = { ...rows[rowIndex], detail: parts.join(" · "), durationMs: visit.endMs - visit.startMs,
-      tone: visit.status === "ok" ? "ok" : visit.status === "cancelled" ? "warn" : "bad" };
+    const tone = visit.status === "ok" ? "ok" : visit.status === "cancelled" ? "warn" : "bad";
+    rows[rowIndex] = { ...rows[rowIndex], detail: parts.join(" · "), durationMs, tone };
   });
 
-  const runMs = Math.max(lastMs, ...rows.filter((r) => r.kind !== "setup").map((r) => r.startMs + r.durationMs));
+  const runEnds = rows.filter((r) => r.kind !== "setup").map((r) => r.startMs + r.durationMs);
+  const runMs = Math.max(lastMs, ...runEnds);
   const hasSetup = rows.some((r) => r.kind === "setup");
   const setupMs = hasSetup ? Math.max(setupCursor, MIN_SETUP_SHARE * runMs) : 0;
   const scale = setupMs + runMs || 1;
   return {
+    // The axis runs from the start of setup: setup rows from 0, the run's from setupMs (t = 0).
     rows: rows.map((row) => {
-      // Setup rows sit at [-setupMs, 0); everything else from 0.
       const start = row.kind === "setup" ? row.startMs : setupMs + row.startMs;
       return { ...row, leftPct: (start / scale) * 100, widthPct: (row.durationMs / scale) * 100 };
     }),
@@ -496,7 +526,8 @@ export function summarize(events) {
         break;
       case "telemetry_read":
         if (event.phase === null) {
-          telemetry.push({ source: event.source, outcome: event.outcome, attempts: event.attempts });
+          const { source, outcome: readOutcome, attempts } = event;
+          telemetry.push({ source, outcome: readOutcome, attempts });
         }
         break;
       case "reconciled":
@@ -609,13 +640,15 @@ export function summaryLine(summary) {
   const seen = new Set();
   for (const read of summary.telemetry) {
     if (read.outcome === "read") continue;
-    const part = `${sourceName(read.source)} ${read.outcome === "tripped" ? "breaker open" : "unavailable"}`;
+    const state = read.outcome === "tripped" ? "breaker open" : "unavailable";
+    const part = `${sourceName(read.source)} ${state}`;
     if (!seen.has(part)) parts.push(part);
     seen.add(part);
   }
-  if (summary.repair_rounds) parts.push(plural(summary.repair_rounds, "self-repair round", "self-repair rounds"));
-  if (summary.refine_rounds) parts.push(plural(summary.refine_rounds, "refine round", "refine rounds"));
-  if (summary.failovers) parts.push(plural(summary.failovers, "model failover", "model failovers"));
+  const { repair_rounds: repairs, refine_rounds: refines, failovers } = summary;
+  if (repairs) parts.push(plural(repairs, "self-repair round", "self-repair rounds"));
+  if (refines) parts.push(plural(refines, "refine round", "refine rounds"));
+  if (failovers) parts.push(plural(failovers, "model failover", "model failovers"));
   const lastCall = summary.model_calls[summary.model_calls.length - 1];
   if (lastCall && lastCall.outcome !== "completion") parts.push("no model answered");
   const held = summary.reconciliation?.approval_raised?.length ?? 0;
