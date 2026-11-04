@@ -94,10 +94,11 @@ class ExpectedOutcome:
 
 @dataclass(frozen=True)
 class Chapter:
-    """A group of scenarios on the page, shown under its title in catalogue order."""
+    """A group of scenarios on the page, shown under its title and intro in catalogue order."""
 
     id: str
     title: str
+    intro: str  # one or two sentences for the page: what this chapter breaks
 
 
 @dataclass(frozen=True)

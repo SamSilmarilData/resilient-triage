@@ -1,7 +1,7 @@
 """Scenario catalogue: the 13 catalogued scenarios, by chapter, in display order (#93, #96).
 
-All page copy for scenarios lives here: chapter titles, scenario titles, captions and setup
-notes. Captions lock each scenario's teaching point; their final wording is a UI question.
+All page copy for scenarios lives here (#101): chapter titles and intros, scenario titles,
+captions and setup notes. Captions lock each scenario's teaching point.
 Every scenario declares what its run must show, which the catalogue test checks by running it.
 Scripted replies arrive after about 0.9 s and failures after about 0.18 s, as in the prototype.
 """
@@ -115,10 +115,39 @@ PRIMARY_ANSWERS: tuple[ModelRole, ModelOutcome] = ("primary", "completion")
 STATUSPAGE_READ: tuple[str, ReadOutcome] = ("statuspage", "read")
 
 CHAPTERS: tuple[Chapter, ...] = (
-    Chapter(id="fast-paths", title="Fast paths"),
-    Chapter(id="model-misbehaves", title="When the model misbehaves"),
-    Chapter(id="dependencies-fail", title="When dependencies fail"),
-    Chapter(id="finale", title="Everything at once"),
+    Chapter(
+        id="fast-paths",
+        title="Fast paths",
+        intro=(
+            "Start with what a good day looks like: one run straight through the graph, an "
+            "answer from the cache, and a rate-limited model handed off to its fallback."
+        ),
+    ),
+    Chapter(
+        id="model-misbehaves",
+        title="When the model misbehaves",
+        intro=(
+            "The model is the least predictable part. Here it replies with broken JSON, low "
+            "confidence or an unsafe action, and the graph repairs, refines or overrules it."
+        ),
+    ),
+    Chapter(
+        id="dependencies-fail",
+        title="When dependencies fail",
+        intro=(
+            "Now the world around the graph breaks: a telemetry source goes dark, a breaker "
+            "opens, the run deadline passes, every run slot is busy. Each one degrades, none "
+            "stalls."
+        ),
+    ),
+    Chapter(
+        id="finale",
+        title="Everything at once",
+        intro=(
+            "Every dependency fails in the same run. The answer is still a valid report, "
+            "honest about how little it could see."
+        ),
+    ),
 )
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -432,6 +461,7 @@ def public_catalogue() -> ScenarioCatalogue:
             ScenarioChapterView(
                 id=chapter.id,
                 title=chapter.title,
+                intro=chapter.intro,
                 scenarios=[s.public_view() for s in SCENARIOS if s.chapter == chapter.id],
             )
             for chapter in CHAPTERS
