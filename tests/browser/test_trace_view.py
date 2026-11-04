@@ -13,6 +13,8 @@ import pytest
 from harness import (
     GRAPH_READY,
     GuardedPages,
+    axe_violations,
+    describe,
     open_shell,
     play,
     stream_scenario,
@@ -324,3 +326,63 @@ def test_free_play_model_calls_show_the_model_that_answered(pages: GuardedPages)
     models = [row for row in _bars(page) if row["kind"] == "model"]
     assert [row["label"] for row in models] == [settings.groq_model]
     assert "scripted reply" not in models[0]["text"]
+
+
+# The transition on a graph node's box, and the animations that last long enough to see, while
+# a node is active. The base reduced-motion rule leaves 0.01 ms transitions behind: not motion.
+MOTION = """() => ({
+  transition: getComputedStyle(document.querySelector(".graph__box")).transitionDuration,
+  animations: document.getAnimations()
+    .filter((animation) => animation.effect.getTiming().duration > 1).length,
+})"""
+
+
+@pytest.mark.real_scripted_delays
+@pytest.mark.parametrize(("reduced_motion", "moves"), [("no-preference", True), ("reduce", False)])
+def test_motion_is_css_only_and_off_under_reduced_motion(
+    pages: GuardedPages, reduced_motion: str, moves: bool
+):
+    """Lit nodes fade and the active node pulses in CSS; under reduced motion nothing moves."""
+    page, _ = pages.open(reduced_motion=reduced_motion)
+    open_shell(page)
+
+    play(page, scenario="healthy-run")
+    page.wait_for_selector('[data-node="generate_report"][data-state="active"]', state="attached")
+    motion = page.evaluate(MOTION)
+    wait_for_run(page)
+
+    seconds = float(motion["transition"].split(",")[0].removesuffix("s"))
+    assert (seconds >= 0.1) is moves, motion
+    assert (motion["animations"] > 0) is moves, motion
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_finished_run_has_no_serious_axe_violations(pages: GuardedPages, color_scheme: str):
+    """The lit graph and the waterfall pass axe-core in both themes."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    play(page, scenario="everything-down")
+    wait_for_run(page)
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+def test_a_finished_run_fits_phone_width(pages: GuardedPages):
+    """At 375 px the graph sits inline above the waterfall and nothing scrolls sideways."""
+    page, _ = pages.open(viewport={"width": 375, "height": 812})
+    open_shell(page)
+
+    play(page, scenario="everything-down")
+    wait_for_run(page)
+
+    widths = page.evaluate(
+        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+    )
+    assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
+    graph = page.locator(".graph").bounding_box()
+    waterfall = page.locator(".waterfall").bounding_box()
+    assert graph is not None and waterfall is not None
+    assert graph["y"] + graph["height"] <= waterfall["y"]
+    assert graph["width"] >= 340
