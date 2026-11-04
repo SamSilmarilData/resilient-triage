@@ -243,6 +243,7 @@ The scenario catalogue's public view (ADR-009): every chapter in display order, 
     {
       "id": "fast-paths",
       "title": "Fast paths",
+      "intro": "...",
       "scenarios": [
         {
           "id": "healthy-run",
@@ -260,6 +261,7 @@ The scenario catalogue's public view (ADR-009): every chapter in display order, 
 | Field | Meaning |
 | :--- | :--- |
 | `chapters[].id`, `chapters[].title` | The chapter's id and heading (`fast-paths`, `model-misbehaves`, `dependencies-fail`, `finale`). |
+| `chapters[].intro` | The chapter's introduction on the page, a sentence or two (added by #119; clients that ignore unknown fields are unaffected). |
 | `chapters[].scenarios[]` | `id` (what `POST /scenarios/{scenario_id}/stream` takes), `chapter` (the chapter's id), `title`, `caption`, `setup_notes` (what is true before the run, in words). |
 
 ---
@@ -603,7 +605,7 @@ curl -I http://127.0.0.1:8000/static/vendor/preact@10.29.8/dist/preact.mjs
 ---
 
 ### 12. `GET /`
-Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `trace-reducer.mjs` (the one logic module: trace events to view state), `sse.mjs` (reads the trace streams with `fetch()`), `components/` (`stage.mjs`, `graph.mjs`, `waterfall.mjs`), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
+Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `trace-reducer.mjs` (the one logic module: trace events to view state), `sse.mjs` (reads the trace streams with `fetch()`), `components/` (`stage.mjs`, `graph.mjs`, `waterfall.mjs`, `chapter.mjs`, `scenario.mjs`, `report.mjs`), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). On load it fetches `GET /scenarios` for the chapters (a failure leaves the static prose and a Retry notice) and plays a scenario with `POST /scenarios/{scenario_id}/stream`. The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
 
 The live trace reads `POST /scenarios/{scenario_id}/stream` ([section 1c](#1c-post-scenariosscenario_idstream)) or `POST /triage/stream` ([section 1a](#1a-post-triagestream)) as the events arrive and draws only what the stream carried: no expected path, no free text from the server. A stream that sends no event or ping for 30 s, or closes before `trace_finished`, is shown as "Connection lost" with its partial trace kept and a Replay button; a stream refused before it starts (404, 422) or a network error shows its message with Retry.
 
