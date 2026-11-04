@@ -28,6 +28,8 @@ export function Stage({ run, layout, onReplay, onSelectNode }) {
           : html`<p class="run__line run__line--idle">
               Pick a scenario and its path through the triage graph lights up here, node by node.
             </p>`}
+        ${run.trace.scripted &&
+        html`<span class="badge" data-run-badge>Model replies scripted</span>`}
         ${headline.action &&
         html`<button class="button" type="button" onClick=${onReplay}>${headline.action}</button>`}
       </div>
