@@ -654,8 +654,10 @@
     white-space: nowrap;
   }
 
+  /* Ends just left of the zero line; overflows into the empty label column if setup is short. */
   .waterfall__tick--setup {
-    left: 0;
+    right: calc(100% - var(--zero, 0%) + 0.25rem);
+    left: auto;
   }
 
   .waterfall__tick--end {

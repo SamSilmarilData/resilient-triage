@@ -201,7 +201,11 @@ export function graphView(layout, trace) {
   const visits = {};
   for (const visit of trace.visits) visits[visit.node] = (visits[visit.node] ?? 0) + 1;
   if (trace.visits.length) visits[START] = 1;
-  if (trace.walked.some((key) => key.endsWith(`>${END}`))) visits[END] = 1;
+  // __end__ lights only through a graph edge: a run cut short by its deadline never gets there.
+  const ended = layout.edges.some(
+    (edge) => edge.target === END && trace.walked.includes(edgeKey(edge.source, END)),
+  );
+  if (ended) visits[END] = 1;
 
   const nodes = Object.entries(layout.nodes).map(([name, box]) => {
     const count = visits[name] ?? 0;
