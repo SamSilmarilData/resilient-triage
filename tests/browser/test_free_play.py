@@ -8,9 +8,10 @@ Tests drive the form the way a visitor does and wait on the panel's `data-run-st
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import pytest
-from harness import GuardedPages, open_shell
+from harness import GuardedPages, axe_violations, describe, open_shell
 
 from resilient_triage.config import Settings, settings
 
@@ -20,7 +21,12 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.browser
 
 PANEL = "#free-play-root"
-QUERY = "GitHub Actions workflows failing with 503s"
+
+
+def _question(text: str = "GitHub Actions workflows failing with 503s") -> str:
+    """A question no other run has asked: the harness cache may be a live Redis shared with
+    other test runs, and a stray hit would skip the model."""
+    return f"{text} (ticket {uuid4().hex[:8]})"
 
 
 def _panel(page: Page) -> Locator:
@@ -45,7 +51,7 @@ def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: Guarded
     page, watch = pages.open()
     open_shell(page)
 
-    _ask(page, QUERY)
+    _ask(page, _question())
     _wait_for_panel_run(page)
 
     panel = _panel(page)
@@ -73,10 +79,11 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     open_shell(page)
     page.evaluate("() => { window.notReloaded = true; }")
     panel = _panel(page)
+    question = _question()
 
-    _ask(page, QUERY)
+    _ask(page, question)
     _wait_for_panel_run(page)
-    _ask(page, "Checkout latency doubled after the 14:00 deploy")
+    _ask(page, _question("Checkout latency doubled after the 14:00 deploy"))
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
     _wait_for_panel_run(page)
 
@@ -92,8 +99,90 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     assert len(pages.server.llm.calls) == 1, "a shed run never reaches the model"
 
     # A cache hit doesn't count against the budget: the same page, unreloaded, answers it.
-    _ask(page, QUERY)
+    _ask(page, question)
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="detached")
     _wait_for_panel_run(page)
     assert panel.locator("[data-run-line]").inner_text().startswith("Answered from cache")
     assert page.evaluate("() => window.notReloaded") is True
+
+
+def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: GuardedPages):
+    """A POST that never connects errors in the free-play panel only; Retry asks again."""
+    page, watch = pages.open()
+    open_shell(page)
+    url = "**/triage/stream"
+    page.route(url, lambda route: route.abort("connectionfailed"))
+
+    _ask(page, _question())
+    _wait_for_panel_run(page, "error")
+
+    panel = _panel(page)
+    assert panel.locator("[data-run-line]").inner_text().startswith("Couldn't reach the server")
+    assert page.locator('#stage-root [data-run-state="idle"]').count() == 1, "stage untouched"
+    assert page.locator("#chapters-root .notice").count() == 0
+    assert len(watch.failed) == 1
+
+    page.unroute(url)
+    panel.get_by_role("button", name="Retry").click()
+    _wait_for_panel_run(page)
+    assert panel.locator("[data-run-line]").inner_text().startswith("Report in ")
+
+
+def test_a_dropped_stream_is_lost_in_this_panel_then_replays(pages: GuardedPages):
+    """A stream that closes before trace_finished keeps its partial trace, dimmed, with Replay."""
+    page, _ = pages.open()
+    open_shell(page)
+    url = "**/triage/stream"
+    page.route(
+        url,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/event-stream",
+            body='event: trace_started\ndata: {"seq": 0, "t_ms": 0, "kind": "trace_started", '
+            '"schema_version": 1, "scenario_id": null, "scoped": false, '
+            '"force_refresh": false}\n\n',
+        ),
+    )
+
+    _ask(page, _question())
+    _wait_for_panel_run(page, "lost")
+
+    panel = _panel(page)
+    assert panel.locator("[data-run-line]").inner_text() == "Connection lost"
+    assert panel.locator('.run[data-dimmed="true"]').count() == 1
+
+    page.unroute(url)
+    panel.get_by_role("button", name="Replay").click()
+    _wait_for_panel_run(page)
+    assert panel.locator("[data-model]").inner_text() == f"Model: {settings.groq_model}"
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_finished_free_play_run_has_no_serious_axe_violations(
+    pages: GuardedPages, color_scheme: str
+):
+    """The form, the model line and the panel's run pass axe-core in both themes."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    _ask(page, _question())
+    _wait_for_panel_run(page)
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
+    """At 375 px the form and the panel's graph fit and nothing scrolls sideways."""
+    page, _ = pages.open(viewport={"width": 375, "height": 812})
+    open_shell(page)
+
+    _ask(page, _question())
+    _wait_for_panel_run(page)
+
+    widths = page.evaluate(
+        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+    )
+    assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
+    graph = _panel(page).locator(".graph").bounding_box()
+    assert graph is not None and graph["width"] >= 340
