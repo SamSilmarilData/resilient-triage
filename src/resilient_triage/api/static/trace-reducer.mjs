@@ -246,6 +246,170 @@ export function graphView(layout, trace) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Waterfall view: every step of the run as a bar on one clock. t_ms counts from trace_started;
+// setup runs before it (its events are stamped 0), so setup draws left of the zero line, its
+// reads laid end to end by their real durations.
+
+/**
+ * @typedef {"setup" | "cache" | "slot" | "node" | "model" | "telemetry" | "store" | "deadline"}
+ *   RowKind
+ * @typedef {"ok" | "warn" | "bad" | "running" | "setup"} RowTone
+ * @typedef {{ key: string, kind: RowKind, name: string, detail: string, tag: string | null,
+ *             depth: 0 | 1, startMs: number, durationMs: number, tone: RowTone,
+ *             leftPct: number, widthPct: number }} WaterfallRow
+ * @typedef {{ rows: WaterfallRow[], setupMs: number, runMs: number, zeroPct: number,
+ *             endLabel: string }} WaterfallView
+ */
+
+// Setup with no measured duration (seeding the cache, holding slots) still gets this share of
+// the axis, so it shows before t = 0.
+const MIN_SETUP_SHARE = 0.06;
+
+const SETUP_STEPS = /** @type {Record<string, (e: TraceEvent) => string>} */ ({
+  seed_cache: (e) => `Seed the cache with ${plural(e.count, "answer", "answers")}`,
+  hold_run_slots: (e) => `Hold ${plural(e.count, "run slot", "run slots")}`,
+  fail_source: (e) => `Fail ${sourceName(e.source)} ${plural(e.count, "time", "times")}`,
+  set_run_deadline: (e) => `Set a ${e.deadline_s} s run deadline`,
+});
+
+const SHED_REASONS = /** @type {Record<string, string>} */ ({
+  capacity: "every run slot busy",
+  budget: "free-play budget spent",
+});
+
+/**
+ * A wire literal for people: "rate_limited" reads "rate limited".
+ * @param {string} value
+ */
+function words(value) {
+  return value.replaceAll("_", " ");
+}
+
+/**
+ * A telemetry read's outcome, its attempts and any breaker change.
+ * @param {TraceEvent} e
+ */
+function readDetail(e) {
+  const parts = [words(e.outcome), plural(e.attempts, "attempt", "attempts")];
+  if (e.breaker_before !== e.breaker_after) parts.push(`breaker ${e.breaker_before} to ${e.breaker_after}`);
+  return parts.join(" · ");
+}
+
+/** @param {string} outcome */
+function readTone(outcome) {
+  return outcome === "read" ? "ok" : outcome === "tripped" ? "bad" : "warn";
+}
+
+/**
+ * The run as waterfall rows, each placed on one axis from the start of setup to the run's end.
+ * @param {TraceView} trace
+ * @returns {WaterfallView}
+ */
+export function waterfallView(trace) {
+  const lastMs = trace.events.length ? Math.max(0, trace.events[trace.events.length - 1].t_ms) : 0;
+  /** @type {Omit<WaterfallRow, "leftPct" | "widthPct">[]} */
+  const rows = [];
+  let setupCursor = 0; // where the next setup read starts, laid end to end from 0
+  let stepStart = 0; // where the current setup step's first read started
+  let open = 0; // node visits started and not yet finished
+  /** @type {Map<number, number>} visit index to row index */
+  const visitRows = new Map();
+  let visitIndex = -1;
+  const depth = () => /** @type {0 | 1} */ (open > 0 ? 1 : 0);
+  /**
+   * @param {TraceEvent} e
+   * @param {number} durationMs
+   */
+  const startOf = (e, durationMs) => Math.max(0, e.t_ms - durationMs);
+
+  for (const e of trace.events) {
+    const key = String(e.seq);
+    switch (e.kind) {
+      case "scenario_setup":
+        // A step is sent once done, after the setup reads it made: its bar spans them.
+        rows.push({ key, kind: "setup", name: (SETUP_STEPS[e.step] ?? ((x) => words(x.step)))(e),
+          detail: "setup", tag: null, depth: 0, startMs: stepStart,
+          durationMs: setupCursor - stepStart, tone: "setup" });
+        stepStart = setupCursor;
+        break;
+      case "telemetry_read":
+        if (e.phase === "setup") {
+          rows.push({ key, kind: "setup", name: `${sourceName(e.source)} read`, detail: readDetail(e),
+            tag: null, depth: 0, startMs: setupCursor, durationMs: e.duration_ms, tone: "setup" });
+          setupCursor += e.duration_ms;
+        } else {
+          rows.push({ key, kind: "telemetry", name: `${sourceName(e.source)} read`, detail: readDetail(e),
+            tag: null, depth: depth(), startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms,
+            tone: readTone(e.outcome) });
+        }
+        break;
+      case "cache_lookup":
+        rows.push({ key, kind: "cache", name: "cache lookup",
+          detail: e.hit ? `hit · similarity ${e.similarity.toFixed(2)}` : "miss",
+          tag: null, depth: 0, startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms, tone: "ok" });
+        break;
+      case "run_slot":
+        rows.push({ key, kind: "slot", name: "run slot",
+          detail: e.acquired ? `acquired · waited ${formatMs(e.waited_ms)}` : `shed · ${SHED_REASONS[e.reason] ?? "no slot"}`,
+          tag: null, depth: 0, startMs: startOf(e, e.waited_ms), durationMs: e.waited_ms,
+          tone: e.acquired ? "ok" : "warn" });
+        break;
+      case "node_started":
+        visitIndex++;
+        visitRows.set(visitIndex, rows.length);
+        rows.push({ key, kind: "node", name: e.node, detail: "running", tag: null, depth: 0,
+          startMs: e.t_ms, durationMs: Math.max(0, lastMs - e.t_ms), tone: "running" });
+        open++;
+        break;
+      case "model_call":
+        rows.push({ key, kind: "model", name: e.model,
+          detail: `${e.role} · ${e.outcome === "completion" ? "reply" : words(e.outcome)}`,
+          tag: trace.scripted ? "scripted reply" : null, depth: depth(),
+          startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms,
+          tone: e.outcome === "completion" ? "ok" : "warn" });
+        break;
+      case "cache_store":
+        rows.push({ key, kind: "store", name: "cache store", detail: words(e.outcome), tag: null,
+          depth: 0, startMs: startOf(e, e.duration_ms), durationMs: e.duration_ms,
+          tone: e.outcome === "stored" ? "ok" : "warn" });
+        break;
+      case "deadline_exceeded":
+        rows.push({ key, kind: "deadline", name: "run deadline", detail: `hit at ${e.deadline_s} s`,
+          tag: null, depth: 0, startMs: e.t_ms, durationMs: 0, tone: "bad" });
+        break;
+    }
+    if (e.kind === "node_finished") open = Math.max(0, open - 1);
+  }
+
+  // Close each finished visit's row with its real duration, status and confidence.
+  trace.visits.forEach((visit, index) => {
+    const rowIndex = visitRows.get(index);
+    if (rowIndex === undefined || visit.endMs === null) return;
+    const parts = [formatMs(visit.endMs - visit.startMs)];
+    if (visit.status !== "ok") parts.push(visit.status);
+    if (visit.confidence !== null) parts.push(`confidence ${visit.confidence.toFixed(2)}`);
+    rows[rowIndex] = { ...rows[rowIndex], detail: parts.join(" · "), durationMs: visit.endMs - visit.startMs,
+      tone: visit.status === "ok" ? "ok" : visit.status === "cancelled" ? "warn" : "bad" };
+  });
+
+  const runMs = Math.max(lastMs, ...rows.filter((r) => r.kind !== "setup").map((r) => r.startMs + r.durationMs));
+  const hasSetup = rows.some((r) => r.kind === "setup");
+  const setupMs = hasSetup ? Math.max(setupCursor, MIN_SETUP_SHARE * runMs) : 0;
+  const scale = setupMs + runMs || 1;
+  return {
+    rows: rows.map((row) => {
+      // Setup rows sit at [-setupMs, 0); everything else from 0.
+      const start = row.kind === "setup" ? row.startMs : setupMs + row.startMs;
+      return { ...row, leftPct: (start / scale) * 100, widthPct: (row.durationMs / scale) * 100 };
+    }),
+    setupMs,
+    runMs,
+    zeroPct: (setupMs / scale) * 100,
+    endLabel: formatMs(runMs),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Summary: the JS port of trace/summary.py, checked against it by tests/browser/test_reducer.py.
 
 // Node names as registered in graph/builder.py; keep them in step with trace/summary.py.
