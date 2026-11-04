@@ -25,11 +25,13 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from resilient_triage import __version__
 from resilient_triage.api.static_assets import REVALIDATE, StaticAssets
 from resilient_triage.config import settings
+from resilient_triage.graph.inspector import graph_nodes
 from resilient_triage.runtime import AppRuntime, build_runtime
 from resilient_triage.scenarios.catalogue import get_scenario, public_catalogue
 from resilient_triage.schemas.api import (
     ChaosTriggerRequest,
     CircuitSnapshot,
+    GraphNodes,
     HealthResponse,
     LLMQuotaSnapshot,
     ResilienceStatusResponse,
@@ -234,6 +236,12 @@ async def triage_incident_stream(
     """Triage like POST /triage, streaming the execution trace as SSE; ends in trace_finished."""
     async for event in events:
         yield ServerSentEvent(event=event.kind, data=event)
+
+
+@router.get("/graph/nodes", response_model=GraphNodes)
+async def list_graph_nodes() -> GraphNodes:
+    """List each graph node's inspector content: purpose, file, config fields and ADRs."""
+    return graph_nodes()
 
 
 @router.get("/scenarios", response_model=ScenarioCatalogue)

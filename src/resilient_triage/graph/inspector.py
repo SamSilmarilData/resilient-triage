@@ -6,9 +6,16 @@ code. `NODE_NOTES` is the small typed registry for what code can't say about its
 fails on a graph node with no entry, a stale entry, an unknown setting or a missing ADR file.
 """
 
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+
+from resilient_triage.config import Settings
+from resilient_triage.graph.builder import NODE_FUNCTIONS
+from resilient_triage.schemas.api import ConfigFieldView, GraphNodes, NodeInspectorView
+
+ADR_PATH = "docs/decisions/{}.md"
 
 
 @dataclass(frozen=True)
@@ -87,3 +94,29 @@ NODE_NOTES: Mapping[str, NodeNotes] = MappingProxyType(
         ),
     }
 )
+
+
+def _purpose(name: str, module: str) -> str:
+    """The first line of a node module's docstring, without its `Node: <name> - ` prefix."""
+    doc = (sys.modules[module].__doc__ or "").strip().splitlines()
+    return doc[0].removeprefix(f"Node: {name} - ") if doc else ""
+
+
+def graph_nodes() -> GraphNodes:
+    """Inspector content for every graph node: purpose and file from code, the rest from notes."""
+    fields = Settings.model_fields
+    return GraphNodes(
+        nodes=[
+            NodeInspectorView(
+                name=name,
+                purpose=_purpose(name, node.__module__),
+                file=f"src/{node.__module__.replace('.', '/')}.py",
+                config_fields=[
+                    ConfigFieldView(name=field, description=fields[field].description or "")
+                    for field in NODE_NOTES[name].config_fields
+                ],
+                adrs=[ADR_PATH.format(adr) for adr in NODE_NOTES[name].adrs],
+            )
+            for name, node in NODE_FUNCTIONS.items()
+        ]
+    )

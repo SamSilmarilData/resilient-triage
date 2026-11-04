@@ -202,3 +202,32 @@ class ScenarioCatalogue(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     chapters: list[ScenarioChapterView]
+
+
+class ConfigFieldView(BaseModel):
+    """A `Settings` field that tunes a graph node: its name and description, never its value."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    description: str
+
+
+class NodeInspectorView(BaseModel):
+    """What the node inspector shows for one graph node (#121)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    purpose: str = Field(description="The node module's docstring, without its 'Node:' prefix")
+    file: str = Field(description="The node module's path in the repository")
+    config_fields: list[ConfigFieldView]
+    adrs: list[str] = Field(description="Repository paths of the ADRs that explain the node")
+
+
+class GraphNodes(BaseModel):
+    """GET /graph/nodes: inspector content for every graph node, in registration order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    nodes: list[NodeInspectorView]
