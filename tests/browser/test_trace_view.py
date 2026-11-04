@@ -10,7 +10,14 @@ from importlib import resources
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from harness import GuardedPages, open_shell, play, stream_scenario, wait_for_run
+from harness import (
+    GRAPH_READY,
+    GuardedPages,
+    open_shell,
+    play,
+    stream_scenario,
+    wait_for_run,
+)
 
 from resilient_triage.config import settings
 from resilient_triage.trace.events import (
@@ -166,6 +173,144 @@ def test_scenario_model_calls_are_marked_scripted(pages: GuardedPages):
     (confidence,) = [e.confidence for e in finished if e.node == "validate_report"]
     assert confidence is not None
     assert f"confidence {confidence:.2f}" in validate["text"]
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "line_start"),
+    [
+        ("shed-request", "Shed after "),
+        ("run-deadline", "Fallback report in "),
+        ("self-repair-exhausted", "Fallback report in "),
+        ("cache-hit", "Answered from cache in "),
+    ],
+)
+def test_every_outcome_reaches_the_finished_state(
+    pages: GuardedPages, scenario_id: str, line_start: str
+):
+    """Shed, fallback and cache-hit runs all end in trace_finished with their summary line."""
+    page, watch = pages.open()
+    open_shell(page)
+
+    play(page, scenario=scenario_id)
+    wait_for_run(page)
+
+    assert page.locator("[data-run-line]").inner_text().startswith(line_start)
+    assert page.locator(".run button").count() == 0
+    assert watch.failed == []
+
+
+def _sse(events: list[TraceEvent]) -> str:
+    """Events framed as the server frames them."""
+    return "".join(f"event: {e.kind}\ndata: {e.model_dump_json()}\n\n" for e in events)
+
+
+def test_a_stream_that_closes_early_is_lost_then_replays(pages: GuardedPages):
+    """A close before trace_finished keeps the partial trace, dimmed, with Replay."""
+    events = stream_scenario(pages.server, "self-repair")
+    cut = next(
+        i
+        for i, e in enumerate(events)
+        if isinstance(e, NodeStarted) and e.node == "validate_report"
+    )
+    page, _ = pages.open()
+    open_shell(page)
+    url = "**/scenarios/self-repair/stream"
+    page.route(
+        url,
+        lambda route: route.fulfill(
+            status=200, content_type="text/event-stream", body=_sse(events[:cut])
+        ),
+    )
+
+    play(page, scenario="self-repair")
+    wait_for_run(page, "lost")
+
+    assert page.locator("[data-run-line]").inner_text() == "Connection lost"
+    assert page.locator('.run[data-dimmed="true"]').count() == 1
+    visits = page.evaluate(VISITED_NODES)
+    assert visits["generate_report"] == 1 and visits["validate_report"] == 0
+    assert page.locator(".waterfall__row").count() > 0, "the partial trace must stay drawn"
+
+    page.unroute(url)
+    page.get_by_role("button", name="Replay").click()
+    wait_for_run(page)
+    assert page.evaluate(VISITED_NODES)["validate_report"] == 2
+
+
+# A stream source the test feeds by hand: window.feed(message) yields one stream message.
+MANUAL_SOURCE = """async () => {
+  const {stage} = await import("/static/app.mjs");
+  const queue = [];
+  let wake = null;
+  window.feed = (message) => { queue.push(message); wake?.(); };
+  stage.play(async function* () {
+    for (;;) {
+      while (queue.length) yield queue.shift();
+      await new Promise((resolve) => { wake = resolve; });
+    }
+  });
+}"""
+STARTED = {
+    "kind": "event",
+    "event": {
+        "seq": 0,
+        "t_ms": 0,
+        "kind": "trace_started",
+        "schema_version": 1,
+        "scenario_id": None,
+        "scoped": False,
+        "force_refresh": False,
+    },
+}
+
+
+def test_a_silent_stream_is_lost_after_30_seconds_and_pings_keep_it_alive(pages: GuardedPages):
+    """No event or ping for 30 s ends the run as lost; a ping restarts that clock."""
+    page, _ = pages.open()
+    page.clock.install()
+    open_shell(page, wait_for_requests=False)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    # From here the page's clock moves only when the test moves it.
+    page.clock.pause_at(page.evaluate("Date.now()") + 1_000)
+    page.evaluate(MANUAL_SOURCE)
+    page.evaluate("(message) => window.feed(message)", STARTED)
+    wait_for_run(page, "streaming")
+
+    page.clock.run_for(20_000)
+    page.evaluate("() => window.feed({kind: 'ping'})")
+    page.clock.run_for(20_000)
+    assert page.locator('[data-run-state="streaming"]').count() == 1, "a ping must keep it alive"
+
+    page.clock.run_for(10_500)
+    wait_for_run(page, "lost", timeout_ms=5_000)
+    assert page.locator("[data-run-line]").inner_text() == "Connection lost"
+
+
+def test_a_refused_stream_shows_its_error_with_retry(pages: GuardedPages):
+    """A 404 before the stream starts is an inline error with Retry, not a lost run."""
+    page, watch = pages.open()
+    open_shell(page)
+
+    play(page, scenario="no-such-scenario")
+    wait_for_run(page, "error")
+
+    assert page.locator("[data-run-line]").inner_text() == "No scenario 'no-such-scenario'."
+    assert page.get_by_role("button", name="Retry").count() == 1
+    assert [failure.split(" ")[0] for failure in watch.failed] == ["404"]
+
+
+def test_an_unreachable_server_shows_an_error_with_retry(pages: GuardedPages):
+    """A network failure before any event says the server couldn't be reached."""
+    page, watch = pages.open()
+    open_shell(page)
+    page.route("**/scenarios/healthy-run/stream", lambda route: route.abort("connectionfailed"))
+
+    play(page, scenario="healthy-run")
+    wait_for_run(page, "error")
+
+    assert page.locator("[data-run-line]").inner_text().startswith("Couldn't reach the server")
+    assert page.get_by_role("button", name="Retry").count() == 1
+    assert len(watch.failed) == 1
 
 
 def test_free_play_model_calls_show_the_model_that_answered(pages: GuardedPages):
