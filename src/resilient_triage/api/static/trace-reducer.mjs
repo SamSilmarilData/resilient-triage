@@ -833,3 +833,23 @@ export function answeringModel(trace) {
   }
   return null;
 }
+
+/**
+ * Why a run was shed and when to ask again, from its refused run_slot; null when it wasn't
+ * shed. Only a budget shed carries a retry-after (triage/gateway.py Shed).
+ * @typedef {{ reason: string, retryAfterS: number | null, line: string }} ShedNotice
+ * @param {TraceView} trace
+ * @returns {ShedNotice | null}
+ */
+export function shedNotice(trace) {
+  const slot = trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+  if (!slot) return null;
+  const reason = slot.reason ?? "capacity";
+  const retryAfterS = slot.retry_after_s ?? null;
+  const head =
+    reason === "budget"
+      ? "The free-play budget is spent for this minute."
+      : "Every run slot is busy right now.";
+  const when = retryAfterS === null ? "in a moment" : `in ${retryAfterS} s`;
+  return { reason, retryAfterS, line: `${head} Try again ${when}.` };
+}
