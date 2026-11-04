@@ -9,6 +9,7 @@ tested.
 
 from collections.abc import Collection, Mapping
 
+import httpx
 import pytest
 from repo_scripts import REPO_ROOT
 
@@ -73,3 +74,53 @@ GOOD = NodeNotes(config_fields=("groq_model",), adrs=("0006-project-owned-llm-ga
 )
 def test_the_guard_names_each_kind_of_drift(notes: dict[str, NodeNotes], problem: str) -> None:
     assert registry_problems(notes, GRAPH) == [problem]
+
+
+NODE_ORDER = [
+    "analyze_query",
+    "collect_telemetry",
+    "compensate_blindspots",
+    "degraded_fallback",
+    "synthesize_telemetry",
+    "generate_report",
+    "validate_report",
+    "self_repair",
+    "refine_reflection",
+    "fallback_report",
+    "finalize_report",
+]
+
+
+async def test_get_graph_nodes_serves_purpose_file_config_and_adrs(
+    anonymous_client: httpx.AsyncClient,
+) -> None:
+    resp = await anonymous_client.get("/graph/nodes")
+
+    assert resp.status_code == 200
+    nodes = {n["name"]: n for n in resp.json()["nodes"]}
+    assert list(nodes) == NODE_ORDER
+    assert nodes["analyze_query"] == {
+        "name": "analyze_query",
+        "purpose": "Normalizes the query and scope and picks the run's Targeted sources.",
+        "file": "src/resilient_triage/graph/nodes/analyze_query.py",
+        "config_fields": [],
+        "adrs": ["docs/decisions/0001-langgraph-cyclic-state-machine.md"],
+    }
+    # Two node names differ from their module's: the file comes from the code, not the name.
+    assert nodes["synthesize_telemetry"]["file"] == "src/resilient_triage/graph/nodes/synthesize.py"
+    assert nodes["finalize_report"]["file"] == "src/resilient_triage/graph/nodes/finalize.py"
+    assert nodes["generate_report"]["config_fields"][0] == {
+        "name": "groq_model",
+        "description": "Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
+    }
+
+
+async def test_every_served_file_and_adr_exists_and_every_purpose_is_a_sentence(
+    anonymous_client: httpx.AsyncClient,
+) -> None:
+    for node in (await anonymous_client.get("/graph/nodes")).json()["nodes"]:
+        assert (REPO_ROOT / node["file"]).is_file(), node["file"]
+        assert all((REPO_ROOT / adr).is_file() for adr in node["adrs"]), node["adrs"]
+        purpose = node["purpose"]
+        assert purpose[0].isupper() and purpose.endswith("."), (node["name"], purpose)
+        assert not purpose.startswith("Node:"), purpose
