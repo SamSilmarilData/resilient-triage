@@ -36,6 +36,7 @@ Every HTTP response returned by the API includes the following observability hea
 | `POST` | [`/triage/stream`](#1a-post-triagestream) | Same triage, streaming its execution trace as Server-Sent Events | Public |
 | `GET` | [`/scenarios`](#1b-get-scenarios) | The scenario catalogue's public view, by chapter in display order | Public |
 | `POST` | [`/scenarios/{scenario_id}/stream`](#1c-post-scenariosscenario_idstream) | Run one catalogued scenario on private collaborators, streaming its trace | Public |
+| `GET` | [`/graph/nodes`](#1d-get-graphnodes) | The node inspector's content: each graph node's purpose, file, config fields and ADRs | Public |
 | `GET` | [`/health`](#2-get-health) | Check system availability, active model, and circuit states | Public |
 | `GET` | [`/resilience/status`](#3-get-resiliencestatus) | Detailed diagnostics for breakers, chaos, and cache | Public |
 | `GET` | [`/llm/quota`](#4-get-llmquota) | Retrieve real-time Groq rate limits and token budgets | Public |
@@ -275,6 +276,40 @@ Runs one catalogued scenario and streams its execution trace exactly like [`POST
 #### Example cURL
 ```bash
 curl -N -X POST http://127.0.0.1:8000/scenarios/self-repair/stream
+```
+
+---
+
+### 1d. `GET /graph/nodes`
+Read-only content for the page's node inspector (#121): one entry per triage graph node, in registration order, never `__start__` or `__end__`. *Purpose* is the node module's docstring (its first line, without the `Node: <name> - ` prefix) and *file* the module's path, so both come from the code; `config_fields` and `adrs` come from a small typed registry, `graph/inspector.py` `NODE_NOTES`. `tests/test_node_inspector.py` fails on a graph node with no entry, a stale entry, a field that isn't a `Settings` field (or is a secret) and an ADR file that doesn't exist. The response only changes with a deploy.
+
+#### Response (`200 OK`) - `GraphNodes`
+```json
+{
+  "nodes": [
+    {
+      "name": "generate_report",
+      "purpose": "Invokes LLM to produce candidate report JSON.",
+      "file": "src/resilient_triage/graph/nodes/generate_report.py",
+      "config_fields": [
+        {"name": "groq_model", "description": "Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)"}
+      ],
+      "adrs": ["docs/decisions/0006-project-owned-llm-gateway.md"]
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `name` | The node's name in `get_graph()`, as in trace events and `graph-layout.json`. |
+| `purpose` | One sentence: the node module's docstring. |
+| `file`, `adrs[]` | Repository-relative paths; the page links them on GitHub. `file` follows the module, so `synthesize_telemetry` is `synthesize.py` and `finalize_report` is `finalize.py`. |
+| `config_fields[]` | The `Settings` fields that tune the node: `name` and `description`, never the value. |
+
+#### Example cURL
+```bash
+curl http://127.0.0.1:8000/graph/nodes
 ```
 
 ---
@@ -603,9 +638,11 @@ curl -I http://127.0.0.1:8000/static/vendor/preact@10.29.8/dist/preact.mjs
 ---
 
 ### 12. `GET /`
-Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `trace-reducer.mjs` (the one logic module: trace events to view state), `sse.mjs` (reads the trace streams with `fetch()`), `components/` (`stage.mjs`, `graph.mjs`, `waterfall.mjs`), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
+Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `trace-reducer.mjs` (the one logic module: trace events to view state), `sse.mjs` (reads the trace streams with `fetch()`), `components/` (`stage.mjs`, `graph.mjs`, `waterfall.mjs`, `node-inspector.mjs`, `how-its-built.mjs`), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
 
 The live trace reads `POST /scenarios/{scenario_id}/stream` ([section 1c](#1c-post-scenariosscenario_idstream)) or `POST /triage/stream` ([section 1a](#1a-post-triagestream)) as the events arrive and draws only what the stream carried: no expected path, no free text from the server. A stream that sends no event or ping for 30 s, or closes before `trace_finished`, is shown as "Connection lost" with its partial trace kept and a Replay button; a stream refused before it starts (404, 422) or a network error shows its message with Retry.
+
+The node inspector reads `GET /graph/nodes` ([section 1d](#1d-get-graphnodes)) once on load. If it fails, the static "How it's built" prose stays, its node list shows a notice with Retry, and an opened inspector says the details didn't load.
 
 #### Example cURL
 ```bash
