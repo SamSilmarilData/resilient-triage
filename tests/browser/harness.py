@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
+import httpx
 import uvicorn
-from fakes import fake_statuspage_http
+from fakes import fake_statuspage_http, parse_sse
 from repo_scripts import vendored_axe
 
 from resilient_triage.api.app import create_app
@@ -24,6 +25,7 @@ from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.config import settings
 from resilient_triage.llm import ScriptedAdapter
 from resilient_triage.runtime import AppRuntime, build_runtime
+from resilient_triage.trace.events import TraceEvent
 
 if TYPE_CHECKING:
     from playwright.sync_api import Browser, BrowserContext, Page, Request, Route
@@ -53,6 +55,18 @@ STREAM_AND_FOLD = """async (run) => {
   const summary = reducer.summarize(events);
   return {events, summary, line: reducer.summaryLine(summary)};
 }"""
+
+# page.evaluate script: start a run on the page's stage (app.mjs `stage`), the way a play
+# button does, without waiting for it. Argument as STREAM_AND_FOLD's.
+PLAY_ON_STAGE = """async (run) => {
+  const {stage} = await import("/static/app.mjs");
+  const sse = await import("/static/sse.mjs");
+  stage.play(run.scenario
+    ? sse.scenarioSource(run.scenario)
+    : sse.freePlaySource({query: run.query}));
+}"""
+RUN_STATES = ("idle", "streaming", "finished", "lost", "error")
+GRAPH_READY = '[data-graph="ready"]'
 
 
 class HarnessError(RuntimeError):
@@ -209,6 +223,26 @@ def open_shell(page: Page, wait_for_requests: bool = True) -> None:
         # Fonts and other subresources settle after the shell renders: wait on them, not a timer.
         page.wait_for_load_state("networkidle")
         page.evaluate("document.fonts.ready.then(() => true)")
+
+
+def stream_scenario(server: LiveServer, scenario_id: str) -> list[TraceEvent]:
+    """Run a scenario on the live app from Python and return its parsed trace events."""
+    response = httpx.post(f"{server.url}/scenarios/{scenario_id}/stream", timeout=60)
+    assert response.status_code == 200, response.text
+    return parse_sse(response.text)
+
+
+def play(page: Page, *, scenario: str | None = None, query: str | None = None) -> None:
+    """Start a scenario or free-play run on the stage once the graph has drawn."""
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    run = {"scenario": scenario} if scenario is not None else {"query": query}
+    page.evaluate(PLAY_ON_STAGE, run)
+
+
+def wait_for_run(page: Page, state: str = "finished", timeout_ms: float = 30_000) -> None:
+    """Wait until the stage's run reaches a state (`data-run-state`); never a fixed sleep."""
+    assert state in RUN_STATES, state
+    page.wait_for_selector(f'[data-run-state="{state}"]', state="attached", timeout=timeout_ms)
 
 
 def axe_violations(page: Page) -> list[dict[str, Any]]:
