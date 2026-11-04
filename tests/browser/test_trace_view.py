@@ -24,7 +24,9 @@ LAYOUT_EDGES = {(edge["source"], edge["target"]) for edge in LAYOUT["edges"]}
 TAKEN_EDGES = """() => [...document.querySelectorAll('[data-edge][data-taken="true"]')]
   .map((edge) => ({source: edge.dataset.source, target: edge.dataset.target,
                    route: edge.dataset.route ?? null}))"""
+# Graph nodes only: __start__ and __end__ are the graph's terminals, not steps of the path.
 VISITED_NODES = """() => Object.fromEntries([...document.querySelectorAll("[data-node]")]
+  .filter((node) => !node.dataset.node.startsWith("__"))
   .map((node) => [node.dataset.node, Number(node.dataset.visits)]))"""
 
 

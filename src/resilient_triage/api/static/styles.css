@@ -389,9 +389,173 @@
     }
   }
 
-  .stage__panels {
+  .button {
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    font: 500 0.875rem/1.2 var(--sans);
+    cursor: pointer;
+
+    &:hover {
+      border-color: var(--accent);
+    }
+  }
+
+  /* One run on the stage: its headline, then the graph inline above the waterfall at every
+     width (#101). A lost stream keeps its partial trace, dimmed. */
+  .run {
     display: grid;
     gap: 0.75rem;
+  }
+
+  .run__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 0.75rem;
+    min-height: 2rem;
+  }
+
+  .run__line {
+    font-size: 0.925rem;
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .run__line--idle {
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  .run__panels {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .run[data-dimmed="true"] .run__panels {
+    opacity: 0.55;
+  }
+
+  /* The triage graph: SVG in the layout's user units, so its font sizes come from the
+     layout too. Idle is quiet; visited and active nodes and taken edges take the accent. */
+  .graph {
+    margin: 0;
+  }
+
+  .graph__svg {
+    display: block;
+    width: 100%;
+    max-width: 24rem;
+    height: auto;
+    margin-inline: auto;
+    overflow: visible;
+  }
+
+  .graph__box {
+    fill: var(--surface);
+    stroke: var(--line-strong);
+    stroke-width: 1;
+  }
+
+  .graph__name {
+    fill: var(--muted);
+    font-family: var(--mono);
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+
+  .graph__terminal {
+    fill: var(--line-strong);
+  }
+
+  .graph__line {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.25;
+  }
+
+  .graph__arrow {
+    fill: var(--line-strong);
+  }
+
+  .graph__label {
+    fill: var(--muted);
+    font-family: var(--sans);
+  }
+
+  .graph__node:not([data-state="idle"]) {
+    & .graph__box {
+      fill: var(--accent-soft);
+      stroke: var(--accent);
+    }
+
+    & .graph__name {
+      fill: var(--fg);
+    }
+
+    & .graph__terminal {
+      fill: var(--accent);
+    }
+  }
+
+  .graph__node[data-state="active"] .graph__box {
+    stroke-width: 2.5;
+  }
+
+  .graph__node[role="button"] {
+    cursor: pointer;
+
+    &:focus-visible {
+      outline: none;
+
+      & .graph__box {
+        stroke: var(--focus);
+        stroke-width: 3;
+      }
+    }
+  }
+
+  .graph__edge[data-taken="true"] {
+    & .graph__line {
+      stroke: var(--accent);
+      stroke-width: 2;
+    }
+
+    & .graph__arrow {
+      fill: var(--accent);
+    }
+
+    & .graph__label {
+      fill: var(--fg);
+      font-weight: 600;
+    }
+  }
+
+  /* Motion is CSS only and opt-in: nothing moves under reduced motion. */
+  @media (prefers-reduced-motion: no-preference) {
+    .graph__box,
+    .graph__name,
+    .graph__terminal,
+    .graph__line,
+    .graph__arrow,
+    .graph__label {
+      transition:
+        fill 240ms var(--ease),
+        stroke 240ms var(--ease);
+    }
+
+    .graph__node[data-state="active"] .graph__box {
+      animation: graph-active 900ms var(--ease) infinite alternate;
+    }
+  }
+
+  @keyframes graph-active {
+    to {
+      stroke-width: 1;
+    }
   }
 
   .empty {
