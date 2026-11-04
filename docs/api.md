@@ -603,7 +603,9 @@ curl -I http://127.0.0.1:8000/static/vendor/preact@10.29.8/dist/preact.mjs
 ---
 
 ### 12. `GET /`
-Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
+Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `trace-reducer.mjs` (the one logic module: trace events to view state), `sse.mjs` (reads the trace streams with `fetch()`), `components/` (`stage.mjs`, `graph.mjs`, `waterfall.mjs`), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
+
+The live trace reads `POST /scenarios/{scenario_id}/stream` ([section 1c](#1c-post-scenariosscenario_idstream)) or `POST /triage/stream` ([section 1a](#1a-post-triagestream)) as the events arrive and draws only what the stream carried: no expected path, no free text from the server. A stream that sends no event or ping for 30 s, or closes before `trace_finished`, is shown as "Connection lost" with its partial trace kept and a Replay button; a stream refused before it starts (404, 422) or a network error shows its message with Retry.
 
 #### Example cURL
 ```bash
