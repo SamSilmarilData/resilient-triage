@@ -84,3 +84,23 @@ def test_the_copy_comes_from_the_response_not_the_page(pages: GuardedPages):
     _open_chapters(page)
 
     assert page.evaluate(DRAWN_CHAPTERS) == _copy(body)
+
+
+def test_a_failed_catalogue_keeps_the_prose_and_offers_retry(pages: GuardedPages):
+    """GET /scenarios failing leaves the static prose up and a notice with Retry (#101)."""
+    page, watch = pages.open()
+    page.route("**/scenarios", lambda route: route.fulfill(status=503, body="down"))
+
+    open_shell(page)
+    page.wait_for_selector('[data-catalogue="failed"]', state="attached")
+
+    assert page.locator("#hook-title").is_visible()
+    assert page.locator("#guided-title").is_visible()
+    notice = page.locator('[data-catalogue="failed"] [role="alert"]')
+    assert "didn't load" in notice.inner_text()
+    assert [failure.split(" ")[0] for failure in watch.failed] == ["503"]
+
+    page.unroute("**/scenarios")
+    page.get_by_role("button", name="Retry").click()
+    page.wait_for_selector(CATALOGUE_READY, state="attached")
+    assert page.locator("[data-chapter]").count() == len(public_catalogue().chapters)
