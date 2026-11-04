@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 from harness import GuardedPages, open_shell
 
-from resilient_triage.config import settings
+from resilient_triage.config import Settings, settings
 
 if TYPE_CHECKING:
     from playwright.sync_api import Locator, Page
@@ -59,3 +59,41 @@ def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: Guarded
     ]
     assert len(pages.server.llm.calls) == 1, "the scripted harness model answered"
     assert page.locator('#stage-root [data-run-state="idle"]').count() == 1, "stage untouched"
+
+
+def _budget_of(runs: int) -> Settings:
+    """Settings allowing `runs` free-play graph runs a minute."""
+    return settings.model_copy(update={"free_play_runs_per_minute": runs})
+
+
+@pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
+def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: GuardedPages):
+    """Over the budget the run is shed with its retry-after; the same page answers the next."""
+    page, _ = pages.open()
+    open_shell(page)
+    page.evaluate("() => { window.notReloaded = true; }")
+    panel = _panel(page)
+
+    _ask(page, QUERY)
+    _wait_for_panel_run(page)
+    _ask(page, "Checkout latency doubled after the 14:00 deploy")
+    page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
+    _wait_for_panel_run(page)
+
+    notice = panel.locator("[data-shed-reason]")
+    assert notice.get_attribute("data-shed-reason") == "budget"
+    retry_after = int(notice.get_attribute("data-retry-after") or "0")
+    assert 1 <= retry_after <= 60
+    assert notice.inner_text() == (
+        f"The free-play budget is spent for this minute. Try again in {retry_after} s."
+    )
+    assert panel.locator("[data-run-line]").inner_text().startswith("Shed after ")
+    assert panel.locator("[data-model]").count() == 0
+    assert len(pages.server.llm.calls) == 1, "a shed run never reaches the model"
+
+    # A cache hit doesn't count against the budget: the same page, unreloaded, answers it.
+    _ask(page, QUERY)
+    page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="detached")
+    _wait_for_panel_run(page)
+    assert panel.locator("[data-run-line]").inner_text().startswith("Answered from cache")
+    assert page.evaluate("() => window.notReloaded") is True
