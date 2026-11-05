@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from langgraph.graph import END, START, StateGraph
@@ -130,14 +131,9 @@ def route_after_validation(
     return "fallback"
 
 
-def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageState, TriageState]:
-    """Compile the triage graph with no checkpointer: run state lives only in ainvoke (ADR-007)."""
-    graph = StateGraph(TriageState, context_schema=TriageDeps)
-    # Filled from get_graph() once compiled; each traced node reads it at run time.
-    routes: dict[tuple[str, str], str] = {}
-
-    # 1. Register nodes, each wrapped to record its trace events (ADR-008)
-    nodes: dict[str, Callable[..., Any]] = {
+# Each graph node and the function it runs; the inspector reads purpose and file from these.
+NODE_FUNCTIONS: Mapping[str, Callable[..., Any]] = MappingProxyType(
+    {
         "analyze_query": analyze_query_node,
         "collect_telemetry": collect_telemetry_node,
         "compensate_blindspots": compensate_blindspots_node,
@@ -150,12 +146,22 @@ def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageSt
         "fallback_report": fallback_report_node,
         "finalize_report": finalize_node,
     }
+)
+
+
+def build_triage_graph() -> CompiledStateGraph[TriageState, TriageDeps, TriageState, TriageState]:
+    """Compile the triage graph with no checkpointer: run state lives only in ainvoke (ADR-007)."""
+    graph = StateGraph(TriageState, context_schema=TriageDeps)
+    # Filled from get_graph() once compiled; each traced node reads it at run time.
+    routes: dict[tuple[str, str], str] = {}
+
+    # 1. Register nodes, each wrapped to record its trace events (ADR-008)
     # Per-node trace extras, beyond route_decided/node_started/node_finished.
     hooks: dict[str, _TraceHooks] = {
         "validate_report": _TraceHooks(confidence=_report_confidence),
         "finalize_report": _TraceHooks(on_ok=_record_reconciled),
     }
-    for name, node in nodes.items():
+    for name, node in NODE_FUNCTIONS.items():
         graph.add_node(name, _traced(name, node, routes, hooks.get(name, _TraceHooks())))
 
     # 2. Main flow edges

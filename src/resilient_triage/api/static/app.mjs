@@ -9,12 +9,21 @@ import { html } from "htm/preact";
 import { render } from "preact";
 import { Chapters } from "./components/chapter.mjs";
 import { FreePlay } from "./components/free-play.mjs";
+import { NodeList } from "./components/how-its-built.mjs";
+import { NodeInspector } from "./components/node-inspector.mjs";
 import { Stage } from "./components/stage.mjs";
 import { freePlaySource, scenarioSource } from "./sse.mjs";
-import { createRunController, idleRun, nextScenario, scenarioRun } from "./trace-reducer.mjs";
+import {
+  createRunController,
+  idleRun,
+  inspectorView,
+  nextScenario,
+  scenarioRun,
+} from "./trace-reducer.mjs";
 
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
+/** @typedef {import("./trace-reducer.mjs").GraphNode} GraphNode */
 
 /** The stage's current run, as the run controller last reported it. */
 const run = signal(idleRun());
@@ -50,7 +59,12 @@ export const freePlay = createRunController({
 
 /** The live-trace column, bound to the stage's signals. */
 function LiveStage() {
-  return html`<${Stage} run=${run.value} layout=${layout.value} onReplay=${() => stage.replay()} />`;
+  return html`<${Stage}
+    run=${run.value}
+    layout=${layout.value}
+    onReplay=${() => stage.replay()}
+    onSelectNode=${inspect}
+  />`;
 }
 
 /** The guided chapters, bound to the catalogue and the stage's run. */
@@ -100,6 +114,39 @@ function LiveFreePlay() {
   />`;
 }
 
+// The node inspector (#121): GET /graph/nodes, and the node it shows (null when closed).
+// A graph node on the stage and a button in How it's built's node list both open it.
+const graphNodes = signal(/** @type {GraphNode[] | "loading" | "failed"} */ ("loading"));
+const inspected = signal(/** @type {string | null} */ (null));
+
+/** @param {string} name */
+function inspect(name) {
+  inspected.value = name;
+}
+
+/** Fetch every node's inspector content into its signal. */
+async function loadGraphNodes() {
+  graphNodes.value = "loading";
+  try {
+    const response = await fetch("/graph/nodes");
+    graphNodes.value = response.ok ? (await response.json()).nodes : "failed";
+  } catch {
+    graphNodes.value = "failed";
+  }
+}
+
+function BuiltNodes() {
+  return html`<${NodeList} nodes=${graphNodes.value} onSelect=${inspect} onRetry=${loadGraphNodes} />`;
+}
+
+function Inspector() {
+  const close = () => {
+    inspected.value = null;
+  };
+  const view = inspectorView(graphNodes.value, inspected.value);
+  return html`<${NodeInspector} view=${view} onClose=${close} />`;
+}
+
 /**
  * Render a component into a mount point and mark the region as no longer busy.
  * @param {string} id
@@ -128,6 +175,9 @@ function main() {
   mount("stage-root", html`<${LiveStage} />`);
   mount("chapters-root", html`<${GuidedChapters} />`);
   mount("free-play-root", html`<${LiveFreePlay} />`);
+  loadGraphNodes();
+  mount("built-nodes-root", html`<${BuiltNodes} />`);
+  mount("node-inspector-root", html`<${Inspector} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.
   document.documentElement.dataset.shell = "ready";
 }
