@@ -187,3 +187,27 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
     graph = _panel(page).locator(".graph").bounding_box()
     assert graph is not None and graph["width"] >= 340
+
+
+def test_a_free_play_graph_node_opens_the_inspector(pages: GuardedPages):
+    """Free play's graph opens the node inspector too, by keyboard; Escape returns focus."""
+    page, watch = pages.open()
+    open_shell(page)
+    page.wait_for_selector('[data-graph-nodes="ready"]', state="attached")
+
+    _ask(page, unique_question())
+    _wait_for_panel_run(page)
+
+    node = _panel(page).get_by_role("button", name="validate_report, visited once")
+    node.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector('dialog.inspector[open][data-inspected="validate_report"]')
+    assert page.locator(".inspector__title").inner_text() == "validate_report"
+
+    page.keyboard.press("Escape")
+    page.wait_for_selector("dialog.inspector[open]", state="detached")
+    focused = page.evaluate(
+        "document.activeElement.closest('#free-play-root [data-node]')?.dataset.node"
+    )
+    assert focused == "validate_report"
+    assert watch.page_errors == []
