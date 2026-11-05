@@ -1,4 +1,4 @@
-"""Node: compensate_blindspots - backfills tripped breakers with historical cache context."""
+"""Node: compensate_blindspots - Backfills tripped breakers with historical cache context."""
 
 from typing import Any
 

@@ -100,14 +100,23 @@
           Each piece has a written decision record in the repository.
         </p>
         <ul class="built__list">
-          <li><b>A cyclic state machine</b> with no checkpointer, so every run is self-contained (ADR 0001, ADR 0007).</li>
-          <li><b>A semantic cache</b> on Redis vector search, falling back to memory when Redis is down (ADR 0002).</li>
-          <li><b>Circuit breakers and retries</b> around every telemetry source, under a deadline (ADR 0003).</li>
-          <li><b>Strict report contracts</b> with self-repair when the model's JSON doesn't validate (ADR 0004).</li>
-          <li><b>One model gateway</b> that owns failover and per-model cooldowns (ADR 0005, ADR 0006).</li>
-          <li><b>An execution trace</b>, streamed as server-sent events, that draws everything on this page (ADR 0008, ADR 0009).</li>
-          <li><b>A build-free page</b>: native modules, Preact and one stylesheet, all served from this origin (ADR 0010).</li>
+          <li><b>A cyclic state machine</b> with no checkpointer, so every run is self-contained (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0001-langgraph-cyclic-state-machine.md">ADR 0001</a>, <a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0007-no-checkpointing-on-the-request-path.md">ADR 0007</a>).</li>
+          <li><b>A semantic cache</b> on Redis vector search, falling back to memory when Redis is down (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0002-dual-engine-semantic-caching.md">ADR 0002</a>).</li>
+          <li><b>Circuit breakers and retries</b> around every telemetry source, under a deadline (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0003-pybreaker-and-tenacity-for-resilience.md">ADR 0003</a>).</li>
+          <li><b>Strict report contracts</b> with self-repair when the model's JSON doesn't validate (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0004-strict-pydantic-contracts-and-self-repair.md">ADR 0004</a>).</li>
+          <li><b>One model gateway</b> that owns failover and per-model cooldowns (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md">ADR 0005</a>, <a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0006-project-owned-llm-gateway.md">ADR 0006</a>).</li>
+          <li><b>An execution trace</b>, streamed as server-sent events, that draws everything on this page (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0008-execution-trace.md">ADR 0008</a>, <a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0009-scenario-runs-are-isolated.md">ADR 0009</a>).</li>
+          <li><b>A build-free page</b>: native modules, Preact and one stylesheet, all served from this origin (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0010-build-free-vendored-frontend.md">ADR 0010</a>).</li>
         </ul>
+        <h3 id="built-nodes-title">The graph's nodes</h3>
+        <p>
+          The graph is wired in
+          <a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/src/resilient_triage/graph/builder.py"><code>graph/builder.py</code></a>,
+          one node per module. Select a node here or on the live trace to see what it does, the
+          file it lives in, the settings that tune it and the decisions behind it.
+        </p>
+        <div id="built-nodes-root" aria-busy="true"></div>
+        <div id="node-inspector-root"></div>
         <p>The HTTP API is documented at <a href="/docs">/docs</a>.</p>
       </div>
     </section>
