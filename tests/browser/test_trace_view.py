@@ -291,6 +291,58 @@ def test_a_silent_stream_is_lost_after_30_seconds_and_pings_keep_it_alive(pages:
     assert page.locator("[data-run-line]").inner_text() == "Connection lost"
 
 
+# page.evaluate script: feed stream messages to MANUAL_SOURCE's run, then wait until the stage's
+# controller has folded them all and two frames have passed, so any redraw they cause is drawn.
+FEED_AND_SETTLE = """async (messages) => {
+  const {stage} = await import("/static/app.mjs");
+  const target = stage.view.trace.events.length + messages.length;
+  for (const message of messages) window.feed(message);
+  while (stage.view.trace.events.length < target) await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r));
+}"""
+SKIP_TO_END = """async () => (await import("/static/app.mjs")).stage.skipToEnd()"""
+
+
+def _messages(events: list[TraceEvent]) -> list[dict[str, Any]]:
+    """Trace events as MANUAL_SOURCE stream messages."""
+    return [{"kind": "event", "event": json.loads(e.model_dump_json())} for e in events]
+
+
+def test_skip_to_end_mid_run_holds_the_stage_until_trace_finished(pages: GuardedPages):
+    """Skip to end on a live run: later events draw nothing until trace_finished, which then
+    shows the whole final trace at once, as a run played through does."""
+    events = stream_scenario(pages.server, "self-repair")
+    cut = next(i for i, e in enumerate(events) if isinstance(e, NodeFinished)) + 1
+    page, watch = pages.open()
+    open_shell(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.evaluate(MANUAL_SOURCE)
+    page.evaluate(FEED_AND_SETTLE, _messages(events[:cut]))
+    wait_for_run(page, "streaming")
+    rows_at_skip = page.locator(".waterfall__row").count()
+    visits_at_skip = page.evaluate(VISITED_NODES)
+    assert rows_at_skip > 0
+
+    page.evaluate(SKIP_TO_END)
+    page.evaluate(FEED_AND_SETTLE, _messages(events[cut:-1]))
+    assert page.locator("[data-run-line]").inner_text() == "Skipping to the end"
+    assert page.locator(".waterfall__row").count() == rows_at_skip, "no step-by-step reveal"
+    assert page.evaluate(VISITED_NODES) == visits_at_skip
+    assert page.locator('[role="status"]').inner_text() == ""
+
+    page.evaluate(FEED_AND_SETTLE, _messages(events[-1:]))
+    wait_for_run(page)
+    summary = summarize(events)
+    assert page.evaluate(VISITED_NODES)["generate_report"] == 2
+    assert {n for n, c in page.evaluate(VISITED_NODES).items() if c} == {
+        visit.node for visit in summary.nodes
+    }
+    line = page.locator("[data-run-line]").inner_text()
+    assert line.startswith("Report in ") and "1 self-repair round" in line
+    assert page.locator('[role="status"]').inner_text() == f"Run finished: {line}"
+    assert watch.page_errors == []
+
+
 def test_a_refused_stream_shows_its_error_with_retry(pages: GuardedPages):
     """A 404 before the stream starts is an inline error with Retry, not a lost run."""
     page, watch = pages.open()

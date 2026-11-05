@@ -181,11 +181,16 @@ def test_the_guided_flow_completes_with_the_keyboard_alone(
     # Focus stays on Play while the stage scrolls into view (below the chapters at phone width).
     assert page.evaluate("document.activeElement.dataset.action") == "play"
 
-    # Skip moves on to the next scenario and lands focus on it.
-    _tab_to(page, f'[data-scenario="{first}"] [data-action="skip"]', regions)
+    # The next scenario, by Skip to end: its run's end state shows at once, focus stays put.
+    _tab_to(page, f"#scenario-{second}-toggle", regions)
     page.keyboard.press("Enter")
-    page.wait_for_function(f"document.activeElement?.id === 'scenario-{second}-toggle'")
-    _focused(page, f"#scenario-{second}-toggle")
+    skip = f'[data-scenario="{second}"] [data-action="skip"]'
+    _tab_to(page, skip, regions)
+    page.keyboard.press("Enter")
+    page.wait_for_selector(f'[data-scenario="{second}"] [data-report]', state="attached")
+    line = page.locator("#stage-root [data-run-line]").inner_text()
+    assert region.inner_text() == f"Run finished: {line}"
+    _focused(page, skip)
 
     # Free play: the form in order, submitted from the keyboard, its run announced too.
     _tab_to(page, "#free-play-query", regions)
@@ -250,7 +255,7 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
 def test_every_chapters_final_state_has_no_serious_axe_violations(
     pages: GuardedPages, chapter_id: str, scheme: str
 ):
-    """Play a chapter's scenarios in order with Play and Skip; its end state passes axe."""
+    """Play a chapter's scenarios in order, opening each in turn; its end state passes axe."""
     chapter = next(c for c in public_catalogue().chapters if c.id == chapter_id)
     ids = [scenario.id for scenario in chapter.scenarios]
     page, watch = pages.open(color_scheme=scheme)
@@ -258,15 +263,13 @@ def test_every_chapters_final_state_has_no_serious_axe_violations(
     page.wait_for_selector(CATALOGUE_READY, state="attached")
     page.wait_for_selector(GRAPH_READY, state="attached")
 
-    page.locator(f"#scenario-{ids[0]}-toggle").click()
-    for index, scenario_id in enumerate(ids):
+    for scenario_id in ids:
+        page.locator(f"#scenario-{scenario_id}-toggle").click()
         scenario = page.locator(f'[data-scenario="{scenario_id}"]')
         scenario.locator('[data-action="play"]').click()
         page.wait_for_selector(
             f'[data-scenario="{scenario_id}"] [data-report]', state="attached", timeout=30_000
         )
-        if index < len(ids) - 1:
-            scenario.locator('[data-action="skip"]').click()
     page.locator(f'[data-scenario="{ids[-1]}"] [data-action="show-everything"]').click()
 
     violations = axe_violations(page)

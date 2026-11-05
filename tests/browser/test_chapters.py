@@ -1,6 +1,6 @@
 """The guided chapters in Chromium (#119): chapters and scenarios drawn from GET /scenarios.
 
-A scenario opens inline (its setup notes, Play and Skip, its one-line summary, "Show
+A scenario opens inline (its setup notes, Play and Skip to end, its one-line summary, "Show
 everything" and the report) and plays on the pinned stage. Everything the page shows is
 checked against the live app's own catalogue and the Python summary of the same run.
 """
@@ -55,6 +55,20 @@ TAKEN_EDGES = """() => [...document.querySelectorAll('[data-edge][data-taken="tr
 VISITED_NODES = """() => Object.fromEntries([...document.querySelectorAll("[data-node]")]
   .filter((node) => !node.dataset.node.startsWith("__"))
   .map((node) => [node.dataset.node, Number(node.dataset.visits)]))"""
+# page.evaluate script: record every state the stage draws from here on into
+# window.stageFrames (run state, headline, waterfall rows, lit graph nodes).
+RECORD_STAGE = """() => {
+  const root = document.querySelector("#stage-root");
+  const frame = () => ({
+    state: root.querySelector(".run")?.dataset.runState ?? null,
+    line: root.querySelector("[data-run-line]")?.textContent ?? null,
+    rows: root.querySelectorAll(".waterfall__row").length,
+    visited: root.querySelectorAll('[data-node]:not([data-state="idle"])').length,
+  });
+  window.stageFrames = [];
+  new MutationObserver(() => window.stageFrames.push(frame()))
+    .observe(root, {subtree: true, childList: true, attributes: true, characterData: true});
+}"""
 # One scenario per chapter, in chapter order.
 PLAYED = ["healthy-run", "reconciliation", "shed-request", "everything-down"]
 
@@ -139,9 +153,14 @@ def _path_edges(path: list[str]) -> set[tuple[str, str]]:
     return {pair for pair in zip(walk, walk[1:], strict=False) if pair in LAYOUT_EDGES}
 
 
+def _scenario_selector(scenario_id: str, selector: str = "") -> str:
+    """A selector inside one scenario's disclosure."""
+    return f'[data-scenario="{scenario_id}"] {selector}'.strip()
+
+
 def _scenario(page: "Page", scenario_id: str, selector: str = "") -> Any:
     """A locator inside one scenario's disclosure."""
-    return page.locator(f'[data-scenario="{scenario_id}"] {selector}'.strip())
+    return page.locator(_scenario_selector(scenario_id, selector))
 
 
 def test_opening_a_scenario_shows_its_setup_and_never_an_expected_path(pages: GuardedPages):
@@ -219,18 +238,43 @@ def test_a_played_scenario_ends_with_its_trace_summary_and_report(
     assert watch.failed == []
 
 
-def test_skip_opens_the_next_scenario_and_moves_focus_to_it(pages: GuardedPages):
-    """Skip closes this scenario and opens the next in catalogue order, across chapters."""
+def test_skip_to_end_runs_the_scenario_and_shows_only_its_final_state(pages: GuardedPages):
+    """Skip to end, before Play: the stage stays still while the run streams, then shows the
+    final trace and the scenario its report at once. Focus stays on the button."""
+    page, watch = pages.open()
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator("#scenario-self-repair-toggle").click()
+    skip = _scenario(page, "self-repair", '[data-action="skip"]')
+    assert skip.inner_text() == "Skip to end"
+
+    page.evaluate(RECORD_STAGE)
+    skip.click()
+    page.wait_for_selector(_scenario_selector("self-repair", "[data-report]"), state="attached")
+
+    frames = page.evaluate("() => window.stageFrames")
+    streaming = [frame for frame in frames if frame["state"] == "streaming"]
+    assert streaming, "the run must stream before it finishes"
+    assert {(f["line"], f["rows"], f["visited"]) for f in streaming} == {
+        ("Skipping to the end", 0, 0)
+    }, "a skipped run reveals nothing step by step"
+    final = frames[-1]
+    assert final["state"] == "finished"
+    assert final["line"].startswith("Report in ") and "1 self-repair round" in final["line"]
+    assert final["visited"] > 0 and final["rows"] > 0
+    assert page.evaluate(VISITED_NODES)["generate_report"] == 2
+    assert _scenario(page, "self-repair", "[data-scenario-line]").inner_text() == final["line"]
+    assert skip.get_attribute("aria-disabled") == "true", "nothing left to skip"
+    assert page.evaluate("document.activeElement.dataset.action") == "skip"
+    assert watch.page_errors == []
+
+
+def test_skip_to_end_is_offered_on_every_scenario_including_the_last(pages: GuardedPages):
+    """Skip to end replaces "Skip to <next>": every scenario has it, the last one too."""
     page, _ = pages.open()
     _open_chapters(page)
-
-    page.locator("#scenario-model-failover-toggle").click()
-    _scenario(page, "model-failover", '[data-action="skip"]').click()
-
-    next_toggle = page.locator("#scenario-self-repair-toggle")
-    assert next_toggle.get_attribute("aria-expanded") == "true"
-    assert page.locator('[data-scenario][data-open="true"]').count() == 1
-    page.wait_for_function("document.activeElement?.id === 'scenario-self-repair-toggle'")
     last = public_catalogue().chapters[-1].scenarios[-1].id
     page.locator(f"#scenario-{last}-toggle").click()
-    assert _scenario(page, last, '[data-action="skip"]').count() == 0
+    skip = _scenario(page, last, '[data-action="skip"]')
+    assert skip.inner_text() == "Skip to end"
+    assert skip.get_attribute("aria-disabled") == "false"
