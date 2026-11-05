@@ -51,3 +51,18 @@ def test_retry_after_is_at_least_one_second() -> None:
 
     assert not budget.admit()
     assert budget.retry_after_s() == 1
+
+
+def test_a_refund_drops_that_admission_and_keeps_one_made_while_it_waited() -> None:
+    clock = FakeClock()
+    budget = RunBudget(runs_per_minute=2, clock=clock)
+    first = budget.admit()  # then waits for a run slot
+    clock.now += 3.0
+    assert budget.admit()  # a second run is admitted meanwhile
+
+    assert first
+    budget.refund(first)  # the first is shed for capacity: no graph ran
+
+    assert budget.admit()
+    assert not budget.admit()
+    assert budget.retry_after_s() == 60  # the oldest kept run is the second, at t=3; now t=3
