@@ -117,7 +117,9 @@ def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: Guar
     _wait_for_panel_run(page, "error")
 
     panel = _panel(page)
-    assert panel.locator("[data-run-line]").inner_text().startswith("Couldn't reach the server")
+    line = panel.locator("[data-run-line]").inner_text()
+    assert line.startswith("Couldn't reach the server")
+    assert panel.locator('[role="status"]').inner_text() == f"Run failed: {line}"
     assert page.locator('#stage-root [data-run-state="idle"]').count() == 1, "stage untouched"
     assert page.locator("#chapters-root .notice").count() == 0
     assert len(watch.failed) == 1
@@ -149,6 +151,7 @@ def test_a_dropped_stream_is_lost_in_this_panel_then_replays(pages: GuardedPages
 
     panel = _panel(page)
     assert panel.locator("[data-run-line]").inner_text() == "Connection lost"
+    assert panel.locator('[role="status"]').inner_text() == "Run stopped: Connection lost"
     assert panel.locator('.run[data-dimmed="true"]').count() == 1
 
     page.unroute(url)

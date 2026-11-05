@@ -1,9 +1,10 @@
 // @ts-check
 // The live-trace stage (#118): one run's headline, its graph above its waterfall. Dumb by
 // design: it draws what trace-reducer.mjs derives and calls back for Replay and Retry.
-// `data-run-state` on the stage is the run's status; browser tests wait on it.
+// `data-run-state` on the stage is the run's status; browser tests wait on it. Its one live
+// region says only how a run ended (runAnnouncement), not the headline's running tick.
 import { html } from "htm/preact";
-import { graphView, runHeadline } from "../trace-reducer.mjs";
+import { graphView, runAnnouncement, runHeadline } from "../trace-reducer.mjs";
 import { Graph } from "./graph.mjs";
 import { Waterfall } from "./waterfall.mjs";
 
@@ -22,7 +23,8 @@ export function Stage({ run, layout, onReplay, onSelectNode }) {
   const headline = runHeadline(run);
   return html`
     <div class="run" data-run-state=${run.status} data-dimmed=${String(headline.dimmed)}>
-      <div class="run__head" role="status">
+      <p class="visually-hidden" role="status" data-run-announcement>${runAnnouncement(run)}</p>
+      <div class="run__head">
         ${headline.line
           ? html`<p class="run__line" data-run-line>${headline.line}</p>`
           : html`<p class="run__line run__line--idle">

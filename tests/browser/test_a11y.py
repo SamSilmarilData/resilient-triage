@@ -66,10 +66,10 @@ FOCUS_STATE = """async (target) => {
     atTarget: el.matches(target),
   };
 }"""
-# page.evaluate script: whether an element's box is (at least partly) inside the viewport.
-IN_VIEW = """(selector) => {
-  const r = document.querySelector(selector).getBoundingClientRect();
-  return r.bottom > 0 && r.top < innerHeight;
+# page.evaluate script: whether an element's top edge is on screen, so it reads from its start.
+TOP_IN_VIEW = """(selector) => {
+  const top = document.querySelector(selector).getBoundingClientRect().top;
+  return top >= 0 && top < innerHeight;
 }"""
 
 
@@ -138,11 +138,12 @@ def test_the_guided_flow_completes_with_the_keyboard_alone(
     region = _announcement(page, "#stage-root")
     assert region.inner_text() == ""
     page.keyboard.press("Enter")
-    page.wait_for_function(IN_VIEW, arg="#stage-root")
+    page.wait_for_function(TOP_IN_VIEW, arg="#stage-root .graph")
     wait_for_run(page)
     line = page.locator("#stage-root [data-run-line]").inner_text()
     assert region.inner_text() == f"Run finished: {line}"
-    _focused(page, f'[data-scenario="{first}"] [data-action="play"]')
+    # Focus stays on Play while the stage scrolls into view (at phone width it sits above).
+    assert page.evaluate("document.activeElement.dataset.action") == "play"
 
     # Skip moves on to the next scenario and lands focus on it.
     _tab_to(page, f'[data-scenario="{first}"] [data-action="skip"]')
