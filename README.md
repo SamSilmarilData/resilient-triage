@@ -37,7 +37,7 @@
 
 - **Scenario runs** (guided chapters): 13 scenarios in four chapters (fast paths, the model misbehaving, dependencies failing, everything at once), each setting up one situation (a cache hit, a malformed model reply, a tripped breaker, every run slot busy, everything down) and playing it on the pinned live trace, then shows the run's one-line summary, every trace event and the triage report. Scenarios run on their own private collaborators with scripted model replies (ADR-009), so they never touch the shared cache, breakers, `/metrics` or your Groq quota, and they behave the same with or without a Groq key.
 - **Free play**: type your own incident and it runs through the real gateway (`POST /triage/stream`): the shared semantic cache, live telemetry and Groq when `GROQ_API_KEY` is set, otherwise the scripted simulation. Free play is capped at `FREE_PLAY_RUNS_PER_MINUTE` graph runs; cache hits are free.
-- **Admin key**: the page needs no key. Breaking the *shared* runtime by hand (`POST /chaos/inject`, `/resilience/reset`, `/cache/clear`) needs the `X-Admin-Key` header to match `ADMIN_API_KEY`; with no key configured those routes refuse everyone (`403`). Use **Authorize** in `/docs` ([API reference](docs/api.md)).
+- **Admin key**: the page needs no key. Breaking the *shared* runtime by hand (`POST /chaos/inject`, `/resilience/reset`, `/cache/clear`) needs the `X-Admin-Key` header to match `ADMIN_API_KEY`; with no key configured those routes refuse everyone (`403`). Use **Authorize** in `/docs`; see [Admin key](docs/deployment.md#admin-key).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/free-play-dark.png">

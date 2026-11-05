@@ -15,13 +15,12 @@ Standard LLM applications are fragile because they treat external dependencies a
 `resilient-triage` is built on the principle of **Zero-Downtime Compensatory Routing**:
 > *Every component must have a deterministic fallback path. No upstream timeout, socket drop, rate limit, or invalid model output is permitted to crash the service or return an HTTP 500 error to users.*
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/scenario-run-dark.png">
+  <img src="img/scenario-run-light.png" alt="The self-repair scenario on the page's live trace: the state machine with the taken path lit, above its waterfall" width="100%">
+</picture>
 <p align="center">
-  <a href="state-machine-diagram.html">
-    <img src="state-machine-diagram.svg" alt="Zero-Downtime Resilience & State Machine Lifecycle" width="100%">
-  </a>
-</p>
-<p align="center">
-  <em>Figure 1: Complete resilience lifecycle showing guarded telemetry probing, adaptive blindspot bridging, 1-shot self-repair loops, and deterministic fallback. <a href="state-machine-diagram.html">Interactive Lifecycle View</a> &middot; <a href="architecture-diagram.html">System Topology View</a></em>
+  <em>Figure 1: The resilience lifecycle as the explorable page plays it: a self-repair scenario's run, with the compensation, repair, refine and fallback detours drawn beside the path it took. Play the other scenarios at <code>/</code> to see each detour taken. <a href="architecture-diagram.svg">System topology</a></em>
 </p>
 
 ---
