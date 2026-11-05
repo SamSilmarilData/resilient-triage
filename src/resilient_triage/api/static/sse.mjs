@@ -30,7 +30,7 @@ export class StreamHttpError extends Error {
 }
 
 /** An incremental SSE parser: push decoded text in any chunking, get whole messages back. */
-export function createSseParser() {
+function createSseParser() {
   let buffer = "";
   return {
     /**
@@ -75,7 +75,7 @@ function parseBlock(block) {
  * @param {Response} response
  * @returns {AsyncGenerator<StreamMessage>}
  */
-export async function* readSse(response) {
+async function* readSse(response) {
   if (!response.body) return;
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   const parser = createSseParser();

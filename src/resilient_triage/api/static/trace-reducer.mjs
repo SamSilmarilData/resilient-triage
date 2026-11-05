@@ -2,6 +2,7 @@
 // The trace-to-view reducer (ADR 0008, #118): the page's one logic module. Everything the page
 // shows about a run is derived here from the run's trace events; components only draw what
 // these functions return (CODING_STANDARDS.md, Frontend).
+import { StreamHttpError } from "./sse.mjs";
 
 /**
  * One trace event as it arrives on the wire (trace/events.py); `kind` discriminates.
@@ -73,12 +74,12 @@ const END = "__end__";
  * @param {string} source
  * @param {string} target
  */
-export function edgeKey(source, target) {
+function edgeKey(source, target) {
   return `${source}>${target}`;
 }
 
 /** @returns {TraceView} The view before any event. */
-export function initialTrace() {
+function initialTrace() {
   return {
     events: [],
     scenarioId: null,
@@ -625,7 +626,7 @@ export const SOURCE_NAMES =/** @type {Record<string, string>} */ ({
  * A source's display name.
  * @param {string} source
  */
-export function sourceName(source) {
+function sourceName(source) {
   return SOURCE_NAMES[source] ?? source;
 }
 
@@ -633,7 +634,7 @@ export function sourceName(source) {
  * A duration for people: "under 1 ms", "917 ms", "1.8 s".
  * @param {number} ms
  */
-export function formatMs(ms) {
+function formatMs(ms) {
   if (ms < 0.5) return "under 1 ms";
   if (ms < 999.5) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
@@ -690,7 +691,7 @@ export function summaryLine(summary) {
 // with its partial trace kept. Never an endless spinner.
 
 /** How long a stream may go without an event or a ping before the run counts as lost. */
-export const STREAM_WATCHDOG_MS = 30_000;
+const STREAM_WATCHDOG_MS = 30_000;
 
 /**
  * idle: nothing played yet. streaming: events arriving. finished: trace_finished arrived
@@ -833,8 +834,7 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
       }
       end("lost"); // closed before trace_finished
     } catch (error) {
-      const refused = error instanceof Error && error.name === "StreamHttpError";
-      if (refused) end("error", error.message);
+      if (error instanceof StreamHttpError) end("error", error.message);
       else if (view.trace.events.length) end("lost");
       else end("error", UNREACHABLE);
     }
@@ -853,13 +853,6 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
     /** Play the last source again from the start (the Replay and Retry buttons). */
     replay() {
       return lastSource ? play(lastSource) : Promise.resolve(view);
-    },
-    /** Stop the current run, if any, and go back to idle. */
-    stop() {
-      runId++;
-      current?.abort();
-      current = null;
-      set(idleRun());
     },
     /** The current view. */
     get view() {
@@ -1055,13 +1048,13 @@ export function eventLog(trace) {
  */
 
 /** Where the repository's files are browsed. */
-export const REPO_BLOB_URL = "https://github.com/SamSilmarilData/resilient-triage/blob/main/";
+const REPO_BLOB_URL = "https://github.com/SamSilmarilData/resilient-triage/blob/main/";
 
 /**
  * A repository-relative path's URL on GitHub.
  * @param {string} path
  */
-export function repoUrl(path) {
+function repoUrl(path) {
   return REPO_BLOB_URL + path;
 }
 
