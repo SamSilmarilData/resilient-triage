@@ -9,7 +9,7 @@
 [![Redis 8](https://img.shields.io/badge/Redis_8-RediSearch_HNSW-DC382D.svg?style=flat&logo=redis&logoColor=white)](https://redis.io/)
 [![Groq LPU](https://img.shields.io/badge/Groq_LPU-Qwen_3.8_27B-F55036.svg?style=flat)](https://groq.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?style=flat&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
-[![Tests Passing](https://img.shields.io/badge/Tests-402_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
+[![CI](https://github.com/SamSilmarilData/resilient-triage/actions/workflows/ci.yml/badge.svg)](https://github.com/SamSilmarilData/resilient-triage/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 
 ---
@@ -134,22 +134,17 @@ docker compose up -d --build
 
 ## 🧪 Testing & Verification
 
-### Automated Pytest Suite (85 Tests)
+### Automated Pytest Suite
 
 ```bash
-.venv/bin/pytest tests/ -v
+./scripts/check.sh            # ruff, ruff format, mypy, pytest, as CI runs them
+./scripts/check.sh --browser  # the Playwright tier (needs the `browser` extra and Chromium)
 ```
 
-```
-============================== 85 passed in 1.80s ==============================
-- tests/test_api.py: 24 passed (FastAPI endpoints, middleware, load shedding, admin auth, metrics)
-- tests/test_cache.py: 17 passed (HNSW indexing, LRU caching, disconnect failover, scope isolation, offline fallback)
-- tests/test_graph.py: 16 passed (LangGraph state machine, self-repair loops)
-- tests/test_schemas.py: 10 passed (Pydantic v2 strict models, confidence bounds, enum validation)
-- tests/test_telemetry.py: 9 passed (Statuspage parsing, 10s short-TTL cache, dynamic probe routing)
-- tests/test_retry.py: 5 passed (Tenacity backoff, jitter, HTTP 429 retries)
-- tests/test_circuit_breaker.py: 4 passed (Pybreaker state transitions, snapshots, half-open probing)
-```
+The suite runs offline (scripted LLM, canned Statuspage, in-memory cache fallback when Redis is
+absent). It covers the API routes and streams, the semantic cache and its failover, the LangGraph
+state machine and self-repair loops, the report schemas, telemetry probing, retries and circuit
+breakers, the scenario catalogue and the page in headless Chromium.
 
 ### Live Smoke Test Battery (9/9 Steps)
 
