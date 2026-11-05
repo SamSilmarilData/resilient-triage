@@ -133,7 +133,17 @@ The browser tier (`tests/browser/`) runs the page in headless Chromium through P
 - **Set up once**: `.venv/bin/pip install -e ".[test,browser]"`, then `.venv/bin/playwright install chromium` (downloads the browser; run it outside pytest).
 - **Run**: `./scripts/check.sh --browser` runs only this tier (extra arguments go to pytest). It fails, never skips, when Playwright or Chromium is missing; plain `./scripts/check.sh` never needs either.
 - **CI**: the `browser` job installs `.[test,browser]`, restores `~/.cache/ms-playwright` keyed by the Playwright version, runs `playwright install --with-deps --only-shell chromium` (system libraries are installed even on a cache hit) and then `./scripts/check.sh --browser`. It needs no Redis and no embedding model.
+- **Screenshots**: see [Screenshots](#screenshots) below; they use this tier's harness.
 - **axe-core** is test-only, under `tests/vendor/` with its licenses and `tests/vendor/manifest.json` (same format as the page's). `python scripts/vendor.py verify --dir tests/vendor` checks it offline, as the regular test run does. To bump it, update the version, tarball, integrity and sha256 values in that manifest by hand and replace the files.
+
+---
+
+## Screenshots
+
+The README's and docs' page screenshots (`docs/img/<name>-light.png` and `-dark.png`, embedded with `<picture>` so GitHub shows the one matching the reader's theme) are produced by `scripts/screenshots.py`, run by hand after a visible page change; nothing regenerates them in CI.
+
+- **Run**: `.venv/bin/python scripts/screenshots.py` (needs the browser tier's setup above; `--out <dir>` writes elsewhere). It serves the app on loopback over the browser tier's scripted runtime (scripted model replies, canned Statuspage, emptied cache), so it needs no Groq key, Redis or network, and it aborts any request off the app's origin. It captures the top of the page, the self-repair scenario after its run, and a finished free-play run, at 1280 px wide and 2x scale with reduced motion.
+- **Check**: `tests/test_doc_images.py`, in the regular test run, fails when the README or any doc under `docs/` references an image that doesn't exist. It doesn't compare pixels: review the regenerated PNGs in the diff.
 
 ---
 

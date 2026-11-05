@@ -19,12 +19,10 @@ During high-severity incidents, the infrastructure supporting monitoring and ale
 ## 2. System Architecture & Component Interactions
 
 <p align="center">
-  <a href="architecture-diagram.html">
-    <img src="architecture-diagram.svg" alt="Resilient Incident Triage Architecture" width="100%">
-  </a>
+  <img src="architecture-diagram.svg" alt="Resilient Incident Triage Architecture" width="100%">
 </p>
 <p align="center">
-  <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation. <a href="architecture-diagram.html">Open interactive view &rarr;</a></em>
+  <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation.</em>
 </p>
 
 ### App runtime
@@ -154,13 +152,12 @@ The page is build-free (ADR-010): native ES modules, one stylesheet and self-hos
 
 ### 5. LangGraph Cyclic State Machine Topology
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/scenario-run-dark.png">
+  <img src="img/scenario-run-light.png" alt="The self-repair scenario on the page's live trace: the state machine with the taken path lit, above its waterfall" width="100%">
+</picture>
 <p align="center">
-  <a href="state-machine-diagram.html">
-    <img src="state-machine-diagram.svg" alt="LangGraph State Machine & Resilience Lifecycle" width="100%">
-  </a>
-</p>
-<p align="center">
-  <em>Figure 2: LangGraph cyclic state machine lifecycle showing the primary execution rail, adaptive recovery detours (blindspot compensation & self-repair), and terminal resolution outcomes. <a href="state-machine-diagram.html">Open interactive view &rarr;</a></em>
+  <em>Figure 2: The LangGraph state machine as the explorable page draws it (`static/graph-layout.json`, kept equal to `get_graph()` by a test), here after the self-repair scenario: the taken nodes and routes are lit, the repair loop included. Captured by `scripts/screenshots.py`.</em>
 </p>
 
 - **`analyze_query`**: Asks the guarded telemetry probe which **Targeted sources** to read (`runtime.context.telemetry.select_targets(query, service_filter)`) and writes them, sorted, as `targeted_sources`. Each Telemetry source carries its own keywords (Statuspage the external set, Cluster Sentinel the internal set), matched as whole words in the query and scope; a query that matches no source's keywords targets every source. The node holds no keyword sets or source names, so adding a source means writing one adapter and registering it with the probe.

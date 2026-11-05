@@ -28,30 +28,43 @@
 
 ## 🖥️ Explorable Page (Served at `/`)
 
-`/` serves a build-free page (ADR-010) that explains a triage run by playing it: guided scenarios break one dependency at a time while a graph and a timeline draw the real execution trace, then free play runs your own question. The page shell is in place (static prose, layout, light and dark themes); the scenarios, trace view and free play are being built on top of it (tracking issue #104). Everything it loads, Preact, htm, Signals and the Inter and JetBrains Mono fonts included, is vendored and served from the app's own origin.
+`/` serves a build-free page (ADR-010) that explains a triage run by playing it. A graph of the triage state machine and a waterfall timeline draw the run's real execution trace as it streams; select any node to see what it does, its file, the settings that tune it and the ADRs behind it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/page-dark.png">
+  <img src="docs/img/page-light.png" alt="The explorable page: the hook and the guided scenario chapters" width="100%">
+</picture>
+
+- **Scenario runs** (guided chapters): 13 scenarios in four chapters (fast paths, the model misbehaving, dependencies failing, everything at once), each setting up one situation (a cache hit, a malformed model reply, a tripped breaker, every run slot busy, everything down) and playing it on the pinned live trace, then shows the run's one-line summary, every trace event and the triage report. Scenarios run on their own private collaborators with scripted model replies (ADR-009), so they never touch the shared cache, breakers, `/metrics` or your Groq quota, and they behave the same with or without a Groq key.
+- **Free play**: type your own incident and it runs through the real gateway (`POST /triage/stream`): the shared semantic cache, live telemetry and Groq when `GROQ_API_KEY` is set, otherwise the scripted simulation. Free play is capped at `FREE_PLAY_RUNS_PER_MINUTE` graph runs; cache hits are free.
+- **Admin key**: the page needs no key. Breaking the *shared* runtime by hand (`POST /chaos/inject`, `/resilience/reset`, `/cache/clear`) needs the `X-Admin-Key` header to match `ADMIN_API_KEY`; with no key configured those routes refuse everyone (`403`). Use **Authorize** in `/docs`; see [Admin key](docs/deployment.md#admin-key).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/free-play-dark.png">
+  <img src="docs/img/free-play-light.png" alt="Free play: your own incident streamed through the live graph and waterfall" width="100%">
+</picture>
+
+Everything the page loads, Preact, htm, Signals and the Inter and JetBrains Mono fonts included, is vendored and served from the app's own origin. The screenshots are captured from the app on a scripted runtime by `scripts/screenshots.py` (run by hand; see [deployment](docs/deployment.md#screenshots)).
 
 ---
 
 ## 🏛️ System Architecture
 
 <p align="center">
-  <a href="docs/architecture-diagram.html">
-    <img src="docs/architecture-diagram.svg" alt="Resilient Incident Triage Architecture" width="100%">
-  </a>
+  <img src="docs/architecture-diagram.svg" alt="Resilient Incident Triage Architecture" width="100%">
 </p>
 <p align="center">
-  <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation. <a href="docs/architecture-diagram.html">Open interactive view &rarr;</a></em>
+  <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation.</em>
 </p>
 
 ### 🔄 LangGraph State Machine & Resilience Lifecycle
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/scenario-run-dark.png">
+  <img src="docs/img/scenario-run-light.png" alt="A scenario run on the live trace: the LangGraph state machine with the taken path lit, above its waterfall" width="100%">
+</picture>
 <p align="center">
-  <a href="docs/state-machine-diagram.html">
-    <img src="docs/state-machine-diagram.svg" alt="LangGraph State Machine Lifecycle" width="100%">
-  </a>
-</p>
-<p align="center">
-  <em>Figure 2: LangGraph cyclic state machine lifecycle showing the primary execution rail, adaptive recovery detours (blindspot compensation & self-repair), and terminal resolution outcomes. <a href="docs/state-machine-diagram.html">Open interactive view &rarr;</a></em>
+  <em>Figure 2: The LangGraph state machine as the page draws it, here for a played scenario: the nodes and routes the run took are lit, recovery detours (blindspot compensation, self-repair) included, above a waterfall of every node, model call and telemetry read at its real timing.</em>
 </p>
 
 ---
@@ -156,7 +169,6 @@ Explore the architecture, resilience engineering, API specifications, and archit
 - 🛡️ **[Resilience Engineering Deep-Dive](docs/resilience.md)**: Finite state machines, full jitter exponential backoff formulas, and zero-downtime cache failovers.
 - 🏛️ **[System Architecture](docs/architecture.md)**: State machine topology, cyclic bounds, dynamic tool dispatch, and unified state management.
 - 📋 **[Data Contracts & Schemas](docs/schemas.md)**: Strict Pydantic v2 data models (`extra="forbid"`), enums, and state models.
-- 🎬 **[Interactive SRE Demo Guide](docs/demo.md)**: 5-Act presentation script and walkthrough instructions for live demonstrations.
 - ☁️ **[Free Cloud Deployment](docs/deployment.md)**: 100% free hosting recipes on Hugging Face Spaces and Render.com.
 - ⚖️ **[Architecture Decision Records (MADR)](docs/decisions/)**:
   - [ADR 0001: LangGraph Cyclic State Machine](docs/decisions/0001-langgraph-cyclic-state-machine.md)
@@ -203,14 +215,15 @@ resilient-triage/
 ├── scripts/
 │   ├── docker-entrypoint.sh        # Dual-mode container bootstrapper (embedded vs external Redis)
 │   ├── run_local.sh                # 1-click native macOS local runner
+│   ├── screenshots.py              # Captures the page's README screenshots (Playwright, by hand)
 │   └── smoke_test.py               # 9-step automated end-to-end smoke test suite
 ├── docs/
 │   ├── api.md                      # Complete OpenAPI REST API reference & examples
 │   ├── resilience.md               # Fault tolerance, circuit breakers & jitter backoff deep dive
 │   ├── architecture.md             # Deep-dive system design & resilience state machine
 │   ├── schemas.md                  # Strict Pydantic contracts and schemas
-│   ├── demo.md                     # Interactive 5-Act presentation script & demo guide
 │   ├── deployment.md               # 100% Free cloud hosting guide (Hugging Face Spaces / Render)
+│   ├── img/                        # Page screenshots, light and dark (scripts/screenshots.py)
 │   └── decisions/                  # MADR Architecture Decision Records (0001 - 0007)
 ├── src/resilient_triage/
 │   ├── config.py                   # Centralized pydantic-settings configuration
