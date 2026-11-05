@@ -414,6 +414,13 @@
     &:hover {
       border-color: var(--accent);
     }
+
+    /* Nothing to do now, but still focusable, so focus never drops to the page. */
+    &[aria-disabled="true"] {
+      border-color: var(--line);
+      color: var(--muted);
+      cursor: default;
+    }
   }
 
   /* One run on the stage: its headline, then the graph inline above the waterfall at every

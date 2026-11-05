@@ -1,11 +1,11 @@
 // @ts-check
 // One scenario in a chapter (#119): a disclosure whose heading button shows the title and
-// caption. Opened, it shows the setup notes, Play and Skip, and once this scenario has played
-// on the stage, the run's one-line summary, "Show everything" and the report. It never shows
-// an expected path: only what the run's own trace says (#96).
+// caption. Opened, it shows the setup notes, Play and Skip to end, and once this scenario has
+// played on the stage, the run's one-line summary, "Show everything" and the report. It never
+// shows an expected path: only what the run's own trace says (#96).
 import { html } from "htm/preact";
 import { useState } from "preact/hooks";
-import { eventLog, reportView, runHeadline } from "../trace-reducer.mjs";
+import { eventLog, reportView, runHeadline, skipAction } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").ScenarioView} ScenarioView */
@@ -16,13 +16,12 @@ import { Report } from "./report.mjs";
  *   scenario: ScenarioView,
  *   open: boolean,
  *   run: RunView | null,
- *   next: ScenarioView | null,
  *   onToggle: () => void,
  *   onPlay: () => void,
  *   onSkip: () => void,
  * }} props
  */
-export function Scenario({ scenario, open, run, next, onToggle, onPlay, onSkip }) {
+export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
   const panelId = `scenario-${scenario.id}-panel`;
   return html`
     <article class="scenario" data-scenario=${scenario.id} data-open=${String(open)}>
@@ -44,7 +43,6 @@ export function Scenario({ scenario, open, run, next, onToggle, onPlay, onSkip }
         html`<${ScenarioPanel}
           scenario=${scenario}
           run=${run}
-          next=${next}
           onPlay=${onPlay}
           onSkip=${onSkip}
         />`}
@@ -55,10 +53,12 @@ export function Scenario({ scenario, open, run, next, onToggle, onPlay, onSkip }
 
 /**
  * The opened scenario: setup notes, controls, then what this scenario's run showed.
- * @param {{ scenario: ScenarioView, run: RunView | null, next: ScenarioView | null,
+ * Skip to end stays in place once there's nothing left to skip (aria-disabled, not
+ * disabled), so a keyboard user's focus stays on it.
+ * @param {{ scenario: ScenarioView, run: RunView | null,
  *           onPlay: () => void, onSkip: () => void }} props
  */
-function ScenarioPanel({ scenario, run, next, onPlay, onSkip }) {
+function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
   const [everything, setEverything] = useState(false);
   const headline = run && runHeadline(run);
   const report = run && run.status === "finished" ? reportView(run.trace) : null;
@@ -72,10 +72,15 @@ function ScenarioPanel({ scenario, run, next, onPlay, onSkip }) {
       <button class="button button--primary" type="button" data-action="play" onClick=${onPlay}>
         ${run ? "Play again" : "Play"}
       </button>
-      ${next &&
-      html`<button class="button button--quiet" type="button" data-action="skip" onClick=${onSkip}>
-        Skip to ${next.title}
-      </button>`}
+      <button
+        class="button button--quiet"
+        type="button"
+        data-action="skip"
+        aria-disabled=${String(skipAction(run) === null)}
+        onClick=${onSkip}
+      >
+        Skip to end
+      </button>
     </div>
     ${headline?.line && html`<p class="scenario__line" data-scenario-line>${headline.line}</p>`}
     ${report &&

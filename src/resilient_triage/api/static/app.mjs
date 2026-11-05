@@ -17,8 +17,9 @@ import {
   createRunController,
   idleRun,
   inspectorView,
-  nextScenario,
   scenarioRun,
+  skipAction,
+  toggledOpen,
 } from "./trace-reducer.mjs";
 
 /**
@@ -73,15 +74,14 @@ function LiveStage() {
 
 /** The guided chapters, bound to the catalogue and the stage's run. */
 function GuidedChapters() {
-  const loaded = catalogue.value;
+  const runOf = (/** @type {string} */ id) => scenarioRun(run.value, playedId.value, id);
   return html`<${Chapters}
-    catalogue=${loaded}
+    catalogue=${catalogue.value}
     onRetry=${loadCatalogue}
     openId=${openId.value}
-    runOf=${(/** @type {string} */ id) => scenarioRun(run.value, playedId.value, id)}
-    nextOf=${(/** @type {string} */ id) => (typeof loaded === "object" ? nextScenario(loaded, id) : null)}
+    runOf=${runOf}
     onToggle=${(/** @type {string} */ id) => {
-      openId.value = openId.value === id ? null : id;
+      openId.value = toggledOpen(openId.value, id);
     }}
     onPlay=${(/** @type {string} */ id) => {
       playedId.value = id;
@@ -89,11 +89,13 @@ function GuidedChapters() {
       revealStage();
     }}
     onSkip=${(/** @type {string} */ id) => {
-      const next = typeof loaded === "object" ? nextScenario(loaded, id) : null;
-      if (!next) return;
-      openId.value = next.id;
-      // Keyboard users land on the scenario they skipped to.
-      requestAnimationFrame(() => document.getElementById(`scenario-${next.id}-toggle`)?.focus());
+      // Skip to end: no scroll to the stage, since the report appears in the scenario itself.
+      const action = skipAction(runOf(id));
+      if (action === "skip") stage.skipToEnd();
+      if (action === "start") {
+        playedId.value = id;
+        stage.play(scenarioSource(id), { skipping: true });
+      }
     }}
   />`;
 }
