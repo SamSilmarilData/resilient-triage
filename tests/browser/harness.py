@@ -44,7 +44,8 @@ BLOCKING_IMPACTS = ("serious", "critical")
 
 # page.evaluate script: stream one run with the page's own SSE reader (sse.mjs) and fold its
 # events with the reducer. Argument: {scenario: id} or {query: text} (free play). Returns the
-# raw events, the reducer's summary and its summary line.
+# raw events, the reducer's summary and its summary line, and `prefixes`: the summary of every
+# shorter prefix of the events (the empty one first), as a run mid-stream has it.
 STREAM_AND_FOLD = """async (run) => {
   const sse = await import("/static/sse.mjs");
   const reducer = await import("/static/trace-reducer.mjs");
@@ -56,7 +57,8 @@ STREAM_AND_FOLD = """async (run) => {
     if (message.kind === "event") events.push(message.event);
   }
   const summary = reducer.summarize(events);
-  return {events, summary, line: reducer.summaryLine(summary)};
+  const prefixes = events.map((_, length) => reducer.summarize(events.slice(0, length)));
+  return {events, summary, line: reducer.summaryLine(summary), prefixes};
 }"""
 
 # page.evaluate script: start a run on the page's stage (app.mjs `stage`), the way a play

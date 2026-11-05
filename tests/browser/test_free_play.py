@@ -7,6 +7,7 @@ Tests drive the form the way a visitor does and wait on the panel's `data-run-st
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -23,6 +24,7 @@ from harness import (
 
 from resilient_triage.config import Settings, settings
 from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, ScriptedReply
+from resilient_triage.schemas.api import TriageRequest
 
 if TYPE_CHECKING:
     from playwright.sync_api import Locator, Page
@@ -42,6 +44,63 @@ def _ask(page: Page, query: str) -> None:
     panel = _panel(page)
     panel.get_by_label("Your incident").fill(query)
     panel.get_by_role("button", name="Triage").click()
+
+
+# page.evaluate script: the free-play form's own limits, as the drawn fields carry them.
+FORM_LIMITS = """() => {
+  const query = document.querySelector("#free-play-query");
+  const service = document.querySelector("#free-play-service");
+  return {queryMin: query.minLength, queryMax: query.maxLength, serviceMax: service.maxLength};
+}"""
+# page.evaluate script: whether the service field's pattern accepts each value, as the browser
+# checks it before a submit.
+SERVICE_ACCEPTS = """(values) => {
+  const service = document.querySelector("#free-play-service");
+  const accepts = values.map((value) => {
+    service.value = value;
+    return !service.validity.patternMismatch;
+  });
+  service.value = "";
+  return accepts;
+}"""
+# Service filters on both sides of TriageRequest's pattern.
+SERVICE_PROBES = [
+    "payments",
+    "api-gateway",
+    "auth_service 2",
+    "EU West\t1",
+    "-",
+    "_",
+    "a/b",
+    "dot.name",
+    "semi;colon",
+    "café",
+    "<script>",
+    "emoji 🚀",
+]
+
+
+def test_the_form_refuses_what_triage_request_refuses(pages: GuardedPages):
+    """The form's lengths and service pattern are TriageRequest's, so the browser refuses first."""
+    properties = TriageRequest.model_json_schema()["properties"]
+    query = properties["query"]
+    (service,) = [option for option in properties["service_filter"]["anyOf"] if "pattern" in option]
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+
+    limits = page.evaluate(FORM_LIMITS)
+    accepts = page.evaluate(SERVICE_ACCEPTS, SERVICE_PROBES)
+
+    assert limits == {
+        "queryMin": query["minLength"],
+        "queryMax": query["maxLength"],
+        "serviceMax": service["maxLength"],
+    }
+    expected = [re.fullmatch(service["pattern"], value) is not None for value in SERVICE_PROBES]
+    assert dict(zip(SERVICE_PROBES, accepts, strict=True)) == dict(
+        zip(SERVICE_PROBES, expected, strict=True)
+    )
+    assert True in expected and False in expected, "the probes must sit on both sides"
 
 
 def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: GuardedPages):
