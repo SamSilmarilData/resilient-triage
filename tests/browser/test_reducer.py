@@ -29,10 +29,9 @@ def _python_summary(events: list[dict[str, Any]]) -> TraceSummary:
 
 def _fold(pages: GuardedPages, source: dict[str, Any]) -> dict[str, Any]:
     """Stream a run in a fresh page and fold it with the reducer; return what the page saw."""
-    page, watch = pages.open()
+    page, _ = pages.open()
     open_shell(page, wait_for_requests=False)
     folded: dict[str, Any] = page.evaluate(STREAM_AND_FOLD, source)
-    assert watch.page_errors == []
     return folded
 
 

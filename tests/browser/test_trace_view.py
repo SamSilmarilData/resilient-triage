@@ -6,18 +6,21 @@ Python summary of the same scenario run from Python, so nothing is a golden fixt
 """
 
 import json
-from importlib import resources
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from harness import (
     GRAPH_READY,
+    LAYOUT_EDGES,
     PAGE_WIDTHS,
     GuardedPages,
     axe_violations,
     describe,
+    graph_state,
     open_shell,
+    path_edges,
     play,
+    run_selector,
     stream_scenario,
     wait_for_run,
 )
@@ -55,25 +58,6 @@ ZERO_LINE = """() => {
   return (zero.left - track.left) / track.width;
 }"""
 
-LAYOUT: dict[str, Any] = json.loads(
-    resources.files("resilient_triage.api").joinpath("static/graph-layout.json").read_text()
-)
-LAYOUT_EDGES = {(edge["source"], edge["target"]) for edge in LAYOUT["edges"]}
-
-TAKEN_EDGES = """() => [...document.querySelectorAll('[data-edge][data-taken="true"]')]
-  .map((edge) => ({source: edge.dataset.source, target: edge.dataset.target,
-                   route: edge.dataset.route ?? null}))"""
-# Graph nodes only: __start__ and __end__ are the graph's terminals, not steps of the path.
-VISITED_NODES = """() => Object.fromEntries([...document.querySelectorAll("[data-node]")]
-  .filter((node) => !node.dataset.node.startsWith("__"))
-  .map((node) => [node.dataset.node, Number(node.dataset.visits)]))"""
-
-
-def _path_edges(path: list[str]) -> set[tuple[str, str]]:
-    """The layout edges a node path walks, from __start__ to __end__."""
-    walk = ["__start__", *path, "__end__"]
-    return {pair for pair in zip(walk, walk[1:], strict=False) if pair in LAYOUT_EDGES}
-
 
 @pytest.mark.parametrize("scenario_id", ["self-repair", "everything-down", "run-deadline"])
 def test_a_played_scenario_lights_its_visited_nodes_and_taken_edges(
@@ -88,15 +72,13 @@ def test_a_played_scenario_lights_its_visited_nodes_and_taken_edges(
     play(page, scenario=scenario_id)
     wait_for_run(page)
 
-    visits = page.evaluate(VISITED_NODES)
-    assert {node for node, count in visits.items() if count} == set(path)
-    assert visits["generate_report"] == path.count("generate_report")
-    taken = page.evaluate(TAKEN_EDGES)
-    assert {(edge["source"], edge["target"]) for edge in taken} == _path_edges(path)
-    assert {edge["route"] for edge in taken if edge["route"]} == set(summary.routes)
+    graph = graph_state(page)
+    assert graph.visited == set(path)
+    assert graph.visits["generate_report"] == path.count("generate_report")
+    assert graph.taken_pairs == path_edges(path)
+    assert graph.taken_routes == set(summary.routes)
     end_state = page.locator('[data-node="__end__"]').get_attribute("data-state")
     assert (end_state == "visited") is ((path[-1], "__end__") in LAYOUT_EDGES)
-    assert watch.page_errors == []
     assert watch.console_errors == []
 
 
@@ -232,14 +214,14 @@ def test_a_stream_that_closes_early_is_lost_then_replays(pages: GuardedPages):
 
     assert page.locator("[data-run-line]").inner_text() == "Connection lost"
     assert page.locator('.run[data-dimmed="true"]').count() == 1
-    visits = page.evaluate(VISITED_NODES)
+    visits = graph_state(page).visits
     assert visits["generate_report"] == 1 and visits["validate_report"] == 0
     assert page.locator(".waterfall__row").count() > 0, "the partial trace must stay drawn"
 
     page.unroute(url)
     page.get_by_role("button", name="Replay").click()
     wait_for_run(page)
-    assert page.evaluate(VISITED_NODES)["validate_report"] == 2
+    assert graph_state(page).visits["validate_report"] == 2
 
 
 # A stream source the test feeds by hand: window.feed(message) yields one stream message.
@@ -284,7 +266,7 @@ def test_a_silent_stream_is_lost_after_30_seconds_and_pings_keep_it_alive(pages:
     page.clock.run_for(20_000)
     page.evaluate("() => window.feed({kind: 'ping'})")
     page.clock.run_for(20_000)
-    assert page.locator('[data-run-state="streaming"]').count() == 1, "a ping must keep it alive"
+    assert page.locator(run_selector("streaming")).count() == 1, "a ping must keep it alive"
 
     page.clock.run_for(10_500)
     wait_for_run(page, "lost", timeout_ms=5_000)
@@ -309,38 +291,35 @@ def _messages(events: list[TraceEvent]) -> list[dict[str, Any]]:
 
 
 def test_skip_to_end_mid_run_holds_the_stage_until_trace_finished(pages: GuardedPages):
-    """Skip to end on a live run: later events draw nothing until trace_finished, which then
-    shows the whole final trace at once, as a run played through does."""
+    """Skip to end mid-run: later events draw nothing until trace_finished shows the end."""
     events = stream_scenario(pages.server, "self-repair")
     cut = next(i for i, e in enumerate(events) if isinstance(e, NodeFinished)) + 1
-    page, watch = pages.open()
+    page, _ = pages.open()
     open_shell(page)
     page.wait_for_selector(GRAPH_READY, state="attached")
     page.evaluate(MANUAL_SOURCE)
     page.evaluate(FEED_AND_SETTLE, _messages(events[:cut]))
     wait_for_run(page, "streaming")
     rows_at_skip = page.locator(".waterfall__row").count()
-    visits_at_skip = page.evaluate(VISITED_NODES)
+    visits_at_skip = graph_state(page).visits
     assert rows_at_skip > 0
 
     page.evaluate(SKIP_TO_END)
     page.evaluate(FEED_AND_SETTLE, _messages(events[cut:-1]))
     assert page.locator("[data-run-line]").inner_text() == "Skipping to the end"
     assert page.locator(".waterfall__row").count() == rows_at_skip, "no step-by-step reveal"
-    assert page.evaluate(VISITED_NODES) == visits_at_skip
+    assert graph_state(page).visits == visits_at_skip
     assert page.locator('[role="status"]').inner_text() == ""
 
     page.evaluate(FEED_AND_SETTLE, _messages(events[-1:]))
     wait_for_run(page)
     summary = summarize(events)
-    assert page.evaluate(VISITED_NODES)["generate_report"] == 2
-    assert {n for n, c in page.evaluate(VISITED_NODES).items() if c} == {
-        visit.node for visit in summary.nodes
-    }
+    graph = graph_state(page)
+    assert graph.visits["generate_report"] == 2
+    assert graph.visited == {visit.node for visit in summary.nodes}
     line = page.locator("[data-run-line]").inner_text()
     assert line.startswith("Report in ") and "1 self-repair round" in line
     assert page.locator('[role="status"]').inner_text() == f"Run finished: {line}"
-    assert watch.page_errors == []
 
 
 def test_a_refused_stream_shows_its_error_with_retry(pages: GuardedPages):

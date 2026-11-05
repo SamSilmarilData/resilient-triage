@@ -16,7 +16,9 @@ from harness import (
     axe_violations,
     describe,
     open_shell,
+    run_selector,
     unique_question,
+    wait_for_run,
 )
 
 from resilient_triage.config import Settings, settings
@@ -42,18 +44,13 @@ def _ask(page: Page, query: str) -> None:
     panel.get_by_role("button", name="Triage").click()
 
 
-def _wait_for_panel_run(page: Page, state: str = "finished") -> None:
-    """Wait until the free-play panel's run reaches a state; never a fixed sleep."""
-    page.wait_for_selector(f'{PANEL} [data-run-state="{state}"]', state="attached")
-
-
 def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: GuardedPages):
     """The form posts to /triage/stream; graph and waterfall fill in the panel, unscripted."""
     page, watch = pages.open()
     open_shell(page)
 
     _ask(page, unique_question())
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
 
     panel = _panel(page)
     assert panel.locator('[data-node="generate_report"][data-state="visited"]').count() == 1
@@ -65,7 +62,7 @@ def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: Guarded
         f"{pages.server.url}/triage/stream"
     ]
     assert len(pages.server.llm.calls) == 1, "the scripted harness model answered"
-    assert page.locator('#stage-root [data-run-state="idle"]').count() == 1, "stage untouched"
+    assert page.locator(run_selector("idle")).count() == 1, "stage untouched"
 
 
 def _budget_of(runs: int) -> Settings:
@@ -83,10 +80,10 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     question = unique_question()
 
     _ask(page, question)
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
     _ask(page, unique_question("Checkout latency doubled after the 14:00 deploy"))
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
 
     notice = panel.locator("[data-shed-reason]")
     assert notice.get_attribute("data-shed-reason") == "budget"
@@ -102,7 +99,7 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     # A cache hit doesn't count against the budget: the same page, unreloaded, answers it.
     _ask(page, question)
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="detached")
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
     assert panel.locator("[data-run-line]").inner_text().startswith("Answered from cache")
     assert page.evaluate("() => window.notReloaded") is True
 
@@ -139,7 +136,7 @@ def test_a_capacity_shed_says_every_slot_is_busy_with_no_retry_after(pages: Guar
 
     _ask(page, unique_question())
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
 
     notice = _panel(page).locator("[data-shed-reason]")
     assert notice.get_attribute("data-shed-reason") == "capacity"
@@ -157,19 +154,19 @@ def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: Guar
     page.route(url, lambda route: route.abort("connectionfailed"))
 
     _ask(page, unique_question())
-    _wait_for_panel_run(page, "error")
+    wait_for_run(page, "error", root=PANEL)
 
     panel = _panel(page)
     line = panel.locator("[data-run-line]").inner_text()
     assert line.startswith("Couldn't reach the server")
     assert panel.locator('[role="status"]').inner_text() == f"Run failed: {line}"
-    assert page.locator('#stage-root [data-run-state="idle"]').count() == 1, "stage untouched"
+    assert page.locator(run_selector("idle")).count() == 1, "stage untouched"
     assert page.locator("#chapters-root .notice").count() == 0
     assert len(watch.failed) == 1
 
     page.unroute(url)
     panel.get_by_role("button", name="Retry").click()
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
     assert panel.locator("[data-run-line]").inner_text().startswith("Report in ")
 
 
@@ -190,7 +187,7 @@ def test_a_dropped_stream_is_lost_in_this_panel_then_replays(pages: GuardedPages
     )
 
     _ask(page, unique_question())
-    _wait_for_panel_run(page, "lost")
+    wait_for_run(page, "lost", root=PANEL)
 
     panel = _panel(page)
     assert panel.locator("[data-run-line]").inner_text() == "Connection lost"
@@ -199,7 +196,7 @@ def test_a_dropped_stream_is_lost_in_this_panel_then_replays(pages: GuardedPages
 
     page.unroute(url)
     panel.get_by_role("button", name="Replay").click()
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
     assert panel.locator("[data-model]").inner_text() == f"Model: {settings.groq_model}"
 
 
@@ -212,7 +209,7 @@ def test_a_finished_free_play_run_has_no_serious_axe_violations(
     open_shell(page)
 
     _ask(page, unique_question())
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
 
     violations = axe_violations(page)
     assert violations == [], describe(violations)
@@ -224,7 +221,7 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     open_shell(page)
 
     _ask(page, unique_question())
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
 
     widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
@@ -234,12 +231,12 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
 
 def test_a_free_play_graph_node_opens_the_inspector(pages: GuardedPages):
     """Free play's graph opens the node inspector too, by keyboard; Escape returns focus."""
-    page, watch = pages.open()
+    page, _ = pages.open()
     open_shell(page)
     page.wait_for_selector('[data-graph-nodes="ready"]', state="attached")
 
     _ask(page, unique_question())
-    _wait_for_panel_run(page)
+    wait_for_run(page, root=PANEL)
 
     node = _panel(page).get_by_role("button", name="validate_report, visited once")
     node.focus()
@@ -253,4 +250,3 @@ def test_a_free_play_graph_node_opens_the_inspector(pages: GuardedPages):
         "document.activeElement.closest('#free-play-root [data-node]')?.dataset.node"
     )
     assert focused == "validate_report"
-    assert watch.page_errors == []

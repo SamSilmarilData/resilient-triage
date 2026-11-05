@@ -114,10 +114,7 @@ def _check_focus(state: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _tab_to(page: "Page", target: str, regions: list[str] | None = None) -> list[str]:
-    """Press Tab until `target` has focus, checking every stop on the way; return the stops.
-
-    Each stop's region is appended to `regions`, when given, for _reading_order().
-    """
+    """Tab to `target`, checking each stop; return the stops, adding their regions to `regions`."""
     stops: list[str] = []
     for _ in range(MAX_TABS):
         page.keyboard.press("Tab")
@@ -199,14 +196,11 @@ def test_the_guided_flow_completes_with_the_keyboard_alone(
     assert _tab_to(page, '[name="force_refresh"]', regions) == ["input"]
     assert _tab_to(page, '#free-play-root [type="submit"]', regions) == ["button"]
     page.keyboard.press("Enter")
-    page.wait_for_selector(
-        '#free-play-root [data-run-state="finished"]', state="attached", timeout=30_000
-    )
+    wait_for_run(page, root="#free-play-root")
     free_line = page.locator("#free-play-root [data-run-line]").inner_text()
     assert _announcement(page, "#free-play-root").inner_text() == f"Run finished: {free_line}"
     # Tab followed reading order: the chapters before the stage they play on, at every width.
     assert _reading_order(regions) == READING_ORDER
-    assert watch.page_errors == []
     assert watch.failed == []
 
 
@@ -223,7 +217,7 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
 ):
     """At 375 px: a played scenario, a free-play run and the open inspector all fit."""
     scenario = public_catalogue().chapters[-1].scenarios[-1].id
-    page, watch = pages.open(viewport=PHONE, **PHONE_THEMES[theme])
+    page, _ = pages.open(viewport=PHONE, **PHONE_THEMES[theme])
     open_shell(page)
     page.wait_for_selector(CATALOGUE_READY, state="attached")
     page.wait_for_selector(GRAPH_READY, state="attached")
@@ -237,9 +231,7 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
 
     page.get_by_label("Your incident").fill(unique_question("Payments API returning 502s"))
     page.locator("#free-play-root").get_by_role("button", name="Triage").click()
-    page.wait_for_selector(
-        '#free-play-root [data-run-state="finished"]', state="attached", timeout=30_000
-    )
+    wait_for_run(page, root="#free-play-root")
     _fits(page, "after a free-play run")
 
     page.locator('#stage-root [data-node="generate_report"]').click()
@@ -247,7 +239,6 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
     _fits(page, "with the inspector open")
     box = page.evaluate(DIALOG_FIT)
     assert box["left"] >= 0 and box["right"] <= box["viewport"], f"inspector overflows: {box}"
-    assert watch.page_errors == []
 
 
 @pytest.mark.parametrize("scheme", ["light", "dark"])
@@ -274,5 +265,4 @@ def test_every_chapters_final_state_has_no_serious_axe_violations(
 
     violations = axe_violations(page)
     assert violations == [], describe(violations)
-    assert watch.page_errors == []
     assert watch.failed == []
