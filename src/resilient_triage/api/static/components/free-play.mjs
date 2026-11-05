@@ -15,8 +15,16 @@ import { Stage } from "./stage.mjs";
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("../sse.mjs").TriageRequest} TriageRequest */
 
-// TriageRequest.service_filter's pattern (schemas/api.py), so the browser refuses it first.
-const SERVICE_PATTERN = String.raw`[A-Za-z0-9_\s\-]+`;
+/**
+ * TriageRequest's limits (schemas/api.py), so the browser refuses a bad request first.
+ * tests/browser/test_free_play.py fails if the drawn form drifts from its JSON schema.
+ */
+const REQUEST_LIMITS = Object.freeze({
+  queryMinLength: 3,
+  queryMaxLength: 2000,
+  serviceMaxLength: 100,
+  servicePattern: String.raw`[A-Za-z0-9_\s\-]+`,
+});
 
 /**
  * @param {{
@@ -54,8 +62,8 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode }) {
             name="query"
             rows="3"
             required
-            minlength="3"
-            maxlength="2000"
+            minlength=${REQUEST_LIMITS.queryMinLength}
+            maxlength=${REQUEST_LIMITS.queryMaxLength}
             placeholder="Stripe webhooks timing out with 504s since 14:05"
           ></textarea>
         </div>
@@ -66,8 +74,8 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode }) {
               id="free-play-service"
               class="ask__input"
               name="service_filter"
-              maxlength="100"
-              pattern=${SERVICE_PATTERN}
+              maxlength=${REQUEST_LIMITS.serviceMaxLength}
+              pattern=${REQUEST_LIMITS.servicePattern}
               title="Letters, digits, spaces, hyphens and underscores"
               autocomplete="off"
             />

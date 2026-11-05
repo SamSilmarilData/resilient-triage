@@ -468,9 +468,10 @@ export function waterfallView(trace) {
 // ---------------------------------------------------------------------------------------------
 // Summary: the JS port of trace/summary.py, checked against it by tests/browser/test_reducer.py.
 
-// Node names as registered in graph/builder.py; keep them in step with trace/summary.py.
-const SELF_REPAIR_NODE = "self_repair";
-const REFINE_NODE = "refine_reflection";
+// Node names as registered in graph/builder.py, as trace/summary.py names them;
+// tests/browser/test_reducer.py fails if they drift.
+export const SELF_REPAIR_NODE = "self_repair";
+export const REFINE_NODE = "refine_reflection";
 
 /**
  * Round to microseconds, as the recorder stamps t_ms (summary.py `_round_ms`).
@@ -613,8 +614,9 @@ function findLastOpenVisit(nodes, node) {
 }
 
 // Display names of the Telemetry sources, by the id the trace carries (telemetry/*.py
-// `display_name`). An unknown id shows as itself.
-const SOURCE_NAMES = /** @type {Record<string, string>} */ ({
+// `display_name`; tests/browser/test_reducer.py fails if they drift). An unknown id shows as
+// itself.
+export const SOURCE_NAMES =/** @type {Record<string, string>} */ ({
   statuspage: "Statuspage",
   chaos: "Cluster Sentinel",
 });
