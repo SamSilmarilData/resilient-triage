@@ -9,6 +9,13 @@
  */
 
 /**
+ * Something the page fetches (graph-layout.json, GET /scenarios, GET /graph/nodes): "loading"
+ * until it lands, "failed" if it didn't, else the value.
+ * @template T
+ * @typedef {T | "loading" | "failed"} Loadable
+ */
+
+/**
  * The JS port of trace/summary.py's TraceSummary, field for field.
  * @typedef {{
  *   scenario_id: string | null,
@@ -164,12 +171,15 @@ export function foldTrace(events) {
 /**
  * @typedef {{ name: string, terminal: boolean, x: number, y: number, width: number,
  *             height: number, r: number, visits: number,
- *             state: "idle" | "visited" | "active" }} GraphNodeView
+ *             state: "idle" | "visited" | "active", label: string }} GraphNodeView
+ * `label`: the node's accessible name, its name and how often the run visited it.
  * @typedef {{ key: string, source: string, target: string, route: string | null, d: string,
  *             arrow: string, label: { x: number, y: number } | null,
  *             taken: boolean }} GraphEdgeView
  * @typedef {{ viewBox: string, nodePx: number, labelPx: number, nodes: GraphNodeView[],
- *             edges: GraphEdgeView[], visited: number, total: number }} GraphView
+ *             edges: GraphEdgeView[], visited: number, total: number,
+ *             label: string }} GraphView
+ * `label`: the graph's accessible name, how many of its nodes the run visited.
  */
 
 const ARROW_LENGTH = 6;
@@ -188,6 +198,15 @@ function arrowhead(points) {
   const corner = (/** @type {number} */ side) =>
     `${bx - dy * ARROW_HALF_WIDTH * side},${by + dx * ARROW_HALF_WIDTH * side}`;
   return `${tx},${ty} ${corner(1)} ${corner(-1)}`;
+}
+
+/**
+ * How often a node was visited, as its accessible name says it.
+ * @param {number} count
+ */
+function visitsText(count) {
+  if (!count) return "not visited";
+  return count === 1 ? "visited once" : `visited ${plural(count, "time", "times")}`;
 }
 
 /**
@@ -221,6 +240,7 @@ export function graphView(layout, trace) {
       r: box.r ?? 0,
       visits: count,
       state,
+      label: `${name}, ${visitsText(count)}`,
     };
   });
   const edges = layout.edges.map((edge) => {
@@ -237,6 +257,7 @@ export function graphView(layout, trace) {
     };
   });
   const graphNodes = nodes.filter((node) => !node.terminal);
+  const visited = graphNodes.filter((node) => node.visits).length;
   return {
     viewBox: layout.view_box.join(" "),
     nodePx: layout.font.node_px,
@@ -244,8 +265,9 @@ export function graphView(layout, trace) {
     nodes,
     // Taken edges last, so they draw over the idle edges they share a corridor with.
     edges: edges.filter((edge) => !edge.taken).concat(edges.filter((edge) => edge.taken)),
-    visited: graphNodes.filter((node) => node.visits).length,
+    visited,
     total: graphNodes.length,
+    label: `Triage graph: ${visited} of ${graphNodes.length} nodes visited`,
   };
 }
 
@@ -1012,7 +1034,7 @@ export function repoUrl(path) {
 
 /**
  * What the inspector shows for a node, or null when none is selected.
- * @param {GraphNode[] | "loading" | "failed"} nodes
+ * @param {Loadable<GraphNode[]>} nodes
  * @param {string | null} name
  * @returns {InspectorView | null}
  */

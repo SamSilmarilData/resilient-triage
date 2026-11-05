@@ -8,13 +8,17 @@ import { graphView, runAnnouncement, runHeadline } from "../trace-reducer.mjs";
 import { Graph } from "./graph.mjs";
 import { Waterfall } from "./waterfall.mjs";
 
+/**
+ * @template T
+ * @typedef {import("../trace-reducer.mjs").Loadable<T>} Loadable
+ */
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
 
 /**
  * @param {{
  *   run: RunView,
- *   layout: GraphLayout | "loading" | "failed",
+ *   layout: Loadable<GraphLayout>,
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
  * }} props

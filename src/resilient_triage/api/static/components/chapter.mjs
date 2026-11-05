@@ -5,6 +5,10 @@
 import { html } from "htm/preact";
 import { Scenario } from "./scenario.mjs";
 
+/**
+ * @template T
+ * @typedef {import("../trace-reducer.mjs").Loadable<T>} Loadable
+ */
 /** @typedef {import("../trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("../trace-reducer.mjs").ScenarioView} ScenarioView */
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
@@ -21,7 +25,7 @@ import { Scenario } from "./scenario.mjs";
  */
 
 /**
- * @param {{ catalogue: Catalogue | "loading" | "failed", onRetry: () => void }
+ * @param {{ catalogue: Loadable<Catalogue>, onRetry: () => void }
  *   & ScenarioHandlers} props
  */
 export function Chapters({ catalogue, onRetry, ...handlers }) {

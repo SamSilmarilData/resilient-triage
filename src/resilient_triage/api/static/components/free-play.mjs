@@ -7,6 +7,10 @@ import { html } from "htm/preact";
 import { answeringModel, freePlayRequest, shedNotice } from "../trace-reducer.mjs";
 import { Stage } from "./stage.mjs";
 
+/**
+ * @template T
+ * @typedef {import("../trace-reducer.mjs").Loadable<T>} Loadable
+ */
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("../sse.mjs").TriageRequest} TriageRequest */
@@ -17,7 +21,7 @@ const SERVICE_PATTERN = String.raw`[A-Za-z0-9_\s\-]+`;
 /**
  * @param {{
  *   run: RunView,
- *   layout: GraphLayout | "loading" | "failed",
+ *   layout: Loadable<GraphLayout>,
  *   onSubmit: (request: TriageRequest) => void,
  *   onReplay: () => void,
  * }} props

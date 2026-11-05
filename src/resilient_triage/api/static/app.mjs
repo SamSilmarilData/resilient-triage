@@ -21,6 +21,10 @@ import {
   scenarioRun,
 } from "./trace-reducer.mjs";
 
+/**
+ * @template T
+ * @typedef {import("./trace-reducer.mjs").Loadable<T>} Loadable
+ */
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("./trace-reducer.mjs").GraphNode} GraphNode */
@@ -28,9 +32,9 @@ import {
 /** The stage's current run, as the run controller last reported it. */
 const run = signal(idleRun());
 /** graph-layout.json once fetched. */
-const layout = signal(/** @type {GraphLayout | "loading" | "failed"} */ ("loading"));
+const layout = signal(/** @type {Loadable<GraphLayout>} */ ("loading"));
 /** GET /scenarios once fetched: the chapters' copy. */
-const catalogue = signal(/** @type {Catalogue | "loading" | "failed"} */ ("loading"));
+const catalogue = signal(/** @type {Loadable<Catalogue>} */ ("loading"));
 /** The scenario opened inline, if any; one at a time. */
 const openId = signal(/** @type {string | null} */ (null));
 /** The scenario last played on the stage, if any. */
@@ -106,15 +110,27 @@ function revealStage() {
   if (top < 0 || top >= window.innerHeight) element.scrollIntoView({ block: "start" });
 }
 
-/** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */
-async function loadCatalogue() {
-  catalogue.value = "loading";
+/**
+ * Fetch a JSON resource into a Loadable signal: "loading" while it's in flight, then the
+ * value `pick` takes from the body, or "failed" on a non-2xx or a network error.
+ * @template T
+ * @param {import("@preact/signals").Signal<Loadable<T>>} target
+ * @param {string} url
+ * @param {(body: any) => T} [pick]
+ */
+async function loadInto(target, url, pick = (body) => body) {
+  target.value = "loading";
   try {
-    const response = await fetch("/scenarios");
-    catalogue.value = response.ok ? await response.json() : "failed";
+    const response = await fetch(url);
+    target.value = response.ok ? pick(await response.json()) : "failed";
   } catch {
-    catalogue.value = "failed";
+    target.value = "failed";
   }
+}
+
+/** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */
+function loadCatalogue() {
+  return loadInto(catalogue, "/scenarios");
 }
 
 /** The free-play panel, bound to its own run and the shared graph layout. */
@@ -129,7 +145,7 @@ function LiveFreePlay() {
 
 // The node inspector (#121): GET /graph/nodes, and the node it shows (null when closed).
 // A graph node on the stage and a button in How it's built's node list both open it.
-const graphNodes = signal(/** @type {GraphNode[] | "loading" | "failed"} */ ("loading"));
+const graphNodes = signal(/** @type {Loadable<GraphNode[]>} */ ("loading"));
 const inspected = signal(/** @type {string | null} */ (null));
 
 /** @param {string} name */
@@ -138,14 +154,8 @@ function inspect(name) {
 }
 
 /** Fetch every node's inspector content into its signal. */
-async function loadGraphNodes() {
-  graphNodes.value = "loading";
-  try {
-    const response = await fetch("/graph/nodes");
-    graphNodes.value = response.ok ? (await response.json()).nodes : "failed";
-  } catch {
-    graphNodes.value = "failed";
-  }
+function loadGraphNodes() {
+  return loadInto(graphNodes, "/graph/nodes", (body) => body.nodes);
 }
 
 function BuiltNodes() {
@@ -173,13 +183,8 @@ function mount(id, view) {
 }
 
 /** Fetch the graph's layout into its signal; the stage draws the graph once it lands. */
-async function loadLayout() {
-  try {
-    const response = await fetch("/static/graph-layout.json");
-    layout.value = response.ok ? await response.json() : "failed";
-  } catch {
-    layout.value = "failed";
-  }
+function loadLayout() {
+  return loadInto(layout, "/static/graph-layout.json");
 }
 
 function main() {
