@@ -16,6 +16,7 @@ from resilient_triage.schemas.telemetry import ChaosConfig, StatuspageSummary
 from resilient_triage.telemetry.chaos import ClusterSentinelSource
 from resilient_triage.telemetry.statuspage import StatuspageSource
 from resilient_triage.trace.fields import (
+    IDENTIFIER_PATTERN,
     ModelOutcome,
     ModelRole,
     ReadOutcome,
@@ -23,8 +24,8 @@ from resilient_triage.trace.fields import (
     TriageOutcomeKind,
 )
 
-# Same shape as the trace's Identifier, since the id travels on trace_started.
-_SCENARIO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+# The trace's Identifier pattern, since the id travels on trace_started.
+_SCENARIO_ID = re.compile(IDENTIFIER_PATTERN)
 
 
 @dataclass(frozen=True)

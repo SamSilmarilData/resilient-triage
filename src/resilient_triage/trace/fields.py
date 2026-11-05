@@ -12,7 +12,8 @@ from resilient_triage.schemas.incident import DegradationStatus
 
 # A code-defined name (node, route key, source, model, field, error type, scenario): never
 # free text. The pattern keeps whitespace and prose out of every id on the wire.
-Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")]
+IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$"
+Identifier = Annotated[str, StringConstraints(pattern=IDENTIFIER_PATTERN)]
 Milliseconds = Annotated[float, Field(ge=0)]
 
 CacheBackend = Literal["redisearch", "redis_hash_fallback", "in_memory"]
