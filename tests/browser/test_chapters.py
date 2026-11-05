@@ -247,6 +247,40 @@ def test_skip_to_end_runs_the_scenario_and_shows_only_its_final_state(pages: Gua
     assert page.evaluate("document.activeElement.dataset.action") == "skip"
 
 
+@pytest.mark.real_scripted_delays
+def test_skip_to_end_mid_play_holds_the_running_stage_without_a_second_run(pages: GuardedPages):
+    """Skip pressed while Play streams freezes the stage as it is; the same run then ends."""
+    page, watch = pages.open()
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator("#scenario-self-repair-toggle").click()
+    _scenario(page, "self-repair", '[data-action="play"]').click()
+    # The first model reply takes its real scripted delay: the run is mid-stream here.
+    page.wait_for_selector(
+        '#stage-root [data-node="generate_report"][data-state="active"]', state="attached"
+    )
+
+    page.evaluate(RECORD_STAGE)
+    skip = _scenario(page, "self-repair", '[data-action="skip"]')
+    skip.click()
+    page.wait_for_selector(_scenario_selector("self-repair", "[data-report]"), state="attached")
+
+    frames = page.evaluate("() => window.stageFrames")
+    streaming = [frame for frame in frames if frame["state"] == "streaming"]
+    assert streaming and streaming[0]["line"] == "Skipping to the end"
+    held = {(f["line"], f["rows"], f["visited"]) for f in streaming}
+    assert len(held) == 1, f"the stage moved while skipping: {held}"
+    ((_, rows_at_skip, visited_at_skip),) = held
+    assert rows_at_skip > 0 and visited_at_skip > 0, "the run had drawn steps before the skip"
+    final = frames[-1]
+    assert final["state"] == "finished" and "1 self-repair round" in final["line"]
+    assert final["rows"] > rows_at_skip, "the end state appears at once when the run ends"
+    assert graph_state(page).visits["generate_report"] == 2
+    streams = [url for url in watch.requests if url.endswith("/scenarios/self-repair/stream")]
+    assert len(streams) == 1, "Skip held the run in flight; it never started another"
+    assert skip.get_attribute("aria-disabled") == "true"
+
+
 def test_skip_to_end_is_offered_on_every_scenario_including_the_last(pages: GuardedPages):
     """Skip to end replaces "Skip to <next>": every scenario has it, the last one too."""
     page, _ = pages.open()
