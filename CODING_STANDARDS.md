@@ -33,8 +33,10 @@ is exempt because prompt text goes to the LLM verbatim), formatting, and full ty
 The page is build-free and vendored (ADR-010). No JS lint or type-check runs in CI, so these
 rules stand in for one:
 - JS logic lives in the one reducer module (the trace-to-view reducer, `trace-reducer.mjs`).
-  The one exception is `sse.mjs`, the I/O seam: it POSTs to the stream routes and parses SSE
-  framing into stream messages, and holds no view logic.
+  The one exception is `sse.mjs`, the network I/O seam: it POSTs to the stream routes, parses
+  SSE framing into stream messages and fetches the page's JSON resources, and holds no view
+  logic. Components may handle DOM events and focus themselves (a key mapping, restoring focus
+  when a dialog closes): that is DOM behaviour, not logic.
 - Every one of our own (non-vendored) JS files starts with `// @ts-check` and uses JSDoc types.
 - New JS logic needs a browser test (`@pytest.mark.browser`, run by `./scripts/check.sh --browser`).
 - No third-party origins: the page loads scripts, styles, fonts and data from its own origin only.
