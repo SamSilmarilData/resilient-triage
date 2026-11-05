@@ -317,6 +317,8 @@ class TriageGateway:
             return self._over_budget(self._budget, trace)
         if not await self._acquire_run_slot(trace):
             logger.warning("No run slot freed up in time; shed request.")
+            if self._budget is not None:
+                self._budget.refund()  # no graph ran, so the budget is untouched
             return Shed(reason="capacity")
         try:
             analysis = await self._analyze(query, scope, trace)

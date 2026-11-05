@@ -1,7 +1,7 @@
 """Free-play run budget: at most N graph runs admitted in any sliding 60 s window.
 
 The budget lives in one process (per worker): several workers each allow N a minute. Cache
-hits never reach it; a run counts once admitted, even if it is then shed for lack of a slot.
+hits never reach it, and a run shed for lack of a slot is refunded: only graph runs count.
 """
 
 import math
@@ -32,6 +32,13 @@ class RunBudget:
             return False
         self._admitted.append(now)
         return True
+
+    def refund(self) -> None:
+        """Uncount the newest admission: an admitted request that then ran no graph."""
+        # Admissions are interchangeable bar their times; any newer one is at most a queue
+        # timeout younger than the refunded run's own, so the window frees that much sooner.
+        if self._admitted:
+            self._admitted.pop()
 
     def retry_after_s(self) -> int:
         """Whole seconds (at least 1) until the oldest counted run leaves the window."""
