@@ -21,15 +21,23 @@ from typing import TYPE_CHECKING
 import pytest
 from harness import GuardedPages, HarnessError, LiveServer, serve_live_app
 
+from resilient_triage.config import Settings, settings
+
 if TYPE_CHECKING:
     from playwright.sync_api import Browser, Playwright
 
 
 @pytest.fixture
-def live_server() -> Iterator[LiveServer]:
+def live_settings(request: pytest.FixtureRequest) -> Settings:
+    """The live app's settings: the global ones, or a test's own via indirect parametrize."""
+    return getattr(request, "param", settings)
+
+
+@pytest.fixture
+def live_server(live_settings: Settings) -> Iterator[LiveServer]:
     """The app on `127.0.0.1:<free port>` over a fresh scripted runtime, its cache emptied."""
     try:
-        with serve_live_app() as live:
+        with serve_live_app(live_settings) as live:
             yield live
     except HarnessError as exc:
         pytest.fail(str(exc), pytrace=False)
