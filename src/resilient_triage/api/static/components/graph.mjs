@@ -24,8 +24,6 @@ function onKey(event, action) {
  */
 function Node({ node, fontPx, onSelect }) {
   const select = onSelect && !node.terminal ? () => onSelect(node.name) : undefined;
-  const times = node.visits === 1 ? "visited once" : `visited ${node.visits} times`;
-  const label = node.visits ? `${node.name}, ${times}` : `${node.name}, not visited`;
   const shape = node.terminal
     ? html`<circle class="graph__terminal" cx=${node.x} cy=${node.y} r=${node.r} />`
     : html`
@@ -50,7 +48,7 @@ function Node({ node, fontPx, onSelect }) {
       onClick=${select}
       onKeyDown=${select && ((/** @type {KeyboardEvent} */ e) => onKey(e, select))}
     >
-      <title>${label}</title>
+      <title>${node.label}</title>
       ${shape}
     </g>
   `;
@@ -68,7 +66,7 @@ export function Graph({ view, onSelectNode }) {
         class="graph__svg"
         viewBox=${view.viewBox}
         role="group"
-        aria-label=${`Triage graph: ${view.visited} of ${view.total} nodes visited`}
+        aria-label=${view.label}
       >
         ${view.edges.map(
           (edge) => html`

@@ -9,6 +9,13 @@
  */
 
 /**
+ * Something the page fetches (graph-layout.json, GET /scenarios, GET /graph/nodes): "loading"
+ * until it lands, "failed" if it didn't, else the value.
+ * @template T
+ * @typedef {T | "loading" | "failed"} Loadable
+ */
+
+/**
  * The JS port of trace/summary.py's TraceSummary, field for field.
  * @typedef {{
  *   scenario_id: string | null,
@@ -164,12 +171,15 @@ export function foldTrace(events) {
 /**
  * @typedef {{ name: string, terminal: boolean, x: number, y: number, width: number,
  *             height: number, r: number, visits: number,
- *             state: "idle" | "visited" | "active" }} GraphNodeView
+ *             state: "idle" | "visited" | "active", label: string }} GraphNodeView
+ * `label`: the node's accessible name, its name and how often the run visited it.
  * @typedef {{ key: string, source: string, target: string, route: string | null, d: string,
  *             arrow: string, label: { x: number, y: number } | null,
  *             taken: boolean }} GraphEdgeView
  * @typedef {{ viewBox: string, nodePx: number, labelPx: number, nodes: GraphNodeView[],
- *             edges: GraphEdgeView[], visited: number, total: number }} GraphView
+ *             edges: GraphEdgeView[], visited: number, total: number,
+ *             label: string }} GraphView
+ * `label`: the graph's accessible name, how many of its nodes the run visited.
  */
 
 const ARROW_LENGTH = 6;
@@ -188,6 +198,15 @@ function arrowhead(points) {
   const corner = (/** @type {number} */ side) =>
     `${bx - dy * ARROW_HALF_WIDTH * side},${by + dx * ARROW_HALF_WIDTH * side}`;
   return `${tx},${ty} ${corner(1)} ${corner(-1)}`;
+}
+
+/**
+ * How often a node was visited, as its accessible name says it.
+ * @param {number} count
+ */
+function visitsText(count) {
+  if (!count) return "not visited";
+  return count === 1 ? "visited once" : `visited ${plural(count, "time", "times")}`;
 }
 
 /**
@@ -221,6 +240,7 @@ export function graphView(layout, trace) {
       r: box.r ?? 0,
       visits: count,
       state,
+      label: `${name}, ${visitsText(count)}`,
     };
   });
   const edges = layout.edges.map((edge) => {
@@ -237,6 +257,7 @@ export function graphView(layout, trace) {
     };
   });
   const graphNodes = nodes.filter((node) => !node.terminal);
+  const visited = graphNodes.filter((node) => node.visits).length;
   return {
     viewBox: layout.view_box.join(" "),
     nodePx: layout.font.node_px,
@@ -244,8 +265,9 @@ export function graphView(layout, trace) {
     nodes,
     // Taken edges last, so they draw over the idle edges they share a corridor with.
     edges: edges.filter((edge) => !edge.taken).concat(edges.filter((edge) => edge.taken)),
-    visited: graphNodes.filter((node) => node.visits).length,
+    visited,
     total: graphNodes.length,
+    label: `Triage graph: ${visited} of ${graphNodes.length} nodes visited`,
   };
 }
 
@@ -672,8 +694,12 @@ export const STREAM_WATCHDOG_MS = 30_000;
  * idle: nothing played yet. streaming: events arriving. finished: trace_finished arrived
  * (a cache hit, an analyzed run or a shed alike). lost: the stream went silent or closed
  * early; the partial trace stays. error: the stream was refused or never connected.
+ * `skipping`: Skip to end was pressed during this stream; the controller folds its events
+ * without reporting them until the run ends, so the stage holds still and then shows the
+ * final state at once.
  * @typedef {"idle" | "streaming" | "finished" | "lost" | "error"} RunStatus
- * @typedef {{ status: RunStatus, trace: TraceView, error: string | null }} RunView
+ * @typedef {{ status: RunStatus, trace: TraceView, error: string | null,
+ *             skipping: boolean }} RunView
  * @typedef {import("./sse.mjs").StreamSource} StreamSource
  */
 
@@ -692,6 +718,7 @@ export function runHeadline(run) {
     case "idle":
       return { status, line: null, dimmed: false, action: null };
     case "streaming":
+      if (run.skipping) return { status, line: "Skipping to the end", dimmed: false, action: null };
       return { status, line: `Running, ${formatMs(lastMs)} in`, dimmed: false, action: null };
     case "finished":
       return { status, line: summaryLine(summarize(trace.events)), dimmed: false, action: null };
@@ -724,14 +751,17 @@ export function runAnnouncement(run) {
 
 /** @returns {RunView} */
 export function idleRun() {
-  return { status: "idle", trace: initialTrace(), error: null };
+  return { status: "idle", trace: initialTrace(), error: null, skipping: false };
 }
 
 const UNREACHABLE = "Couldn't reach the server. Check your connection and try again.";
 
 /**
  * Plays stream sources into RunViews, reporting each new view to `onChange`. One run at a
- * time: play() supersedes the run before it and resolves with the run's last view.
+ * time: play() supersedes the run before it and resolves with the run's last view. Skip to
+ * end (skipToEnd(), or play with `skipping`) stops reporting the views a stream's events make
+ * until the run ends: the stream is real time, so the end can't come sooner, but nothing in
+ * between is drawn. `view` is always the latest fold.
  * @param {{ onChange: (view: RunView) => void, watchdogMs?: number }} options
  */
 export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS }) {
@@ -742,18 +772,22 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
   /** @type {StreamSource | null} */
   let lastSource = null;
 
-  /** @param {RunView} next */
-  const set = (next) => {
+  /**
+   * @param {RunView} next
+   * @param {boolean} [quiet] keep the view without reporting it
+   */
+  const set = (next, quiet = false) => {
     view = next;
-    onChange(view);
+    if (!quiet) onChange(view);
   };
 
   /**
    * Play a source from the start; resolves when the run ends, however it ends.
    * @param {StreamSource} source
+   * @param {{ skipping?: boolean }} [options] `skipping`: start already skipped to the end
    * @returns {Promise<RunView>}
    */
-  async function play(source) {
+  async function play(source, { skipping = false } = {}) {
     current?.abort();
     const id = ++runId;
     const abort = new AbortController();
@@ -774,14 +808,14 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
       current = null;
       // A finished stream closes itself once trace_finished is sent; only cut a stalled one.
       if (status !== "finished") abort.abort();
-      set({ ...view, status, error });
+      set({ ...view, status, error, skipping: false });
     };
     const arm = () => {
       clearTimeout(timer);
       timer = setTimeout(() => end("lost"), watchdogMs);
     };
 
-    set({ status: "streaming", trace: initialTrace(), error: null });
+    set({ status: "streaming", trace: initialTrace(), error: null, skipping });
     arm();
     try {
       for await (const message of source(abort.signal)) {
@@ -789,7 +823,7 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
         arm();
         if (message.kind !== "event") continue;
         const trace = reduceTrace(view.trace, message.event);
-        set({ ...view, trace });
+        set({ ...view, trace }, view.skipping);
         if (trace.finished) {
           end("finished");
           break;
@@ -807,6 +841,13 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
 
   return {
     play,
+    /**
+     * Skip to end: hold the stage as it is until the streaming run ends, then show its final
+     * state. A no-op unless a run is streaming and not already skipped.
+     */
+    skipToEnd() {
+      if (view.status === "streaming" && !view.skipping) set({ ...view, skipping: true });
+    },
     /** Play the last source again from the start (the Replay and Retry buttons). */
     replay() {
       return lastSource ? play(lastSource) : Promise.resolve(view);
@@ -837,15 +878,27 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
  */
 
 /**
- * The scenario after this one in catalogue order, across chapters; null after the last.
- * @param {Catalogue} catalogue
+ * The scenario open after its toggle is pressed: it closes if it was open, else it opens
+ * (and any other closes; one is open at a time).
+ * @param {string | null} openId
  * @param {string} id
- * @returns {ScenarioView | null}
+ * @returns {string | null}
  */
-export function nextScenario(catalogue, id) {
-  const all = catalogue.chapters.flatMap((chapter) => chapter.scenarios);
-  const index = all.findIndex((scenario) => scenario.id === id);
-  return index === -1 ? null : (all[index + 1] ?? null);
+export function toggledOpen(openId, id) {
+  return openId === id ? null : id;
+}
+
+/**
+ * What a scenario's Skip to end does, given its run (scenarioRun()): "skip" holds a streaming
+ * run until it ends, "start" plays the scenario already skipped (no run yet, or it was lost
+ * or refused), null does nothing (the run is finished or already skipped).
+ * @param {RunView | null} run
+ * @returns {"skip" | "start" | null}
+ */
+export function skipAction(run) {
+  if (run === null || run.status === "lost" || run.status === "error") return "start";
+  if (run.status === "streaming" && !run.skipping) return "skip";
+  return null;
 }
 
 /**
@@ -1012,7 +1065,7 @@ export function repoUrl(path) {
 
 /**
  * What the inspector shows for a node, or null when none is selected.
- * @param {GraphNode[] | "loading" | "failed"} nodes
+ * @param {Loadable<GraphNode[]>} nodes
  * @param {string | null} name
  * @returns {InspectorView | null}
  */

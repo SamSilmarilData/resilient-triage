@@ -4,11 +4,15 @@
 // inspector. `data-graph-nodes` on the list's root is the load state; browser tests wait on it.
 import { html } from "htm/preact";
 
+/**
+ * @template T
+ * @typedef {import("../trace-reducer.mjs").Loadable<T>} Loadable
+ */
 /** @typedef {import("../trace-reducer.mjs").GraphNode} GraphNode */
 
 /**
  * @param {{
- *   nodes: GraphNode[] | "loading" | "failed",
+ *   nodes: Loadable<GraphNode[]>,
  *   onSelect: (name: string) => void,
  *   onRetry: () => void,
  * }} props

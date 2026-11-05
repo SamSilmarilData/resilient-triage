@@ -8,12 +8,19 @@ Tests drive the form the way a visitor does and wait on the panel's `data-run-st
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
-from harness import PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
+from harness import (
+    PAGE_WIDTHS,
+    GuardedPages,
+    axe_violations,
+    describe,
+    open_shell,
+    unique_question,
+)
 
 from resilient_triage.config import Settings, settings
+from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, ScriptedReply
 
 if TYPE_CHECKING:
     from playwright.sync_api import Locator, Page
@@ -21,12 +28,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.browser
 
 PANEL = "#free-play-root"
-
-
-def _question(text: str = "GitHub Actions workflows failing with 503s") -> str:
-    """A question no other run has asked: the harness cache may be a live Redis shared with
-    other test runs, and a stray hit would skip the model."""
-    return f"{text} (ticket {uuid4().hex[:8]})"
 
 
 def _panel(page: Page) -> Locator:
@@ -51,7 +52,7 @@ def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: Guarded
     page, watch = pages.open()
     open_shell(page)
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page)
 
     panel = _panel(page)
@@ -79,11 +80,11 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     open_shell(page)
     page.evaluate("() => { window.notReloaded = true; }")
     panel = _panel(page)
-    question = _question()
+    question = unique_question()
 
     _ask(page, question)
     _wait_for_panel_run(page)
-    _ask(page, _question("Checkout latency doubled after the 14:00 deploy"))
+    _ask(page, unique_question("Checkout latency doubled after the 14:00 deploy"))
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
     _wait_for_panel_run(page)
 
@@ -106,6 +107,48 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     assert page.evaluate("() => window.notReloaded") is True
 
 
+# page.evaluate script: stream a free-play run outside the panel, so it holds a run slot while
+# its (delayed) model reply comes; window.slotHeld turns true once its run_slot is acquired.
+HOLD_A_SLOT = """async (query) => {
+  const sse = await import("/static/sse.mjs");
+  window.slotHeld = false;
+  window.holder = (async () => {
+    for await (const m of sse.freePlaySource({query})(new AbortController().signal)) {
+      if (m.kind === "event" && m.event.kind === "run_slot" && m.event.acquired) {
+        window.slotHeld = true;
+      }
+    }
+  })();
+}"""
+
+
+@pytest.mark.real_scripted_delays
+@pytest.mark.parametrize(
+    "live_settings",
+    [settings.model_copy(update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.2})],
+    indirect=True,
+)
+def test_a_capacity_shed_says_every_slot_is_busy_with_no_retry_after(pages: GuardedPages):
+    """With every run slot held the run is shed for capacity: no retry-after, "in a moment"."""
+    llm = pages.server.llm
+    llm.script = [*llm.script[: len(llm.calls)], ScriptedReply(DEFAULT_REPORT_JSON, delay_s=3)]
+    page, _ = pages.open()
+    open_shell(page)
+    page.evaluate(HOLD_A_SLOT, unique_question("Search indexing stalled since the reindex"))
+    page.wait_for_function("() => window.slotHeld")
+
+    _ask(page, unique_question())
+    page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
+    _wait_for_panel_run(page)
+
+    notice = _panel(page).locator("[data-shed-reason]")
+    assert notice.get_attribute("data-shed-reason") == "capacity"
+    assert notice.get_attribute("data-retry-after") == ""
+    assert notice.inner_text() == "Every run slot is busy right now. Try again in a moment."
+    assert _panel(page).locator("[data-run-line]").inner_text().startswith("Shed after ")
+    page.evaluate("() => window.holder")  # let the held run finish before the server stops
+
+
 def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: GuardedPages):
     """A POST that never connects errors in the free-play panel only; Retry asks again."""
     page, watch = pages.open()
@@ -113,7 +156,7 @@ def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: Guar
     url = "**/triage/stream"
     page.route(url, lambda route: route.abort("connectionfailed"))
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page, "error")
 
     panel = _panel(page)
@@ -146,7 +189,7 @@ def test_a_dropped_stream_is_lost_in_this_panel_then_replays(pages: GuardedPages
         ),
     )
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page, "lost")
 
     panel = _panel(page)
@@ -168,7 +211,7 @@ def test_a_finished_free_play_run_has_no_serious_axe_violations(
     page, _ = pages.open(color_scheme=color_scheme)
     open_shell(page)
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page)
 
     violations = axe_violations(page)
@@ -180,10 +223,34 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     page, _ = pages.open(viewport={"width": 375, "height": 812})
     open_shell(page)
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page)
 
     widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
     graph = _panel(page).locator(".graph").bounding_box()
     assert graph is not None and graph["width"] >= 340
+
+
+def test_a_free_play_graph_node_opens_the_inspector(pages: GuardedPages):
+    """Free play's graph opens the node inspector too, by keyboard; Escape returns focus."""
+    page, watch = pages.open()
+    open_shell(page)
+    page.wait_for_selector('[data-graph-nodes="ready"]', state="attached")
+
+    _ask(page, unique_question())
+    _wait_for_panel_run(page)
+
+    node = _panel(page).get_by_role("button", name="validate_report, visited once")
+    node.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector('dialog.inspector[open][data-inspected="validate_report"]')
+    assert page.locator(".inspector__title").inner_text() == "validate_report"
+
+    page.keyboard.press("Escape")
+    page.wait_for_selector("dialog.inspector[open]", state="detached")
+    focused = page.evaluate(
+        "document.activeElement.closest('#free-play-root [data-node]')?.dataset.node"
+    )
+    assert focused == "validate_report"
+    assert watch.page_errors == []

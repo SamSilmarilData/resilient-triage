@@ -17,10 +17,15 @@ import {
   createRunController,
   idleRun,
   inspectorView,
-  nextScenario,
   scenarioRun,
+  skipAction,
+  toggledOpen,
 } from "./trace-reducer.mjs";
 
+/**
+ * @template T
+ * @typedef {import("./trace-reducer.mjs").Loadable<T>} Loadable
+ */
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("./trace-reducer.mjs").GraphNode} GraphNode */
@@ -28,9 +33,9 @@ import {
 /** The stage's current run, as the run controller last reported it. */
 const run = signal(idleRun());
 /** graph-layout.json once fetched. */
-const layout = signal(/** @type {GraphLayout | "loading" | "failed"} */ ("loading"));
+const layout = signal(/** @type {Loadable<GraphLayout>} */ ("loading"));
 /** GET /scenarios once fetched: the chapters' copy. */
-const catalogue = signal(/** @type {Catalogue | "loading" | "failed"} */ ("loading"));
+const catalogue = signal(/** @type {Loadable<Catalogue>} */ ("loading"));
 /** The scenario opened inline, if any; one at a time. */
 const openId = signal(/** @type {string | null} */ (null));
 /** The scenario last played on the stage, if any. */
@@ -69,15 +74,14 @@ function LiveStage() {
 
 /** The guided chapters, bound to the catalogue and the stage's run. */
 function GuidedChapters() {
-  const loaded = catalogue.value;
+  const runOf = (/** @type {string} */ id) => scenarioRun(run.value, playedId.value, id);
   return html`<${Chapters}
-    catalogue=${loaded}
+    catalogue=${catalogue.value}
     onRetry=${loadCatalogue}
     openId=${openId.value}
-    runOf=${(/** @type {string} */ id) => scenarioRun(run.value, playedId.value, id)}
-    nextOf=${(/** @type {string} */ id) => (typeof loaded === "object" ? nextScenario(loaded, id) : null)}
+    runOf=${runOf}
     onToggle=${(/** @type {string} */ id) => {
-      openId.value = openId.value === id ? null : id;
+      openId.value = toggledOpen(openId.value, id);
     }}
     onPlay=${(/** @type {string} */ id) => {
       playedId.value = id;
@@ -85,18 +89,20 @@ function GuidedChapters() {
       revealStage();
     }}
     onSkip=${(/** @type {string} */ id) => {
-      const next = typeof loaded === "object" ? nextScenario(loaded, id) : null;
-      if (!next) return;
-      openId.value = next.id;
-      // Keyboard users land on the scenario they skipped to.
-      requestAnimationFrame(() => document.getElementById(`scenario-${next.id}-toggle`)?.focus());
+      // Skip to end: no scroll to the stage, since the report appears in the scenario itself.
+      const action = skipAction(runOf(id));
+      if (action === "skip") stage.skipToEnd();
+      if (action === "start") {
+        playedId.value = id;
+        stage.play(scenarioSource(id), { skipping: true });
+      }
     }}
   />`;
 }
 
 /**
  * Bring the stage into view for a run that just started, when its top is off screen: at phone
- * width it sits above the chapters (#122); pinned on desktop, it never moves. The scroll
+ * width it sits below the chapters (#122); pinned on desktop, it never moves. The scroll
  * follows html's scroll-behavior, so it is instant under reduced motion. Focus stays on Play.
  */
 function revealStage() {
@@ -106,15 +112,27 @@ function revealStage() {
   if (top < 0 || top >= window.innerHeight) element.scrollIntoView({ block: "start" });
 }
 
-/** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */
-async function loadCatalogue() {
-  catalogue.value = "loading";
+/**
+ * Fetch a JSON resource into a Loadable signal: "loading" while it's in flight, then the
+ * value `pick` takes from the body, or "failed" on a non-2xx or a network error.
+ * @template T
+ * @param {import("@preact/signals").Signal<Loadable<T>>} target
+ * @param {string} url
+ * @param {(body: any) => T} [pick]
+ */
+async function loadInto(target, url, pick = (body) => body) {
+  target.value = "loading";
   try {
-    const response = await fetch("/scenarios");
-    catalogue.value = response.ok ? await response.json() : "failed";
+    const response = await fetch(url);
+    target.value = response.ok ? pick(await response.json()) : "failed";
   } catch {
-    catalogue.value = "failed";
+    target.value = "failed";
   }
+}
+
+/** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */
+function loadCatalogue() {
+  return loadInto(catalogue, "/scenarios");
 }
 
 /** The free-play panel, bound to its own run and the shared graph layout. */
@@ -124,12 +142,14 @@ function LiveFreePlay() {
     layout=${layout.value}
     onSubmit=${(request) => freePlay.play(freePlaySource(request))}
     onReplay=${() => freePlay.replay()}
+    onSelectNode=${inspect}
   />`;
 }
 
 // The node inspector (#121): GET /graph/nodes, and the node it shows (null when closed).
-// A graph node on the stage and a button in How it's built's node list both open it.
-const graphNodes = signal(/** @type {GraphNode[] | "loading" | "failed"} */ ("loading"));
+// A graph node (on the stage or in free play) and a button in How it's built's node list
+// all open it.
+const graphNodes = signal(/** @type {Loadable<GraphNode[]>} */ ("loading"));
 const inspected = signal(/** @type {string | null} */ (null));
 
 /** @param {string} name */
@@ -138,14 +158,8 @@ function inspect(name) {
 }
 
 /** Fetch every node's inspector content into its signal. */
-async function loadGraphNodes() {
-  graphNodes.value = "loading";
-  try {
-    const response = await fetch("/graph/nodes");
-    graphNodes.value = response.ok ? (await response.json()).nodes : "failed";
-  } catch {
-    graphNodes.value = "failed";
-  }
+function loadGraphNodes() {
+  return loadInto(graphNodes, "/graph/nodes", (body) => body.nodes);
 }
 
 function BuiltNodes() {
@@ -173,13 +187,8 @@ function mount(id, view) {
 }
 
 /** Fetch the graph's layout into its signal; the stage draws the graph once it lands. */
-async function loadLayout() {
-  try {
-    const response = await fetch("/static/graph-layout.json");
-    layout.value = response.ok ? await response.json() : "failed";
-  } catch {
-    layout.value = "failed";
-  }
+function loadLayout() {
+  return loadInto(layout, "/static/graph-layout.json");
 }
 
 function main() {

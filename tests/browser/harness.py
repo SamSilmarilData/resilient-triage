@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 import uvicorn
@@ -70,6 +71,8 @@ PLAY_ON_STAGE = """async (run) => {
 PAGE_WIDTHS = "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
 RUN_STATES = ("idle", "streaming", "finished", "lost", "error")
 GRAPH_READY = '[data-graph="ready"]'
+# The chapters region once GET /scenarios has drawn.
+CATALOGUE_READY = '[data-catalogue="ready"]'
 
 
 class HarnessError(RuntimeError):
@@ -233,6 +236,11 @@ def stream_scenario(server: LiveServer, scenario_id: str) -> list[TraceEvent]:
     response = httpx.post(f"{server.url}/scenarios/{scenario_id}/stream", timeout=60)
     assert response.status_code == 200, response.text
     return parse_sse(response.text)
+
+
+def unique_question(text: str = "GitHub Actions workflows failing with 503s") -> str:
+    """Free-play text no other run can have cached (a local Redis is shared across worktrees)."""
+    return f"{text} (ticket {uuid4().hex[:8]})"
 
 
 def play(page: Page, *, scenario: str | None = None, query: str | None = None) -> None:
