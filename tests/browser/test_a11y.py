@@ -31,11 +31,14 @@ PHONE = {"width": 375, "height": 812}
 DESKTOP = {"width": 1280, "height": 900}
 # Tab presses allowed to reach a target before the walk counts as lost.
 MAX_TABS = 80
+# The page's regions in reading order, as FOCUS_STATE names them: Tab must visit them in it.
+READING_ORDER = ["hook", "chapters", "stage", "free-play"]
 
 # page.evaluate script: what a sighted keyboard user sees of the focused element. `ring`: an
 # outline of at least 2 px, or (an SVG graph node) its box stroked in --focus. `forward`: it
-# follows the element focused at the previous call in document order. Transitions on the
-# element and the page's scroll settle first. Argument: a selector the walk is heading for.
+# follows the element focused at the previous call in document order. `region`: the reading-
+# order region it sits in (READING_ORDER), or null. Transitions on the element and the page's
+# scroll settle first. Argument: a selector the walk is heading for.
 FOCUS_STATE = """async (target) => {
   const el = document.activeElement;
   if (!el || el === document.body) return null;
@@ -68,8 +71,11 @@ FOCUS_STATE = """async (target) => {
     + (el.dataset.node ? `[data-node=${el.dataset.node}]` : "")
     + (el.dataset.action ? `[data-action=${el.dataset.action}]` : "")
     + (el.getAttribute("href") ? `[href=${el.getAttribute("href")}]` : "");
+  const regions = {hook: ".skip-link, .site-header, #hook", chapters: "#chapters-root",
+    stage: ".stage", "free-play": "#free-play"};
+  const region = Object.keys(regions).find((key) => el.closest(regions[key])) ?? null;
   return {
-    name, ring, inView, forward,
+    name, ring, inView, forward, region,
     focusVisible: el.matches(":focus-visible"),
     atTarget: el.matches(target),
   };
@@ -107,16 +113,26 @@ def _check_focus(state: dict[str, Any] | None) -> dict[str, Any]:
     return state
 
 
-def _tab_to(page: "Page", target: str) -> list[str]:
-    """Press Tab until `target` has focus, checking every stop on the way; return the stops."""
+def _tab_to(page: "Page", target: str, regions: list[str] | None = None) -> list[str]:
+    """Press Tab until `target` has focus, checking every stop on the way; return the stops.
+
+    Each stop's region is appended to `regions`, when given, for _reading_order().
+    """
     stops: list[str] = []
     for _ in range(MAX_TABS):
         page.keyboard.press("Tab")
         state = _check_focus(page.evaluate(FOCUS_STATE, target))
         stops.append(state["name"])
+        if regions is not None and state["region"] is not None:
+            regions.append(state["region"])
         if state["atTarget"]:
             return stops
     raise AssertionError(f"{target} not reached in {MAX_TABS} tabs: {stops}")
+
+
+def _reading_order(regions: list[str]) -> list[str]:
+    """The regions Tab visited, each run of repeats folded to one."""
+    return [region for i, region in enumerate(regions) if i == 0 or regions[i - 1] != region]
 
 
 def _focused(page: "Page", target: str) -> None:
@@ -143,17 +159,18 @@ def test_the_guided_flow_completes_with_the_keyboard_alone(
     open_shell(page)
     page.wait_for_selector(CATALOGUE_READY, state="attached")
     page.wait_for_selector(GRAPH_READY, state="attached")
+    regions: list[str] = []
 
     # The hook: the skip link comes first, then the section nav jumps to the scenarios.
-    assert _tab_to(page, ".skip-link") == ["a[href=#main]"]
-    _tab_to(page, 'a[href="#guided"]')
+    assert _tab_to(page, ".skip-link", regions) == ["a[href=#main]"]
+    _tab_to(page, 'a[href="#guided"]', regions)
     page.keyboard.press("Enter")
 
     # A scenario: open it, play it, and hear the run finish.
-    _tab_to(page, f"#scenario-{first}-toggle")
+    _tab_to(page, f"#scenario-{first}-toggle", regions)
     page.keyboard.press("Enter")
     assert page.locator(f"#scenario-{first}-toggle").get_attribute("aria-expanded") == "true"
-    _tab_to(page, f'[data-scenario="{first}"] [data-action="play"]')
+    _tab_to(page, f'[data-scenario="{first}"] [data-action="play"]', regions)
     region = _announcement(page, "#stage-root")
     assert region.inner_text() == ""
     page.keyboard.press("Enter")
@@ -161,27 +178,29 @@ def test_the_guided_flow_completes_with_the_keyboard_alone(
     wait_for_run(page)
     line = page.locator("#stage-root [data-run-line]").inner_text()
     assert region.inner_text() == f"Run finished: {line}"
-    # Focus stays on Play while the stage scrolls into view (at phone width it sits above).
+    # Focus stays on Play while the stage scrolls into view (below the chapters at phone width).
     assert page.evaluate("document.activeElement.dataset.action") == "play"
 
     # Skip moves on to the next scenario and lands focus on it.
-    _tab_to(page, f'[data-scenario="{first}"] [data-action="skip"]')
+    _tab_to(page, f'[data-scenario="{first}"] [data-action="skip"]', regions)
     page.keyboard.press("Enter")
     page.wait_for_function(f"document.activeElement?.id === 'scenario-{second}-toggle'")
     _focused(page, f"#scenario-{second}-toggle")
 
     # Free play: the form in order, submitted from the keyboard, its run announced too.
-    _tab_to(page, "#free-play-query")
+    _tab_to(page, "#free-play-query", regions)
     page.keyboard.type(unique_question("Checkout latency spiking in eu-west"))
-    assert _tab_to(page, "#free-play-service") == ["#free-play-service"]
-    assert _tab_to(page, '[name="force_refresh"]') == ["input"]
-    assert _tab_to(page, '#free-play-root [type="submit"]') == ["button"]
+    assert _tab_to(page, "#free-play-service", regions) == ["#free-play-service"]
+    assert _tab_to(page, '[name="force_refresh"]', regions) == ["input"]
+    assert _tab_to(page, '#free-play-root [type="submit"]', regions) == ["button"]
     page.keyboard.press("Enter")
     page.wait_for_selector(
         '#free-play-root [data-run-state="finished"]', state="attached", timeout=30_000
     )
     free_line = page.locator("#free-play-root [data-run-line]").inner_text()
     assert _announcement(page, "#free-play-root").inner_text() == f"Run finished: {free_line}"
+    # Tab followed reading order: the chapters before the stage they play on, at every width.
+    assert _reading_order(regions) == READING_ORDER
     assert watch.page_errors == []
     assert watch.failed == []
 
