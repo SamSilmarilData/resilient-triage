@@ -20,6 +20,7 @@ from harness import (
 )
 
 from resilient_triage.config import Settings, settings
+from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, ScriptedReply
 
 if TYPE_CHECKING:
     from playwright.sync_api import Locator, Page
@@ -104,6 +105,48 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     _wait_for_panel_run(page)
     assert panel.locator("[data-run-line]").inner_text().startswith("Answered from cache")
     assert page.evaluate("() => window.notReloaded") is True
+
+
+# page.evaluate script: stream a free-play run outside the panel, so it holds a run slot while
+# its (delayed) model reply comes; window.slotHeld turns true once its run_slot is acquired.
+HOLD_A_SLOT = """async (query) => {
+  const sse = await import("/static/sse.mjs");
+  window.slotHeld = false;
+  window.holder = (async () => {
+    for await (const m of sse.freePlaySource({query})(new AbortController().signal)) {
+      if (m.kind === "event" && m.event.kind === "run_slot" && m.event.acquired) {
+        window.slotHeld = true;
+      }
+    }
+  })();
+}"""
+
+
+@pytest.mark.real_scripted_delays
+@pytest.mark.parametrize(
+    "live_settings",
+    [settings.model_copy(update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.2})],
+    indirect=True,
+)
+def test_a_capacity_shed_says_every_slot_is_busy_with_no_retry_after(pages: GuardedPages):
+    """With every run slot held the run is shed for capacity: no retry-after, "in a moment"."""
+    llm = pages.server.llm
+    llm.script = [*llm.script[: len(llm.calls)], ScriptedReply(DEFAULT_REPORT_JSON, delay_s=3)]
+    page, _ = pages.open()
+    open_shell(page)
+    page.evaluate(HOLD_A_SLOT, unique_question("Search indexing stalled since the reindex"))
+    page.wait_for_function("() => window.slotHeld")
+
+    _ask(page, unique_question())
+    page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
+    _wait_for_panel_run(page)
+
+    notice = _panel(page).locator("[data-shed-reason]")
+    assert notice.get_attribute("data-shed-reason") == "capacity"
+    assert notice.get_attribute("data-retry-after") == ""
+    assert notice.inner_text() == "Every run slot is busy right now. Try again in a moment."
+    assert _panel(page).locator("[data-run-line]").inner_text().startswith("Shed after ")
+    page.evaluate("() => window.holder")  # let the held run finish before the server stops
 
 
 def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: GuardedPages):
