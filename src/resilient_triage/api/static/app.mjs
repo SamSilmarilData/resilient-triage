@@ -8,8 +8,9 @@ import { signal } from "@preact/signals";
 import { html } from "htm/preact";
 import { render } from "preact";
 import { Chapters } from "./components/chapter.mjs";
+import { FreePlay } from "./components/free-play.mjs";
 import { Stage } from "./components/stage.mjs";
-import { scenarioSource } from "./sse.mjs";
+import { freePlaySource, scenarioSource } from "./sse.mjs";
 import { createRunController, idleRun, nextScenario, scenarioRun } from "./trace-reducer.mjs";
 
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
@@ -27,9 +28,9 @@ const openId = signal(/** @type {string | null} */ (null));
 const playedId = signal(/** @type {string | null} */ (null));
 
 /**
- * The page's one run controller: whatever plays (a scenario, free play) plays on the stage.
- * Panels start a run with `stage.play(source)`, a source from sse.mjs; browser tests import
- * it from this module the same way.
+ * The stage's run controller: the guided scenarios play here (free play has its own, below).
+ * A run starts with `stage.play(source)`, a source from sse.mjs; browser tests import it from
+ * this module the same way.
  */
 export const stage = createRunController({
   onChange: (view) => {
@@ -37,18 +38,15 @@ export const stage = createRunController({
   },
 });
 
-/**
- * A quiet bordered panel that says what will appear in it.
- * @param {{ title: string, children: any }} props
- */
-function EmptyState({ title, children }) {
-  return html`
-    <div class="empty">
-      <p class="empty__title">${title}</p>
-      <p class="empty__body">${children}</p>
-    </div>
-  `;
-}
+/** The free-play panel's own run, so its errors and lost streams stay in that panel (#101). */
+const freePlayRun = signal(idleRun());
+
+/** The free-play panel's run controller: a visitor's question plays here, not on the stage. */
+export const freePlay = createRunController({
+  onChange: (view) => {
+    freePlayRun.value = view;
+  },
+});
 
 /** The live-trace column, bound to the stage's signals. */
 function LiveStage() {
@@ -92,12 +90,14 @@ async function loadCatalogue() {
   }
 }
 
-function FreePlay() {
-  return html`
-    <${EmptyState} title="Free play isn't open yet">
-      Your own question and its live trace will go here.
-    <//>
-  `;
+/** The free-play panel, bound to its own run and the shared graph layout. */
+function LiveFreePlay() {
+  return html`<${FreePlay}
+    run=${freePlayRun.value}
+    layout=${layout.value}
+    onSubmit=${(request) => freePlay.play(freePlaySource(request))}
+    onReplay=${() => freePlay.replay()}
+  />`;
 }
 
 /**
@@ -127,7 +127,7 @@ function main() {
   loadCatalogue();
   mount("stage-root", html`<${LiveStage} />`);
   mount("chapters-root", html`<${GuidedChapters} />`);
-  mount("free-play-root", html`<${FreePlay} />`);
+  mount("free-play-root", html`<${LiveFreePlay} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.
   document.documentElement.dataset.shell = "ready";
 }
