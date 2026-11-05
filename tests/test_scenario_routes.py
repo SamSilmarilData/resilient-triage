@@ -196,7 +196,7 @@ async def test_a_budget_shed_stream_names_its_reason_and_retry_after(serve_app: 
     assert slot.retry_after_s is not None and 1 <= slot.retry_after_s <= 60
 
 
-async def test_a_run_shed_for_capacity_still_counts_and_says_why(serve_app: AppServer) -> None:
+async def test_a_run_shed_for_capacity_does_not_count_and_says_why(serve_app: AppServer) -> None:
     llm = BlockingAdapter()
     async with serve_app(llm, one_slot(free_play_runs_per_minute=2)) as (_, ac):
         first = asyncio.create_task(ac.post("/triage", json={"query": QUERIES[0]}))
@@ -204,10 +204,12 @@ async def test_a_run_shed_for_capacity_still_counts_and_says_why(serve_app: AppS
         no_slot = parse_sse((await ac.post("/triage/stream", json={"query": QUERIES[1]})).text)
         llm.release.set()
         assert (await first).status_code == 200
-        over_budget = await ac.post("/triage", json={"query": QUERIES[2]})
+        second_run = await ac.post("/triage", json={"query": QUERIES[2]})
+        over_budget = await ac.post("/triage", json={"query": QUERIES[1]})
 
     [slot] = [e for e in no_slot if isinstance(e, RunSlot)]
     assert (slot.acquired, slot.reason, slot.retry_after_s) == (False, "capacity", None)
+    assert second_run.status_code == 200  # the capacity shed ran no graph, so it took no budget
     assert over_budget.status_code == 503
     assert "Retry-After" in over_budget.headers
 
