@@ -229,7 +229,11 @@ class TelemetryProbe:
             return await source.read(query, scope)
 
         started = time.monotonic()
-        outcome = await self._read(source, query, scope, read_once)
+
+        def degraded(status: str, reason: str) -> TelemetrySignal:
+            return self._degraded(source, query, scope, ms_since(started), status, reason)
+
+        outcome = await self._read(source.id, read_once, degraded)
         duration_ms = ms_since(started)
         read_outcome: ReadOutcome
         match outcome:
@@ -257,40 +261,39 @@ class TelemetryProbe:
 
     async def _read(
         self,
-        source: TelemetrySource,
-        query: str,
-        scope: str | None,
+        source_id: str,
         read: Callable[[], Awaitable[list[TelemetrySignal]]],
+        degraded: Callable[[str, str], TelemetrySignal],
     ) -> _Outcome:
         """Run read() under the source's guard and classify it; only CancelledError escapes."""
-        started = time.monotonic()
+        # A failed read becomes degraded(status, reason): its one degraded signal.
         failure: type[_Tripped | _Unavailable]
         try:
-            return _Read(await self._guarded(source.id, read))
+            return _Read(await self._guarded(source_id, read))
         except BreakerOpen as exc:
-            logger.warning("Telemetry source %s refused by its breaker: %s", source.id, exc)
+            logger.warning("Telemetry source %s refused by its breaker: %s", source_id, exc)
             failure = _Tripped
-            reason = f"Circuit breaker '{source.id}' tripped OPEN; failing fast without hanging."
+            reason = f"Circuit breaker '{source_id}' tripped OPEN; failing fast without hanging."
         except Exception as exc:
             detail = str(exc) or type(exc).__name__
-            logger.error("Telemetry source %s read failed: %s", source.id, detail)
-            if self._source_breakers[source.id].info().is_open:
+            logger.error("Telemetry source %s read failed: %s", source_id, detail)
+            if self._source_breakers[source_id].info().is_open:
                 failure = _Tripped
                 reason = (
-                    f"Circuit breaker '{source.id}' tripped OPEN after this read failed "
+                    f"Circuit breaker '{source_id}' tripped OPEN after this read failed "
                     f"({detail}); failing fast without hanging."
                 )
             else:
                 failure = _Unavailable
-                reason = f"Telemetry source '{source.id}' unavailable: {detail}"
-        return failure(self._degraded(source, query, scope, started, failure.STATUS, reason))
+                reason = f"Telemetry source '{source_id}' unavailable: {detail}"
+        return failure(degraded(failure.STATUS, reason))
 
     def _degraded(
         self,
         source: TelemetrySource,
         query: str,
         scope: str | None,
-        started: float,
+        latency_ms: float,
         status: str,
         reason: str,
     ) -> TelemetrySignal:
@@ -303,7 +306,7 @@ class TelemetryProbe:
         return TelemetrySignal(
             source=label,
             status=status,
-            latency_ms=round((time.monotonic() - started) * 1000.0, 2),
+            latency_ms=round(latency_ms, 2),
             error_rate=1.0,
             raw_snippet=reason,
         )
