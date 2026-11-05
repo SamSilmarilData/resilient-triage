@@ -806,6 +806,158 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
 }
 
 // ---------------------------------------------------------------------------------------------
+// Guided chapters (#119): GET /scenarios as the page draws it, and which run a scenario shows.
+
+/**
+ * GET /scenarios (schemas/api.py ScenarioCatalogue): the page's copy, never a script.
+ * @typedef {{ id: string, chapter: string, title: string, caption: string,
+ *             setup_notes: string[] }} ScenarioView
+ * @typedef {{ chapters: { id: string, title: string, intro: string,
+ *                         scenarios: ScenarioView[] }[] }} Catalogue
+ */
+
+/**
+ * The scenario after this one in catalogue order, across chapters; null after the last.
+ * @param {Catalogue} catalogue
+ * @param {string} id
+ * @returns {ScenarioView | null}
+ */
+export function nextScenario(catalogue, id) {
+  const all = catalogue.chapters.flatMap((chapter) => chapter.scenarios);
+  const index = all.findIndex((scenario) => scenario.id === id);
+  return index === -1 ? null : (all[index + 1] ?? null);
+}
+
+/**
+ * The stage's run if it is this scenario's: the scenario played last and, once the trace has
+ * started, the trace names it. Otherwise null, so a scenario never shows another run.
+ * @param {RunView} run
+ * @param {string | null} playedId
+ * @param {string} id
+ * @returns {RunView | null}
+ */
+export function scenarioRun(run, playedId, id) {
+  if (playedId !== id || run.status === "idle") return null;
+  const started = run.trace.events.find((event) => event.kind === "trace_started");
+  return started && started.scenario_id !== id ? null : run;
+}
+
+/**
+ * One recommended action as the report draws it. `raised`: reconcile made it require
+ * approval against the model's claim (graph/reconciliation.py).
+ * @typedef {{ priority: string, action: string, target: string, type: string,
+ *             approval: boolean, raised: boolean }} ReportActionView
+ * @typedef {{ kind: "report", summary: string, severity: string, degradation: string,
+ *             tone: "ok" | "warn" | "bad", confidence: string, rootCause: string,
+ *             breakers: string, provenance: string, actions: ReportActionView[] }
+ *   | { kind: "shed", line: string }} ReportView
+ */
+
+/** @type {Record<string, "ok" | "warn" | "bad">} */
+const DEGRADATION_TONES = { HEALTHY: "ok", PARTIALLY_DEGRADED: "warn" };
+
+/**
+ * Where the report's words came from, in one sentence.
+ * @param {TraceView} trace
+ * @param {Record<string, any>} response
+ */
+function provenance(trace, response) {
+  if (response.cached) {
+    const similarity = response.cache_similarity;
+    const match = typeof similarity === "number" ? `, similarity ${similarity.toFixed(2)}` : "";
+    return `Served from the semantic cache${match}: no run, no model call.`;
+  }
+  const fellBack =
+    trace.visits.some((visit) => visit.node === "fallback_report") ||
+    trace.events.some((event) => event.kind === "deadline_exceeded");
+  if (fellBack) return "Built by fallback_report from what the run saw: no model text.";
+  const model = trace.scripted ? "the scripted model reply" : "the model's reply";
+  return `Summary, analysis and actions are ${model}. Status, breakers and approvals are set by reconcile.`;
+}
+
+/**
+ * The run's answer once trace_finished has arrived: the report, or a shed request's notice.
+ * Null before then.
+ * @param {TraceView} trace
+ * @returns {ReportView | null}
+ */
+export function reportView(trace) {
+  const last = trace.events[trace.events.length - 1];
+  if (!trace.finished || last?.kind !== "trace_finished") return null;
+  if (!last.response) {
+    const shed = shedNotice(trace);
+    return { kind: "shed", line: `No report: the request was shed, not queued. ${shed?.line ?? ""}`.trim() };
+  }
+  const report = last.response.report;
+  const raised = new Set(
+    trace.events
+      .filter((event) => event.kind === "reconciled")
+      .flatMap((event) => event.changes.approval_raised),
+  );
+  /** @type {string[]} */
+  const breakers = report.circuit_breakers_tripped;
+  return {
+    kind: "report",
+    summary: report.summary,
+    severity: report.severity,
+    degradation: report.degradation_status,
+    tone: DEGRADATION_TONES[report.degradation_status] ?? "bad",
+    confidence: Number(report.confidence_score).toFixed(2),
+    rootCause: report.root_cause_analysis,
+    breakers: breakers.length ? breakers.map(sourceName).join(", ") : "None",
+    provenance: provenance(trace, last.response),
+    actions: report.recommended_actions.map(
+      (/** @type {Record<string, any>} */ action, /** @type {number} */ index) => ({
+        priority: action.priority,
+        action: action.action,
+        target: action.target_system,
+        type: action.action_type,
+        approval: action.requires_approval,
+        raised: raised.has(index),
+      }),
+    ),
+  };
+}
+
+/**
+ * One trace event as "Show everything" lists it: when, what kind, and its fields.
+ * @typedef {{ seq: number, at: string, kind: string, detail: string }} EventRow
+ */
+
+const EVENT_FRAME = new Set(["seq", "t_ms", "kind"]);
+
+/**
+ * A field's value in one short token: objects as compact JSON.
+ * @param {unknown} value
+ */
+function fieldText(value) {
+  return value !== null && typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * Every event of the trace, in order, for "Show everything". Setup steps and setup reads
+ * happen before t = 0 and say "setup"; trace_finished names its outcome, not its response.
+ * @param {TraceView} trace
+ * @returns {EventRow[]}
+ */
+export function eventLog(trace) {
+  return trace.events.map((event) => {
+    const setup = event.kind === "scenario_setup" || event.phase === "setup";
+    const fields = Object.entries(event)
+      .filter(([name]) => !EVENT_FRAME.has(name))
+      .map(([name, value]) =>
+        name === "response" ? `response=${value ? "report" : "none"}` : `${name}=${fieldText(value)}`,
+      );
+    return {
+      seq: event.seq,
+      at: setup ? "setup" : formatMs(event.t_ms),
+      kind: event.kind,
+      detail: fields.join(" "),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // Node inspector (#121): GET /graph/nodes, projected for the inspector and the node list.
 // Paths on the wire are repository-relative; links open them on GitHub.
 

@@ -1,0 +1,236 @@
+"""The guided chapters in Chromium (#119): chapters and scenarios drawn from GET /scenarios.
+
+A scenario opens inline (its setup notes, Play and Skip, its one-line summary, "Show
+everything" and the report) and plays on the pinned stage. Everything the page shows is
+checked against the live app's own catalogue and the Python summary of the same run.
+"""
+
+import json
+from importlib import resources
+from typing import TYPE_CHECKING, Any
+
+import pytest
+from harness import (
+    GRAPH_READY,
+    GuardedPages,
+    axe_violations,
+    describe,
+    open_shell,
+    stream_scenario,
+    wait_for_run,
+)
+
+from resilient_triage.scenarios.catalogue import get_scenario, public_catalogue
+from resilient_triage.trace.events import Reconciled, TraceFinished
+from resilient_triage.trace.summary import summarize
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Page
+
+pytestmark = pytest.mark.browser
+
+CATALOGUE_READY = '[data-catalogue="ready"]'
+# The chapters as drawn: each chapter's id, title and intro, and its scenarios' copy.
+DRAWN_CHAPTERS = """() => [...document.querySelectorAll("[data-chapter]")].map((chapter) => ({
+  id: chapter.dataset.chapter,
+  title: chapter.querySelector(".chapter__title").textContent.trim(),
+  intro: chapter.querySelector(".chapter__intro").textContent.trim(),
+  scenarios: [...chapter.querySelectorAll("[data-scenario]")].map((scenario) => ({
+    id: scenario.dataset.scenario,
+    title: scenario.querySelector(".scenario__title").textContent.trim(),
+    caption: scenario.querySelector(".scenario__caption").textContent.trim(),
+  })),
+}))"""
+
+
+LAYOUT_EDGES = {
+    (edge["source"], edge["target"])
+    for edge in json.loads(
+        resources.files("resilient_triage.api").joinpath("static/graph-layout.json").read_text()
+    )["edges"]
+}
+# As in test_trace_view.py: the graph's taken edges, and each graph node's visit count.
+TAKEN_EDGES = """() => [...document.querySelectorAll('[data-edge][data-taken="true"]')]
+  .map((edge) => [edge.dataset.source, edge.dataset.target])"""
+VISITED_NODES = """() => Object.fromEntries([...document.querySelectorAll("[data-node]")]
+  .filter((node) => !node.dataset.node.startsWith("__"))
+  .map((node) => [node.dataset.node, Number(node.dataset.visits)]))"""
+# One scenario per chapter, in chapter order.
+PLAYED = ["healthy-run", "reconciliation", "shed-request", "everything-down"]
+
+
+def _open_chapters(page: "Page") -> None:
+    """Load the page and wait until the chapters have drawn from GET /scenarios."""
+    open_shell(page)
+    page.wait_for_selector(CATALOGUE_READY, state="attached")
+
+
+def _copy(catalogue: dict[str, Any]) -> list[dict[str, Any]]:
+    """The copy the chapters should draw from a GET /scenarios body."""
+    return [
+        {
+            "id": chapter["id"],
+            "title": chapter["title"],
+            "intro": chapter["intro"],
+            "scenarios": [
+                {"id": s["id"], "title": s["title"], "caption": s["caption"]}
+                for s in chapter["scenarios"]
+            ],
+        }
+        for chapter in catalogue["chapters"]
+    ]
+
+
+def test_chapters_draw_the_catalogue_from_get_scenarios(pages: GuardedPages):
+    """Every chapter and scenario on the page is the catalogue's, in its order."""
+    page, watch = pages.open()
+
+    _open_chapters(page)
+
+    expected = _copy(public_catalogue().model_dump(mode="json"))
+    assert page.evaluate(DRAWN_CHAPTERS) == expected
+    assert any(url.endswith("/scenarios") for url in watch.requests)
+    assert watch.failed == []
+    assert watch.page_errors == []
+
+
+def test_the_copy_comes_from_the_response_not_the_page(pages: GuardedPages):
+    """Change the served catalogue and the page draws the change: no copy lives in JS."""
+    body = public_catalogue().model_dump(mode="json")
+    body["chapters"] = body["chapters"][:1]
+    body["chapters"][0]["title"] = "Renamed chapter"
+    body["chapters"][0]["scenarios"][0]["caption"] = "A caption only the response knows."
+    page, _ = pages.open()
+    page.route(
+        "**/scenarios",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ),
+    )
+
+    _open_chapters(page)
+
+    assert page.evaluate(DRAWN_CHAPTERS) == _copy(body)
+
+
+def test_a_failed_catalogue_keeps_the_prose_and_offers_retry(pages: GuardedPages):
+    """GET /scenarios failing leaves the static prose up and a notice with Retry (#101)."""
+    page, watch = pages.open()
+    page.route("**/scenarios", lambda route: route.fulfill(status=503, body="down"))
+
+    open_shell(page)
+    page.wait_for_selector('[data-catalogue="failed"]', state="attached")
+
+    assert page.locator("#hook-title").is_visible()
+    assert page.locator("#guided-title").is_visible()
+    notice = page.locator('[data-catalogue="failed"] [role="alert"]')
+    assert "didn't load" in notice.inner_text()
+    assert [failure.split(" ")[0] for failure in watch.failed] == ["503"]
+
+    page.unroute("**/scenarios")
+    page.get_by_role("button", name="Retry").click()
+    page.wait_for_selector(CATALOGUE_READY, state="attached")
+    assert page.locator("[data-chapter]").count() == len(public_catalogue().chapters)
+
+
+def _path_edges(path: list[str]) -> set[tuple[str, str]]:
+    """The layout edges a node path walks, from __start__ to __end__."""
+    walk = ["__start__", *path, "__end__"]
+    return {pair for pair in zip(walk, walk[1:], strict=False) if pair in LAYOUT_EDGES}
+
+
+def _scenario(page: "Page", scenario_id: str, selector: str = "") -> Any:
+    """A locator inside one scenario's disclosure."""
+    return page.locator(f'[data-scenario="{scenario_id}"] {selector}'.strip())
+
+
+def test_opening_a_scenario_shows_its_setup_and_never_an_expected_path(pages: GuardedPages):
+    """Opened, a scenario shows its setup notes and Play; the graph stays idle until it runs."""
+    scenario = get_scenario("tripped-breaker")
+    assert scenario is not None
+    page, _ = pages.open()
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    toggle = page.locator("#scenario-tripped-breaker-toggle")
+    toggle.click()
+
+    assert toggle.get_attribute("aria-expanded") == "true"
+    notes = _scenario(page, scenario.id, ".scenario__setup li").all_inner_texts()
+    assert notes == list(scenario.setup_notes)
+    assert _scenario(page, scenario.id, '[data-action="play"]').is_visible()
+    assert page.locator('[data-scenario][data-open="true"]').count() == 1
+    assert page.evaluate(TAKEN_EDGES) == []
+    assert set(page.evaluate(VISITED_NODES).values()) == {0}
+    assert _scenario(page, scenario.id, "[data-report]").count() == 0
+
+    toggle.click()
+    assert toggle.get_attribute("aria-expanded") == "false"
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+@pytest.mark.parametrize("scenario_id", PLAYED)
+def test_a_played_scenario_ends_with_its_trace_summary_and_report(
+    pages: GuardedPages, scenario_id: str, scheme: str
+):
+    """Play streams the run onto the stage; the scenario then shows its line and report."""
+    events = stream_scenario(pages.server, scenario_id)
+    summary = summarize(events)
+    finished = events[-1]
+    assert isinstance(finished, TraceFinished)
+    path = [visit.node for visit in summary.nodes]
+    page, watch = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    page.locator(f"#scenario-{scenario_id}-toggle").click()
+    _scenario(page, scenario_id, '[data-action="play"]').click()
+    wait_for_run(page)
+
+    visits = page.evaluate(VISITED_NODES)
+    assert {node for node, count in visits.items() if count} == set(path)
+    assert {tuple(edge) for edge in page.evaluate(TAKEN_EDGES)} == _path_edges(path)
+    assert page.locator("[data-run-badge]").inner_text() == "Model replies scripted"
+    line = _scenario(page, scenario_id, "[data-scenario-line]").inner_text()
+    assert line and line == page.locator("[data-run-line]").inner_text()
+
+    report = _scenario(page, scenario_id, "[data-report]")
+    if finished.response is None:
+        assert report.get_attribute("data-report") == "shed"
+    else:
+        assert report.get_attribute("data-report") == "report"
+        answer = finished.response.report
+        assert report.locator(".report__summary").inner_text() == answer.summary
+        assert report.locator("[data-degradation]").inner_text() == answer.degradation_status
+        assert report.locator(".report__action").count() == len(answer.recommended_actions)
+    raised = [i for e in events if isinstance(e, Reconciled) for i in e.changes.approval_raised]
+    marked = report.locator('.report__action[data-raised="true"]')
+    assert marked.count() == len(raised)
+
+    everything = _scenario(page, scenario_id, '[data-action="show-everything"]')
+    everything.click()
+    assert everything.get_attribute("aria-expanded") == "true"
+    assert _scenario(page, scenario_id, ".events li").count() == len(events)
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+    assert watch.page_errors == []
+    assert watch.console_errors == []
+    assert watch.failed == []
+
+
+def test_skip_opens_the_next_scenario_and_moves_focus_to_it(pages: GuardedPages):
+    """Skip closes this scenario and opens the next in catalogue order, across chapters."""
+    page, _ = pages.open()
+    _open_chapters(page)
+
+    page.locator("#scenario-model-failover-toggle").click()
+    _scenario(page, "model-failover", '[data-action="skip"]').click()
+
+    next_toggle = page.locator("#scenario-self-repair-toggle")
+    assert next_toggle.get_attribute("aria-expanded") == "true"
+    assert page.locator('[data-scenario][data-open="true"]').count() == 1
+    page.wait_for_function("document.activeElement?.id === 'scenario-self-repair-toggle'")
+    last = public_catalogue().chapters[-1].scenarios[-1].id
+    page.locator(f"#scenario-{last}-toggle").click()
+    assert _scenario(page, last, '[data-action="skip"]').count() == 0

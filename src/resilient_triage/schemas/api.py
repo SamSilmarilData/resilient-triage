@@ -193,6 +193,7 @@ class ScenarioChapterView(BaseModel):
 
     id: str
     title: str
+    intro: str = Field(description="What the chapter breaks, in a sentence or two for the page")
     scenarios: list[ScenarioView]
 
 
