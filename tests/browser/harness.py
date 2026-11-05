@@ -7,11 +7,13 @@ browser tier, so the regular test run, which doesn't install it, can still colle
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from importlib import resources
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -42,7 +44,8 @@ BLOCKING_IMPACTS = ("serious", "critical")
 
 # page.evaluate script: stream one run with the page's own SSE reader (sse.mjs) and fold its
 # events with the reducer. Argument: {scenario: id} or {query: text} (free play). Returns the
-# raw events, the reducer's summary and its summary line.
+# raw events, the reducer's summary and its summary line, and `prefixes`: the summary of every
+# shorter prefix of the events (the empty one first), as a run mid-stream has it.
 STREAM_AND_FOLD = """async (run) => {
   const sse = await import("/static/sse.mjs");
   const reducer = await import("/static/trace-reducer.mjs");
@@ -54,7 +57,8 @@ STREAM_AND_FOLD = """async (run) => {
     if (message.kind === "event") events.push(message.event);
   }
   const summary = reducer.summarize(events);
-  return {events, summary, line: reducer.summaryLine(summary)};
+  const prefixes = events.map((_, length) => reducer.summarize(events.slice(0, length)));
+  return {events, summary, line: reducer.summaryLine(summary), prefixes};
 }"""
 
 # page.evaluate script: start a run on the page's stage (app.mjs `stage`), the way a play
@@ -73,6 +77,28 @@ RUN_STATES = ("idle", "streaming", "finished", "lost", "error")
 GRAPH_READY = '[data-graph="ready"]'
 # The chapters region once GET /scenarios has drawn.
 CATALOGUE_READY = '[data-catalogue="ready"]'
+
+# Every (source, target) edge in graph-layout.json, the graph the page draws.
+LAYOUT_EDGES = {
+    (edge["source"], edge["target"])
+    for edge in json.loads(
+        resources.files("resilient_triage.api").joinpath("static/graph-layout.json").read_text()
+    )["edges"]
+}
+# page.evaluate script: the graph drawn inside a root. `visits`: each graph node's visit count
+# (__start__ and __end__ are the graph's terminals, not steps of the path). `taken`: the taken
+# edges, each with its route (null on an unconditional edge). Argument: the root's selector.
+GRAPH_PROBE = """(root) => {
+  const graph = document.querySelector(root);
+  return {
+    visits: Object.fromEntries([...graph.querySelectorAll("[data-node]")]
+      .filter((node) => !node.dataset.node.startsWith("__"))
+      .map((node) => [node.dataset.node, Number(node.dataset.visits)])),
+    taken: [...graph.querySelectorAll('[data-edge][data-taken="true"]')]
+      .map((edge) => ({source: edge.dataset.source, target: edge.dataset.target,
+                       route: edge.dataset.route ?? null})),
+  };
+}"""
 
 
 class HarnessError(RuntimeError):
@@ -215,6 +241,10 @@ class GuardedPages:
         """Every request any page here made off the live app's origin (each was aborted)."""
         return [url for watch in self.watches for url in watch.blocked]
 
+    def page_errors(self) -> list[str]:
+        """Every uncaught error any page here threw."""
+        return [error for watch in self.watches for error in watch.page_errors]
+
     def close(self) -> None:
         """Close every context opened here."""
         for context in self.contexts:
@@ -250,10 +280,52 @@ def play(page: Page, *, scenario: str | None = None, query: str | None = None) -
     page.evaluate(PLAY_ON_STAGE, run)
 
 
-def wait_for_run(page: Page, state: str = "finished", timeout_ms: float = 30_000) -> None:
-    """Wait until the stage's run reaches a state (`data-run-state`); never a fixed sleep."""
+def run_selector(state: str, root: str = "#stage-root") -> str:
+    """The selector of a run in a state (`data-run-state`) inside a stage root."""
     assert state in RUN_STATES, state
-    page.wait_for_selector(f'[data-run-state="{state}"]', state="attached", timeout=timeout_ms)
+    return f'{root} [data-run-state="{state}"]'
+
+
+def wait_for_run(
+    page: Page, state: str = "finished", root: str = "#stage-root", timeout_ms: float = 30_000
+) -> None:
+    """Wait until the run inside `root` (the stage's, by default) reaches a state; never a sleep."""
+    page.wait_for_selector(run_selector(state, root), state="attached", timeout=timeout_ms)
+
+
+@dataclass(frozen=True)
+class GraphState:
+    """A drawn graph: each node's visit count and the edges the run took."""
+
+    visits: dict[str, int]
+    taken: list[dict[str, str | None]]
+
+    @property
+    def visited(self) -> set[str]:
+        """The graph nodes visited at least once."""
+        return {node for node, count in self.visits.items() if count}
+
+    @property
+    def taken_pairs(self) -> set[tuple[str, str]]:
+        """The taken edges as (source, target) pairs."""
+        return {(str(edge["source"]), str(edge["target"])) for edge in self.taken}
+
+    @property
+    def taken_routes(self) -> set[str]:
+        """The routes on the taken conditional edges."""
+        return {str(edge["route"]) for edge in self.taken if edge["route"]}
+
+
+def graph_state(page: Page, root: str = "#stage-root") -> GraphState:
+    """The graph drawn inside `root` (the stage's, by default), as GRAPH_PROBE reads it."""
+    probed = page.evaluate(GRAPH_PROBE, root)
+    return GraphState(visits=probed["visits"], taken=probed["taken"])
+
+
+def path_edges(path: list[str]) -> set[tuple[str, str]]:
+    """The layout edges a node path walks, from __start__ to __end__."""
+    walk = ["__start__", *path, "__end__"]
+    return {pair for pair in zip(walk, walk[1:], strict=False) if pair in LAYOUT_EDGES}
 
 
 def axe_violations(page: Page) -> list[dict[str, Any]]:

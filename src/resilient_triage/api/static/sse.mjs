@@ -1,4 +1,7 @@
 // @ts-check
+// The page's network I/O: every fetch() the page makes goes through here, so the reducer and
+// the components stay free of it (CODING_STANDARDS.md, Frontend).
+//
 // Server-sent events over fetch() (ADR 0008, #118). The trace streams answer a POST, which
 // EventSource can't send, so this module reads the response body itself and parses the SSE
 // framing the server writes: `event: <kind>` and one `data: <json>` line per event, blank-line
@@ -6,6 +9,9 @@
 //
 // A *stream source* is a function of an AbortSignal that yields stream messages. The run
 // controller in trace-reducer.mjs takes one, so tests and later panels can hand it any source.
+//
+// loadInto() fetches the page's JSON resources (graph-layout.json, GET /scenarios, GET
+// /graph/nodes) into a Loadable signal.
 
 /** @typedef {import("./trace-reducer.mjs").TraceEvent} TraceEvent */
 /** @typedef {{ kind: "event", event: TraceEvent } | { kind: "ping" }} StreamMessage */
@@ -30,7 +36,7 @@ export class StreamHttpError extends Error {
 }
 
 /** An incremental SSE parser: push decoded text in any chunking, get whole messages back. */
-export function createSseParser() {
+function createSseParser() {
   let buffer = "";
   return {
     /**
@@ -75,7 +81,7 @@ function parseBlock(block) {
  * @param {Response} response
  * @returns {AsyncGenerator<StreamMessage>}
  */
-export async function* readSse(response) {
+async function* readSse(response) {
   if (!response.body) return;
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   const parser = createSseParser();
@@ -140,4 +146,22 @@ export function scenarioSource(scenarioId) {
  */
 export function freePlaySource(request) {
   return (signal) => postStream("/triage/stream", request, signal);
+}
+
+/**
+ * Fetch a JSON resource into a Loadable signal: "loading" while it's in flight, then the
+ * value `pick` takes from the body, or "failed" on a non-2xx or a network error.
+ * @template T
+ * @param {{ value: import("./trace-reducer.mjs").Loadable<T> }} target a signal
+ * @param {string} url
+ * @param {(body: any) => T} [pick]
+ */
+export async function loadInto(target, url, pick = (body) => body) {
+  target.value = "loading";
+  try {
+    const response = await fetch(url);
+    target.value = response.ok ? pick(await response.json()) : "failed";
+  } catch {
+    target.value = "failed";
+  }
 }

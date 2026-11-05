@@ -23,7 +23,7 @@ function onKey(event, action) {
  * @param {{ node: GraphNodeView, fontPx: number, onSelect?: (name: string) => void }} props
  */
 function Node({ node, fontPx, onSelect }) {
-  const select = onSelect && !node.terminal ? () => onSelect(node.name) : undefined;
+  const select = onSelect && node.selectable ? () => onSelect(node.name) : undefined;
   const shape = node.terminal
     ? html`<circle class="graph__terminal" cx=${node.x} cy=${node.y} r=${node.r} />`
     : html`

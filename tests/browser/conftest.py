@@ -10,7 +10,8 @@ The app runs in uvicorn on a background thread, on `127.0.0.1` and a free port, 
 own `AppRuntime`: a `ScriptedAdapter` model, a canned Statuspage and the deterministic embedder,
 so free play never reaches Groq and nothing downloads a model. Chromium is a separate process
 that `offline_only` can't see, so every context routes `**/*` through a guard that aborts any
-request off the live app's own origin (scheme, host and port) and fails the test.
+request off the live app's own origin (scheme, host and port) and fails the test. An uncaught
+error on any page (Playwright's `pageerror`) fails the test too, at teardown.
 """
 
 from __future__ import annotations
@@ -73,8 +74,9 @@ def browser(playwright: Playwright) -> Iterator[Browser]:
 
 @pytest.fixture
 def pages(browser: Browser, live_server: LiveServer) -> Iterator[GuardedPages]:
-    """Open guarded pages on the live app; fails the test if any page left the app's origin."""
+    """Open guarded pages on the live app; fails the test on an off-origin request or page error."""
     guarded = GuardedPages(browser, live_server)
     yield guarded
     guarded.close()
     assert not guarded.blocked(), f"the page tried to leave the app's origin: {guarded.blocked()}"
+    assert not guarded.page_errors(), f"the page threw: {guarded.page_errors()}"

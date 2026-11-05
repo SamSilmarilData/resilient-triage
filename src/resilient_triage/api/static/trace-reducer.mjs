@@ -2,6 +2,7 @@
 // The trace-to-view reducer (ADR 0008, #118): the page's one logic module. Everything the page
 // shows about a run is derived here from the run's trace events; components only draw what
 // these functions return (CODING_STANDARDS.md, Frontend).
+import { StreamHttpError } from "./sse.mjs";
 
 /**
  * One trace event as it arrives on the wire (trace/events.py); `kind` discriminates.
@@ -73,12 +74,12 @@ const END = "__end__";
  * @param {string} source
  * @param {string} target
  */
-export function edgeKey(source, target) {
+function edgeKey(source, target) {
   return `${source}>${target}`;
 }
 
 /** @returns {TraceView} The view before any event. */
-export function initialTrace() {
+function initialTrace() {
   return {
     events: [],
     scenarioId: null,
@@ -169,10 +170,11 @@ export function foldTrace(events) {
  */
 
 /**
- * @typedef {{ name: string, terminal: boolean, x: number, y: number, width: number,
- *             height: number, r: number, visits: number,
+ * @typedef {{ name: string, terminal: boolean, selectable: boolean, x: number, y: number,
+ *             width: number, height: number, r: number, visits: number,
  *             state: "idle" | "visited" | "active", label: string }} GraphNodeView
  * `label`: the node's accessible name, its name and how often the run visited it.
+ * `selectable`: the node inspector can open on it (every node but __start__ and __end__).
  * @typedef {{ key: string, source: string, target: string, route: string | null, d: string,
  *             arrow: string, label: { x: number, y: number } | null,
  *             taken: boolean }} GraphEdgeView
@@ -230,9 +232,11 @@ export function graphView(layout, trace) {
     const count = visits[name] ?? 0;
     /** @type {GraphNodeView["state"]} */
     const state = trace.activeNode === name ? "active" : count ? "visited" : "idle";
+    const terminal = box.r !== undefined;
     return {
       name,
-      terminal: box.r !== undefined,
+      terminal,
+      selectable: !terminal,
       x: box.x,
       y: box.y,
       width: box.width ?? 0,
@@ -329,12 +333,14 @@ function readTone(outcome) {
 }
 
 /**
- * The run as waterfall rows, each placed on one axis from the start of setup to the run's end.
+ * The run as waterfall rows, each placed on one axis from the start of setup to the run's end;
+ * null before the run's first event, when there is nothing to draw.
  * @param {TraceView} trace
- * @returns {WaterfallView}
+ * @returns {WaterfallView | null}
  */
 export function waterfallView(trace) {
-  const lastMs = trace.events.length ? Math.max(0, trace.events[trace.events.length - 1].t_ms) : 0;
+  if (!trace.events.length) return null;
+  const lastMs = Math.max(0, trace.events[trace.events.length - 1].t_ms);
   /** @typedef {Omit<WaterfallRow, "leftPct" | "widthPct">} PlacedRow */
   /** @type {PlacedRow[]} */
   const rows = [];
@@ -468,9 +474,10 @@ export function waterfallView(trace) {
 // ---------------------------------------------------------------------------------------------
 // Summary: the JS port of trace/summary.py, checked against it by tests/browser/test_reducer.py.
 
-// Node names as registered in graph/builder.py; keep them in step with trace/summary.py.
-const SELF_REPAIR_NODE = "self_repair";
-const REFINE_NODE = "refine_reflection";
+// Node names as registered in graph/builder.py, as trace/summary.py names them;
+// tests/browser/test_reducer.py fails if they drift.
+export const SELF_REPAIR_NODE = "self_repair";
+export const REFINE_NODE = "refine_reflection";
 
 /**
  * Round to microseconds, as the recorder stamps t_ms (summary.py `_round_ms`).
@@ -613,8 +620,9 @@ function findLastOpenVisit(nodes, node) {
 }
 
 // Display names of the Telemetry sources, by the id the trace carries (telemetry/*.py
-// `display_name`). An unknown id shows as itself.
-const SOURCE_NAMES = /** @type {Record<string, string>} */ ({
+// `display_name`; tests/browser/test_reducer.py fails if they drift). An unknown id shows as
+// itself.
+export const SOURCE_NAMES =/** @type {Record<string, string>} */ ({
   statuspage: "Statuspage",
   chaos: "Cluster Sentinel",
 });
@@ -623,7 +631,7 @@ const SOURCE_NAMES = /** @type {Record<string, string>} */ ({
  * A source's display name.
  * @param {string} source
  */
-export function sourceName(source) {
+function sourceName(source) {
   return SOURCE_NAMES[source] ?? source;
 }
 
@@ -631,7 +639,7 @@ export function sourceName(source) {
  * A duration for people: "under 1 ms", "917 ms", "1.8 s".
  * @param {number} ms
  */
-export function formatMs(ms) {
+function formatMs(ms) {
   if (ms < 0.5) return "under 1 ms";
   if (ms < 999.5) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
@@ -688,7 +696,7 @@ export function summaryLine(summary) {
 // with its partial trace kept. Never an endless spinner.
 
 /** How long a stream may go without an event or a ping before the run counts as lost. */
-export const STREAM_WATCHDOG_MS = 30_000;
+const STREAM_WATCHDOG_MS = 30_000;
 
 /**
  * idle: nothing played yet. streaming: events arriving. finished: trace_finished arrived
@@ -704,14 +712,24 @@ export const STREAM_WATCHDOG_MS = 30_000;
  */
 
 /**
- * What the stage says about a run: its one line, whether to dim the partial trace, and the
- * action its button offers (Replay after a lost stream, Retry after a refusal).
+ * What the stage says about a run: its one line, whether to dim the partial trace, the
+ * action its button offers (Replay after a lost stream, Retry after a refusal), and whether
+ * its model replies are scripted (a scenario run, ADR 0009).
  * @typedef {{ status: RunStatus, line: string | null, dimmed: boolean,
- *             action: "Replay" | "Retry" | null }} RunHeadline
+ *             action: "Replay" | "Retry" | null, scripted: boolean }} RunHeadline
  * @param {RunView} run
  * @returns {RunHeadline}
  */
 export function runHeadline(run) {
+  return { ...runLine(run), scripted: run.trace.scripted };
+}
+
+/**
+ * The headline's status, line, dimming and action.
+ * @param {RunView} run
+ * @returns {Omit<RunHeadline, "scripted">}
+ */
+function runLine(run) {
   const { status, trace } = run;
   const lastMs = trace.events.length ? trace.events[trace.events.length - 1].t_ms : 0;
   switch (status) {
@@ -747,6 +765,17 @@ export function runAnnouncement(run) {
     default:
       return "";
   }
+}
+
+/**
+ * Whether the stage needs scrolling into view for a run that just started: its top is above
+ * the viewport or below its bottom. At phone width it sits below the chapters (#122); pinned
+ * on desktop, it never needs it.
+ * @param {{ top: number }} rect the stage's bounding rectangle
+ * @param {number} viewportHeight
+ */
+export function needsReveal(rect, viewportHeight) {
+  return rect.top < 0 || rect.top >= viewportHeight;
 }
 
 /** @returns {RunView} */
@@ -831,8 +860,7 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
       }
       end("lost"); // closed before trace_finished
     } catch (error) {
-      const refused = error instanceof Error && error.name === "StreamHttpError";
-      if (refused) end("error", error.message);
+      if (error instanceof StreamHttpError) end("error", error.message);
       else if (view.trace.events.length) end("lost");
       else end("error", UNREACHABLE);
     }
@@ -851,13 +879,6 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
     /** Play the last source again from the start (the Replay and Retry buttons). */
     replay() {
       return lastSource ? play(lastSource) : Promise.resolve(view);
-    },
-    /** Stop the current run, if any, and go back to idle. */
-    stop() {
-      runId++;
-      current?.abort();
-      current = null;
-      set(idleRun());
     },
     /** The current view. */
     get view() {
@@ -891,7 +912,9 @@ export function toggledOpen(openId, id) {
 /**
  * What a scenario's Skip to end does, given its run (scenarioRun()): "skip" holds a streaming
  * run until it ends, "start" plays the scenario already skipped (no run yet, or it was lost
- * or refused), null does nothing (the run is finished or already skipped).
+ * or refused), null does nothing (the run is finished or already skipped). Once another
+ * scenario has played on the stage, an earlier scenario has no run, so its Skip to end
+ * re-runs it skipped.
  * @param {RunView | null} run
  * @returns {"skip" | "start" | null}
  */
@@ -913,6 +936,74 @@ export function scenarioRun(run, playedId, id) {
   if (playedId !== id || run.status === "idle") return null;
   const started = run.trace.events.find((event) => event.kind === "trace_started");
   return started && started.scenario_id !== id ? null : run;
+}
+
+/**
+ * The guided scenarios on the stage's run controller: Play and Skip to end by scenario id,
+ * and which run each scenario shows. It owns the id of the scenario played last.
+ * @param {ReturnType<typeof createRunController>} controller
+ * @param {(id: string) => StreamSource} sourceOf the stream of one scenario run
+ */
+export function createScenarioStage(controller, sourceOf) {
+  /** @type {string | null} */
+  let playedId = null;
+
+  /**
+   * @param {string} id
+   * @param {{ skipping?: boolean }} [options]
+   */
+  const start = (id, options) => {
+    playedId = id;
+    return controller.play(sourceOf(id), options);
+  };
+
+  return {
+    /**
+     * This scenario's run, if `run` (the stage's, as last drawn) is it (scenarioRun()).
+     * @param {RunView} run
+     * @param {string} id
+     */
+    runOf(run, id) {
+      return scenarioRun(run, playedId, id);
+    },
+    /**
+     * Play a scenario on the stage from the start.
+     * @param {string} id
+     */
+    play(id) {
+      return start(id);
+    },
+    /**
+     * Skip to end for a scenario, as skipAction() says: hold its streaming run, or play it
+     * already skipped.
+     * @param {string} id
+     */
+    skip(id) {
+      const action = skipAction(scenarioRun(controller.view, playedId, id));
+      if (action === "skip") controller.skipToEnd();
+      if (action === "start") start(id, { skipping: true });
+    },
+  };
+}
+
+/**
+ * What an opened scenario shows of its run: the run's line, the Play button's label, whether
+ * Skip to end has anything left to do, and once the run has finished, its report (or shed
+ * notice) and every event for "Show everything".
+ * @typedef {{ line: string | null, playLabel: "Play" | "Play again", skipDisabled: boolean,
+ *             report: ReportView | null, events: EventRow[] }} ScenarioPanelView
+ * @param {RunView | null} run the scenario's run (scenarioRun()), null if it has none
+ * @returns {ScenarioPanelView}
+ */
+export function scenarioPanelView(run) {
+  const report = run && reportView(run.trace);
+  return {
+    line: run && runHeadline(run).line,
+    playLabel: run ? "Play again" : "Play",
+    skipDisabled: skipAction(run) === null,
+    report,
+    events: run && report ? eventLog(run.trace) : [],
+  };
 }
 
 /**
@@ -1053,13 +1144,13 @@ export function eventLog(trace) {
  */
 
 /** Where the repository's files are browsed. */
-export const REPO_BLOB_URL = "https://github.com/SamSilmarilData/resilient-triage/blob/main/";
+const REPO_BLOB_URL = "https://github.com/SamSilmarilData/resilient-triage/blob/main/";
 
 /**
  * A repository-relative path's URL on GitHub.
  * @param {string} path
  */
-export function repoUrl(path) {
+function repoUrl(path) {
   return REPO_BLOB_URL + path;
 }
 

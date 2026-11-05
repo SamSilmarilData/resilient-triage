@@ -6,7 +6,6 @@ checked against the live app's own catalogue and the Python summary of the same 
 """
 
 import json
-from importlib import resources
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -16,7 +15,9 @@ from harness import (
     GuardedPages,
     axe_violations,
     describe,
+    graph_state,
     open_shell,
+    path_edges,
     stream_scenario,
     wait_for_run,
 )
@@ -41,20 +42,6 @@ DRAWN_CHAPTERS = """() => [...document.querySelectorAll("[data-chapter]")].map((
     caption: scenario.querySelector(".scenario__caption").textContent.trim(),
   })),
 }))"""
-
-
-LAYOUT_EDGES = {
-    (edge["source"], edge["target"])
-    for edge in json.loads(
-        resources.files("resilient_triage.api").joinpath("static/graph-layout.json").read_text()
-    )["edges"]
-}
-# As in test_trace_view.py: the graph's taken edges, and each graph node's visit count.
-TAKEN_EDGES = """() => [...document.querySelectorAll('[data-edge][data-taken="true"]')]
-  .map((edge) => [edge.dataset.source, edge.dataset.target])"""
-VISITED_NODES = """() => Object.fromEntries([...document.querySelectorAll("[data-node]")]
-  .filter((node) => !node.dataset.node.startsWith("__"))
-  .map((node) => [node.dataset.node, Number(node.dataset.visits)]))"""
 # page.evaluate script: record every state the stage draws from here on into
 # window.stageFrames (run state, headline, waterfall rows, lit graph nodes).
 RECORD_STAGE = """() => {
@@ -105,7 +92,6 @@ def test_chapters_draw_the_catalogue_from_get_scenarios(pages: GuardedPages):
     assert page.evaluate(DRAWN_CHAPTERS) == expected
     assert any(url.endswith("/scenarios") for url in watch.requests)
     assert watch.failed == []
-    assert watch.page_errors == []
 
 
 def test_the_copy_comes_from_the_response_not_the_page(pages: GuardedPages):
@@ -147,12 +133,6 @@ def test_a_failed_catalogue_keeps_the_prose_and_offers_retry(pages: GuardedPages
     assert page.locator("[data-chapter]").count() == len(public_catalogue().chapters)
 
 
-def _path_edges(path: list[str]) -> set[tuple[str, str]]:
-    """The layout edges a node path walks, from __start__ to __end__."""
-    walk = ["__start__", *path, "__end__"]
-    return {pair for pair in zip(walk, walk[1:], strict=False) if pair in LAYOUT_EDGES}
-
-
 def _scenario_selector(scenario_id: str, selector: str = "") -> str:
     """A selector inside one scenario's disclosure."""
     return f'[data-scenario="{scenario_id}"] {selector}'.strip()
@@ -179,8 +159,9 @@ def test_opening_a_scenario_shows_its_setup_and_never_an_expected_path(pages: Gu
     assert notes == list(scenario.setup_notes)
     assert _scenario(page, scenario.id, '[data-action="play"]').is_visible()
     assert page.locator('[data-scenario][data-open="true"]').count() == 1
-    assert page.evaluate(TAKEN_EDGES) == []
-    assert set(page.evaluate(VISITED_NODES).values()) == {0}
+    graph = graph_state(page)
+    assert graph.taken == []
+    assert set(graph.visits.values()) == {0}
     assert _scenario(page, scenario.id, "[data-report]").count() == 0
 
     toggle.click()
@@ -206,9 +187,9 @@ def test_a_played_scenario_ends_with_its_trace_summary_and_report(
     _scenario(page, scenario_id, '[data-action="play"]').click()
     wait_for_run(page)
 
-    visits = page.evaluate(VISITED_NODES)
-    assert {node for node, count in visits.items() if count} == set(path)
-    assert {tuple(edge) for edge in page.evaluate(TAKEN_EDGES)} == _path_edges(path)
+    graph = graph_state(page)
+    assert graph.visited == set(path)
+    assert graph.taken_pairs == path_edges(path)
     assert page.locator("[data-run-badge]").inner_text() == "Model replies scripted"
     line = _scenario(page, scenario_id, "[data-scenario-line]").inner_text()
     assert line and line == page.locator("[data-run-line]").inner_text()
@@ -233,15 +214,13 @@ def test_a_played_scenario_ends_with_its_trace_summary_and_report(
 
     violations = axe_violations(page)
     assert violations == [], describe(violations)
-    assert watch.page_errors == []
     assert watch.console_errors == []
     assert watch.failed == []
 
 
 def test_skip_to_end_runs_the_scenario_and_shows_only_its_final_state(pages: GuardedPages):
-    """Skip to end, before Play: the stage stays still while the run streams, then shows the
-    final trace and the scenario its report at once. Focus stays on the button."""
-    page, watch = pages.open()
+    """Skip to end before Play: the stage holds still, then shows the final state; focus stays."""
+    page, _ = pages.open()
     _open_chapters(page)
     page.wait_for_selector(GRAPH_READY, state="attached")
     page.locator("#scenario-self-repair-toggle").click()
@@ -262,11 +241,44 @@ def test_skip_to_end_runs_the_scenario_and_shows_only_its_final_state(pages: Gua
     assert final["state"] == "finished"
     assert final["line"].startswith("Report in ") and "1 self-repair round" in final["line"]
     assert final["visited"] > 0 and final["rows"] > 0
-    assert page.evaluate(VISITED_NODES)["generate_report"] == 2
+    assert graph_state(page).visits["generate_report"] == 2
     assert _scenario(page, "self-repair", "[data-scenario-line]").inner_text() == final["line"]
     assert skip.get_attribute("aria-disabled") == "true", "nothing left to skip"
     assert page.evaluate("document.activeElement.dataset.action") == "skip"
-    assert watch.page_errors == []
+
+
+@pytest.mark.real_scripted_delays
+def test_skip_to_end_mid_play_holds_the_running_stage_without_a_second_run(pages: GuardedPages):
+    """Skip pressed while Play streams freezes the stage as it is; the same run then ends."""
+    page, watch = pages.open()
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator("#scenario-self-repair-toggle").click()
+    _scenario(page, "self-repair", '[data-action="play"]').click()
+    # The first model reply takes its real scripted delay: the run is mid-stream here.
+    page.wait_for_selector(
+        '#stage-root [data-node="generate_report"][data-state="active"]', state="attached"
+    )
+
+    page.evaluate(RECORD_STAGE)
+    skip = _scenario(page, "self-repair", '[data-action="skip"]')
+    skip.click()
+    page.wait_for_selector(_scenario_selector("self-repair", "[data-report]"), state="attached")
+
+    frames = page.evaluate("() => window.stageFrames")
+    streaming = [frame for frame in frames if frame["state"] == "streaming"]
+    assert streaming and streaming[0]["line"] == "Skipping to the end"
+    held = {(f["line"], f["rows"], f["visited"]) for f in streaming}
+    assert len(held) == 1, f"the stage moved while skipping: {held}"
+    ((_, rows_at_skip, visited_at_skip),) = held
+    assert rows_at_skip > 0 and visited_at_skip > 0, "the run had drawn steps before the skip"
+    final = frames[-1]
+    assert final["state"] == "finished" and "1 self-repair round" in final["line"]
+    assert final["rows"] > rows_at_skip, "the end state appears at once when the run ends"
+    assert graph_state(page).visits["generate_report"] == 2
+    streams = [url for url in watch.requests if url.endswith("/scenarios/self-repair/stream")]
+    assert len(streams) == 1, "Skip held the run in flight; it never started another"
+    assert skip.get_attribute("aria-disabled") == "true"
 
 
 def test_skip_to_end_is_offered_on_every_scenario_including_the_last(pages: GuardedPages):

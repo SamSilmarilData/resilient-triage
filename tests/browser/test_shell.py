@@ -32,7 +32,6 @@ def test_shell_loads_clean(pages: GuardedPages):
 
     assert page.locator("[aria-busy]").count() == 0, "a region never finished rendering"
     assert watch.console_errors == []
-    assert watch.page_errors == []
     assert watch.failed == []
     assert watch.off_origin() == []
     assert any(url.endswith("/static/app.mjs") for url in watch.requests)

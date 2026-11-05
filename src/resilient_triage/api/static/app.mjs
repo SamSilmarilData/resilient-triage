@@ -1,7 +1,8 @@
 // @ts-check
 // Page shell (ADR 0010): renders the dynamic regions of index.html. The page's prose is static
 // HTML; this module only fills the mount points and wires signals to components. No logic
-// lives here: the trace-to-view reducer is the one logic module (CODING_STANDARDS.md, Frontend).
+// lives here: the trace-to-view reducer is the one logic module (CODING_STANDARDS.md, Frontend),
+// and sse.mjs does the network I/O.
 // Importing @preact/signals installs its Preact integration, so components re-render when a
 // signal they read changes.
 import { signal } from "@preact/signals";
@@ -12,60 +13,65 @@ import { FreePlay } from "./components/free-play.mjs";
 import { NodeList } from "./components/how-its-built.mjs";
 import { NodeInspector } from "./components/node-inspector.mjs";
 import { Stage } from "./components/stage.mjs";
-import { freePlaySource, scenarioSource } from "./sse.mjs";
+import { freePlaySource, loadInto, scenarioSource } from "./sse.mjs";
 import {
   createRunController,
+  createScenarioStage,
   idleRun,
   inspectorView,
-  scenarioRun,
-  skipAction,
+  needsReveal,
   toggledOpen,
 } from "./trace-reducer.mjs";
 
-/**
- * @template T
- * @typedef {import("./trace-reducer.mjs").Loadable<T>} Loadable
- */
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("./trace-reducer.mjs").GraphNode} GraphNode */
 
-/** The stage's current run, as the run controller last reported it. */
-const run = signal(idleRun());
+/**
+ * A signal holding a run, and the run controller that reports into it.
+ * @returns {{ run: import("@preact/signals").Signal<import("./trace-reducer.mjs").RunView>,
+ *             controller: ReturnType<typeof createRunController> }}
+ */
+function runSignal() {
+  const run = signal(idleRun());
+  const controller = createRunController({
+    onChange: (view) => {
+      run.value = view;
+    },
+  });
+  return { run, controller };
+}
+
 /** graph-layout.json once fetched. */
-const layout = signal(/** @type {Loadable<GraphLayout>} */ ("loading"));
+const layout = signal(
+  /** @type {import("./trace-reducer.mjs").Loadable<GraphLayout>} */ ("loading"),
+);
 /** GET /scenarios once fetched: the chapters' copy. */
-const catalogue = signal(/** @type {Loadable<Catalogue>} */ ("loading"));
+const catalogue = signal(
+  /** @type {import("./trace-reducer.mjs").Loadable<Catalogue>} */ ("loading"),
+);
 /** The scenario opened inline, if any; one at a time. */
 const openId = signal(/** @type {string | null} */ (null));
-/** The scenario last played on the stage, if any. */
-const playedId = signal(/** @type {string | null} */ (null));
 
+/** The stage's run: the guided scenarios play here (free play has its own, below). */
+const stageRun = runSignal();
 /**
- * The stage's run controller: the guided scenarios play here (free play has its own, below).
- * A run starts with `stage.play(source)`, a source from sse.mjs; browser tests import it from
- * this module the same way.
+ * The stage's run controller. A run starts with `stage.play(source)`, a source from sse.mjs;
+ * browser tests import it from this module the same way.
  */
-export const stage = createRunController({
-  onChange: (view) => {
-    run.value = view;
-  },
-});
+export const stage = stageRun.controller;
+/** The guided scenarios on the stage: Play and Skip to end by scenario id. */
+const scenarios = createScenarioStage(stage, scenarioSource);
 
 /** The free-play panel's own run, so its errors and lost streams stay in that panel (#101). */
-const freePlayRun = signal(idleRun());
-
+const freePlayRun = runSignal();
 /** The free-play panel's run controller: a visitor's question plays here, not on the stage. */
-export const freePlay = createRunController({
-  onChange: (view) => {
-    freePlayRun.value = view;
-  },
-});
+export const freePlay = freePlayRun.controller;
 
 /** The live-trace column, bound to the stage's signals. */
 function LiveStage() {
   return html`<${Stage}
-    run=${run.value}
+    run=${stageRun.run.value}
     layout=${layout.value}
     onReplay=${() => stage.replay()}
     onSelectNode=${inspect}
@@ -74,59 +80,35 @@ function LiveStage() {
 
 /** The guided chapters, bound to the catalogue and the stage's run. */
 function GuidedChapters() {
-  const runOf = (/** @type {string} */ id) => scenarioRun(run.value, playedId.value, id);
+  const run = stageRun.run.value;
   return html`<${Chapters}
     catalogue=${catalogue.value}
     onRetry=${loadCatalogue}
     openId=${openId.value}
-    runOf=${runOf}
+    runOf=${(/** @type {string} */ id) => scenarios.runOf(run, id)}
     onToggle=${(/** @type {string} */ id) => {
       openId.value = toggledOpen(openId.value, id);
     }}
     onPlay=${(/** @type {string} */ id) => {
-      playedId.value = id;
-      stage.play(scenarioSource(id));
+      scenarios.play(id);
       revealStage();
     }}
     onSkip=${(/** @type {string} */ id) => {
       // Skip to end: no scroll to the stage, since the report appears in the scenario itself.
-      const action = skipAction(runOf(id));
-      if (action === "skip") stage.skipToEnd();
-      if (action === "start") {
-        playedId.value = id;
-        stage.play(scenarioSource(id), { skipping: true });
-      }
+      scenarios.skip(id);
     }}
   />`;
 }
 
 /**
- * Bring the stage into view for a run that just started, when its top is off screen: at phone
- * width it sits below the chapters (#122); pinned on desktop, it never moves. The scroll
- * follows html's scroll-behavior, so it is instant under reduced motion. Focus stays on Play.
+ * Bring the stage into view for a run that just started, when needsReveal() says so. The
+ * scroll follows html's scroll-behavior, so it is instant under reduced motion. Focus stays
+ * on Play.
  */
 function revealStage() {
   const element = document.querySelector(".stage");
-  if (!element) return;
-  const { top } = element.getBoundingClientRect();
-  if (top < 0 || top >= window.innerHeight) element.scrollIntoView({ block: "start" });
-}
-
-/**
- * Fetch a JSON resource into a Loadable signal: "loading" while it's in flight, then the
- * value `pick` takes from the body, or "failed" on a non-2xx or a network error.
- * @template T
- * @param {import("@preact/signals").Signal<Loadable<T>>} target
- * @param {string} url
- * @param {(body: any) => T} [pick]
- */
-async function loadInto(target, url, pick = (body) => body) {
-  target.value = "loading";
-  try {
-    const response = await fetch(url);
-    target.value = response.ok ? pick(await response.json()) : "failed";
-  } catch {
-    target.value = "failed";
+  if (element && needsReveal(element.getBoundingClientRect(), window.innerHeight)) {
+    element.scrollIntoView({ block: "start" });
   }
 }
 
@@ -138,7 +120,7 @@ function loadCatalogue() {
 /** The free-play panel, bound to its own run and the shared graph layout. */
 function LiveFreePlay() {
   return html`<${FreePlay}
-    run=${freePlayRun.value}
+    run=${freePlayRun.run.value}
     layout=${layout.value}
     onSubmit=${(request) => freePlay.play(freePlaySource(request))}
     onReplay=${() => freePlay.replay()}
@@ -149,7 +131,9 @@ function LiveFreePlay() {
 // The node inspector (#121): GET /graph/nodes, and the node it shows (null when closed).
 // A graph node (on the stage or in free play) and a button in How it's built's node list
 // all open it.
-const graphNodes = signal(/** @type {Loadable<GraphNode[]>} */ ("loading"));
+const graphNodes = signal(
+  /** @type {import("./trace-reducer.mjs").Loadable<GraphNode[]>} */ ("loading"),
+);
 const inspected = signal(/** @type {string | null} */ (null));
 
 /** @param {string} name */
