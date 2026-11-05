@@ -24,9 +24,10 @@ const SERVICE_PATTERN = String.raw`[A-Za-z0-9_\s\-]+`;
  *   layout: Loadable<GraphLayout>,
  *   onSubmit: (request: TriageRequest) => void,
  *   onReplay: () => void,
+ *   onSelectNode?: (name: string) => void,
  * }} props
  */
-export function FreePlay({ run, layout, onSubmit, onReplay }) {
+export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode }) {
   /** @param {SubmitEvent} event */
   const submit = (event) => {
     event.preventDefault();
@@ -87,7 +88,12 @@ export function FreePlay({ run, layout, onSubmit, onReplay }) {
         >${shed.line}</p>`}
         ${model && html`<p class="free-play__model" data-model>Model: ${model}</p>`}
         <div class="free-play__run">
-          <${Stage} run=${run} layout=${layout} onReplay=${onReplay} />
+          <${Stage}
+            run=${run}
+            layout=${layout}
+            onReplay=${onReplay}
+            onSelectNode=${onSelectNode}
+          />
         </div>
       `}
     </div>

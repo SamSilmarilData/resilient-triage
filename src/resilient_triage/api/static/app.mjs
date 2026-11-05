@@ -142,11 +142,13 @@ function LiveFreePlay() {
     layout=${layout.value}
     onSubmit=${(request) => freePlay.play(freePlaySource(request))}
     onReplay=${() => freePlay.replay()}
+    onSelectNode=${inspect}
   />`;
 }
 
 // The node inspector (#121): GET /graph/nodes, and the node it shows (null when closed).
-// A graph node on the stage and a button in How it's built's node list both open it.
+// A graph node (on the stage or in free play) and a button in How it's built's node list
+// all open it.
 const graphNodes = signal(/** @type {Loadable<GraphNode[]>} */ ("loading"));
 const inspected = signal(/** @type {string | null} */ (null));
 
