@@ -5,17 +5,18 @@ A keyboard-only walk through the guided flow (hook to a scenario to free play), 
 landing state's axe check lives in test_shell.py, across all four theme paths.
 """
 
-import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from harness import (
+    CATALOGUE_READY,
     GRAPH_READY,
     PAGE_WIDTHS,
     GuardedPages,
     axe_violations,
     describe,
     open_shell,
+    unique_question,
     wait_for_run,
 )
 
@@ -26,7 +27,6 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.browser
 
-CATALOGUE_READY = '[data-catalogue="ready"]'
 PHONE = {"width": 375, "height": 812}
 DESKTOP = {"width": 1280, "height": 900}
 # Tab presses allowed to reach a target before the walk counts as lost.
@@ -95,11 +95,6 @@ PHONE_THEMES = {
     "dark": {"color_scheme": "dark"},
     "reduced-motion": {"color_scheme": "light", "reduced_motion": "reduce"},
 }
-
-
-def _question(text: str) -> str:
-    """Free-play text no sibling worktree's run can have cached (local Redis is shared)."""
-    return f"{text} [a11y {uuid.uuid4().hex[:8]}]"
 
 
 def _check_focus(state: dict[str, Any] | None) -> dict[str, Any]:
@@ -177,7 +172,7 @@ def test_the_guided_flow_completes_with_the_keyboard_alone(
 
     # Free play: the form in order, submitted from the keyboard, its run announced too.
     _tab_to(page, "#free-play-query")
-    page.keyboard.type(_question("Checkout latency spiking in eu-west"))
+    page.keyboard.type(unique_question("Checkout latency spiking in eu-west"))
     assert _tab_to(page, "#free-play-service") == ["#free-play-service"]
     assert _tab_to(page, '[name="force_refresh"]') == ["input"]
     assert _tab_to(page, '#free-play-root [type="submit"]') == ["button"]
@@ -216,7 +211,7 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
     page.locator(f'[data-scenario="{scenario}"] [data-action="show-everything"]').click()
     _fits(page, "after a scenario run")
 
-    page.get_by_label("Your incident").fill(_question("Payments API returning 502s"))
+    page.get_by_label("Your incident").fill(unique_question("Payments API returning 502s"))
     page.locator("#free-play-root").get_by_role("button", name="Triage").click()
     page.wait_for_selector(
         '#free-play-root [data-run-state="finished"]', state="attached", timeout=30_000

@@ -11,6 +11,7 @@ from collections.abc import Collection, Mapping
 
 import httpx
 import pytest
+from fakes import NODE_ORDER
 from repo_scripts import REPO_ROOT
 
 from resilient_triage.config import Settings
@@ -74,21 +75,6 @@ GOOD = NodeNotes(config_fields=("groq_model",), adrs=("0006-project-owned-llm-ga
 )
 def test_the_guard_names_each_kind_of_drift(notes: dict[str, NodeNotes], problem: str) -> None:
     assert registry_problems(notes, GRAPH) == [problem]
-
-
-NODE_ORDER = [
-    "analyze_query",
-    "collect_telemetry",
-    "compensate_blindspots",
-    "degraded_fallback",
-    "synthesize_telemetry",
-    "generate_report",
-    "validate_report",
-    "self_repair",
-    "refine_reflection",
-    "fallback_report",
-    "finalize_report",
-]
 
 
 async def test_get_graph_nodes_serves_purpose_file_config_and_adrs(

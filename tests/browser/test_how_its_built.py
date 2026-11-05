@@ -9,6 +9,7 @@ fields, ADR file names) so a drift shows up here as well as in `tests/test_node_
 from typing import TYPE_CHECKING
 
 import pytest
+from fakes import NODE_ORDER
 from harness import GRAPH_READY, PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
 from repo_scripts import REPO_ROOT
 
@@ -20,19 +21,6 @@ pytestmark = pytest.mark.browser
 REPO_BLOB = "https://github.com/SamSilmarilData/resilient-triage/blob/main/"
 INSPECTOR = "dialog.inspector"
 NODES_READY = '[data-graph-nodes="ready"]'
-NODE_ORDER = [
-    "analyze_query",
-    "collect_telemetry",
-    "compensate_blindspots",
-    "degraded_fallback",
-    "synthesize_telemetry",
-    "generate_report",
-    "validate_report",
-    "self_repair",
-    "refine_reflection",
-    "fallback_report",
-    "finalize_report",
-]
 # What the inspector shows: name, purpose, file link, config field names, ADR links.
 INSPECTED = """() => {
   const dialog = document.querySelector("dialog.inspector");

@@ -8,10 +8,16 @@ Tests drive the form the way a visitor does and wait on the panel's `data-run-st
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
-from harness import PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
+from harness import (
+    PAGE_WIDTHS,
+    GuardedPages,
+    axe_violations,
+    describe,
+    open_shell,
+    unique_question,
+)
 
 from resilient_triage.config import Settings, settings
 
@@ -21,12 +27,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.browser
 
 PANEL = "#free-play-root"
-
-
-def _question(text: str = "GitHub Actions workflows failing with 503s") -> str:
-    """A question no other run has asked: the harness cache may be a live Redis shared with
-    other test runs, and a stray hit would skip the model."""
-    return f"{text} (ticket {uuid4().hex[:8]})"
 
 
 def _panel(page: Page) -> Locator:
@@ -51,7 +51,7 @@ def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: Guarded
     page, watch = pages.open()
     open_shell(page)
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page)
 
     panel = _panel(page)
@@ -79,11 +79,11 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     open_shell(page)
     page.evaluate("() => { window.notReloaded = true; }")
     panel = _panel(page)
-    question = _question()
+    question = unique_question()
 
     _ask(page, question)
     _wait_for_panel_run(page)
-    _ask(page, _question("Checkout latency doubled after the 14:00 deploy"))
+    _ask(page, unique_question("Checkout latency doubled after the 14:00 deploy"))
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
     _wait_for_panel_run(page)
 
@@ -113,7 +113,7 @@ def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: Guar
     url = "**/triage/stream"
     page.route(url, lambda route: route.abort("connectionfailed"))
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page, "error")
 
     panel = _panel(page)
@@ -146,7 +146,7 @@ def test_a_dropped_stream_is_lost_in_this_panel_then_replays(pages: GuardedPages
         ),
     )
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page, "lost")
 
     panel = _panel(page)
@@ -168,7 +168,7 @@ def test_a_finished_free_play_run_has_no_serious_axe_violations(
     page, _ = pages.open(color_scheme=color_scheme)
     open_shell(page)
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page)
 
     violations = axe_violations(page)
@@ -180,7 +180,7 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     page, _ = pages.open(viewport={"width": 375, "height": 812})
     open_shell(page)
 
-    _ask(page, _question())
+    _ask(page, unique_question())
     _wait_for_panel_run(page)
 
     widths = page.evaluate(PAGE_WIDTHS)

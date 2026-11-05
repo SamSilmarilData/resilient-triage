@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from harness import (
+    CATALOGUE_READY,
     GRAPH_READY,
     GuardedPages,
     axe_violations,
@@ -29,7 +30,6 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.browser
 
-CATALOGUE_READY = '[data-catalogue="ready"]'
 # The chapters as drawn: each chapter's id, title and intro, and its scenarios' copy.
 DRAWN_CHAPTERS = """() => [...document.querySelectorAll("[data-chapter]")].map((chapter) => ({
   id: chapter.dataset.chapter,

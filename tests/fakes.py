@@ -37,6 +37,22 @@ AppServer = Callable[..., AbstractAsyncContextManager[tuple[AppRuntime, httpx.As
 
 FAKE_STATUSPAGE_URL = "https://statuspage.test/api/v2/summary.json"
 
+# The graph's nodes in `graph/builder.py` NODE_FUNCTIONS order, as GET /graph/nodes serves
+# them and How it's built lists them. Written out, so a reordered graph fails a test.
+NODE_ORDER = [
+    "analyze_query",
+    "collect_telemetry",
+    "compensate_blindspots",
+    "degraded_fallback",
+    "synthesize_telemetry",
+    "generate_report",
+    "validate_report",
+    "self_repair",
+    "refine_reflection",
+    "fallback_report",
+    "finalize_report",
+]
+
 OPERATIONAL_SUMMARY: dict[str, Any] = {
     "page": {"name": "GitHub", "url": "https://www.githubstatus.com"},
     "status": {"indicator": "none", "description": "All Systems Operational"},
