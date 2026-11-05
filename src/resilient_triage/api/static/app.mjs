@@ -100,7 +100,7 @@ function GuidedChapters() {
 
 /**
  * Bring the stage into view for a run that just started, when its top is off screen: at phone
- * width it sits above the chapters (#122); pinned on desktop, it never moves. The scroll
+ * width it sits below the chapters (#122); pinned on desktop, it never moves. The scroll
  * follows html's scroll-behavior, so it is instant under reduced motion. Focus stays on Play.
  */
 function revealStage() {

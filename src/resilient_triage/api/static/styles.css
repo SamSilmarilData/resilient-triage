@@ -254,7 +254,7 @@
     }
   }
 
-  /* Narrow: the live trace sits inline above the chapters, not pinned. Wide: chapters on the
+  /* Narrow: the live trace sits inline below the chapters, not pinned. Wide: chapters on the
      left, the trace pinned in the side column (Deferred UI questions, #101). */
   .guided__body {
     display: grid;
