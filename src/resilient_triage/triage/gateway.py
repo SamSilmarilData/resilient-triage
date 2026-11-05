@@ -47,7 +47,7 @@ from resilient_triage.trace.recorder import (
     record_event,
 )
 from resilient_triage.trace.summary import TraceSummary
-from resilient_triage.triage.budget import RunBudget
+from resilient_triage.triage.budget import Admission, RunBudget
 from resilient_triage.triage.slots import RunSlotPool
 
 logger = logging.getLogger(__name__)
@@ -313,12 +313,15 @@ class TriageGateway:
             )
             if match:
                 return match
-        if self._budget is not None and not self._budget.admit():
-            return self._over_budget(self._budget, trace)
+        admission: Admission | None = None
+        if self._budget is not None:
+            admission = self._budget.admit()
+            if admission is None:
+                return self._over_budget(self._budget, trace)
         if not await self._acquire_run_slot(trace):
             logger.warning("No run slot freed up in time; shed request.")
-            if self._budget is not None:
-                self._budget.refund()  # no graph ran, so the budget is untouched
+            if self._budget is not None and admission is not None:
+                self._budget.refund(admission)  # no graph ran, so the budget is untouched
             return Shed(reason="capacity")
         try:
             analysis = await self._analyze(query, scope, trace)
