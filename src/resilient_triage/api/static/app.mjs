@@ -82,6 +82,7 @@ function GuidedChapters() {
     onPlay=${(/** @type {string} */ id) => {
       playedId.value = id;
       stage.play(scenarioSource(id));
+      revealStage();
     }}
     onSkip=${(/** @type {string} */ id) => {
       const next = typeof loaded === "object" ? nextScenario(loaded, id) : null;
@@ -91,6 +92,18 @@ function GuidedChapters() {
       requestAnimationFrame(() => document.getElementById(`scenario-${next.id}-toggle`)?.focus());
     }}
   />`;
+}
+
+/**
+ * Bring the stage into view for a run that just started, when its top is off screen: at phone
+ * width it sits above the chapters (#122); pinned on desktop, it never moves. The scroll
+ * follows html's scroll-behavior, so it is instant under reduced motion. Focus stays on Play.
+ */
+function revealStage() {
+  const element = document.querySelector(".stage");
+  if (!element) return;
+  const { top } = element.getBoundingClientRect();
+  if (top < 0 || top >= window.innerHeight) element.scrollIntoView({ block: "start" });
 }
 
 /** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */

@@ -1,7 +1,7 @@
 """The page shell in Chromium (#117): loads clean, passes axe in both themes, fits 375 px."""
 
 import pytest
-from harness import GuardedPages, axe_violations, describe, open_shell
+from harness import PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
 
 pytestmark = pytest.mark.browser
 
@@ -68,7 +68,5 @@ def test_no_horizontal_scroll_at_phone_width(pages: GuardedPages, options: dict[
 
     open_shell(page)
 
-    widths = page.evaluate(
-        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
-    )
+    widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"

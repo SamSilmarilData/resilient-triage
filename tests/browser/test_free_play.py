@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
-from harness import GuardedPages, axe_violations, describe, open_shell
+from harness import PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
 
 from resilient_triage.config import Settings, settings
 
@@ -117,7 +117,9 @@ def test_a_network_error_is_an_inline_error_in_this_panel_with_retry(pages: Guar
     _wait_for_panel_run(page, "error")
 
     panel = _panel(page)
-    assert panel.locator("[data-run-line]").inner_text().startswith("Couldn't reach the server")
+    line = panel.locator("[data-run-line]").inner_text()
+    assert line.startswith("Couldn't reach the server")
+    assert panel.locator('[role="status"]').inner_text() == f"Run failed: {line}"
     assert page.locator('#stage-root [data-run-state="idle"]').count() == 1, "stage untouched"
     assert page.locator("#chapters-root .notice").count() == 0
     assert len(watch.failed) == 1
@@ -149,6 +151,7 @@ def test_a_dropped_stream_is_lost_in_this_panel_then_replays(pages: GuardedPages
 
     panel = _panel(page)
     assert panel.locator("[data-run-line]").inner_text() == "Connection lost"
+    assert panel.locator('[role="status"]').inner_text() == "Run stopped: Connection lost"
     assert panel.locator('.run[data-dimmed="true"]').count() == 1
 
     page.unroute(url)
@@ -180,9 +183,7 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     _ask(page, _question())
     _wait_for_panel_run(page)
 
-    widths = page.evaluate(
-        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
-    )
+    widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
     graph = _panel(page).locator(".graph").bounding_box()
     assert graph is not None and graph["width"] >= 340

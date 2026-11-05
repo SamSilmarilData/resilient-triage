@@ -702,6 +702,26 @@ export function runHeadline(run) {
   }
 }
 
+/**
+ * What a stage's live region says about a run: only how it ended, never the running tick,
+ * so a screen reader hears one announcement per run (#122). Empty until then.
+ * @param {RunView} run
+ * @returns {string}
+ */
+export function runAnnouncement(run) {
+  const { line } = runHeadline(run);
+  switch (run.status) {
+    case "finished":
+      return `Run finished: ${line}`;
+    case "lost":
+      return `Run stopped: ${line}`;
+    case "error":
+      return `Run failed: ${line}`;
+    default:
+      return "";
+  }
+}
+
 /** @returns {RunView} */
 export function idleRun() {
   return { status: "idle", trace: initialTrace(), error: null };

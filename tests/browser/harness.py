@@ -65,6 +65,9 @@ PLAY_ON_STAGE = """async (run) => {
     ? sse.scenarioSource(run.scenario)
     : sse.freePlaySource({query: run.query}));
 }"""
+# page.evaluate script: the page's [scrollWidth, clientWidth]; wider than the viewport means
+# it scrolls sideways.
+PAGE_WIDTHS = "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
 RUN_STATES = ("idle", "streaming", "finished", "lost", "error")
 GRAPH_READY = '[data-graph="ready"]'
 

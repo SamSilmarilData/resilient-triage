@@ -9,7 +9,7 @@ fields, ADR file names) so a drift shows up here as well as in `tests/test_node_
 from typing import TYPE_CHECKING
 
 import pytest
-from harness import GRAPH_READY, GuardedPages, axe_violations, describe, open_shell
+from harness import GRAPH_READY, PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
 from repo_scripts import REPO_ROOT
 
 if TYPE_CHECKING:
@@ -196,9 +196,7 @@ def test_open_inspector_fits_phone_width_and_passes_axe(pages: GuardedPages, sch
     page.click('[data-node="collect_telemetry"]')
     page.wait_for_selector(f"{INSPECTOR}[open]")
 
-    widths = page.evaluate(
-        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
-    )
+    widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
     box = page.locator(INSPECTOR).bounding_box()
     assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= 375
