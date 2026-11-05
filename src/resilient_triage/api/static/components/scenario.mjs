@@ -5,7 +5,7 @@
 // shows an expected path: only what the run's own trace says (#96).
 import { html } from "htm/preact";
 import { useState } from "preact/hooks";
-import { eventLog, reportView, runHeadline, skipAction } from "../trace-reducer.mjs";
+import { scenarioPanelView } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").ScenarioView} ScenarioView */
@@ -60,8 +60,7 @@ export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
  */
 function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
   const [everything, setEverything] = useState(false);
-  const headline = run && runHeadline(run);
-  const report = run && run.status === "finished" ? reportView(run.trace) : null;
+  const view = scenarioPanelView(run);
   const eventsId = `scenario-${scenario.id}-events`;
   return html`
     ${scenario.setup_notes.length > 0 &&
@@ -70,21 +69,20 @@ function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
     </ul>`}
     <div class="scenario__controls">
       <button class="button button--primary" type="button" data-action="play" onClick=${onPlay}>
-        ${run ? "Play again" : "Play"}
+        ${view.playLabel}
       </button>
       <button
         class="button button--quiet"
         type="button"
         data-action="skip"
-        aria-disabled=${String(skipAction(run) === null)}
+        aria-disabled=${String(view.skipDisabled)}
         onClick=${onSkip}
       >
         Skip to end
       </button>
     </div>
-    ${headline?.line && html`<p class="scenario__line" data-scenario-line>${headline.line}</p>`}
-    ${report &&
-    run &&
+    ${view.line && html`<p class="scenario__line" data-scenario-line>${view.line}</p>`}
+    ${view.report &&
     html`
       <button
         class="button button--quiet"
@@ -94,7 +92,7 @@ function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
         aria-controls=${eventsId}
         onClick=${() => setEverything(!everything)}
       >
-        ${everything ? "Hide" : "Show"} everything (${run.trace.events.length} events)
+        ${everything ? "Hide" : "Show"} everything (${view.events.length} events)
       </button>
       <ol
         class="events"
@@ -104,7 +102,7 @@ function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
         aria-label="Every trace event"
       >
         ${everything &&
-        eventLog(run.trace).map(
+        view.events.map(
           (row) => html`<li key=${row.seq} data-kind=${row.kind}>
             <span class="events__at">${row.at}</span>
             <span class="events__kind">${row.kind}</span>
@@ -112,7 +110,7 @@ function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
           </li>`,
         )}
       </ol>
-      <${Report} view=${report} />
+      <${Report} view=${view.report} />
     `}
   `;
 }

@@ -27,7 +27,8 @@ function Row({ row }) {
 
 /** @param {{ trace: TraceView }} props */
 export function Waterfall({ trace }) {
-  if (!trace.events.length) {
+  const view = waterfallView(trace);
+  if (view === null) {
     return html`
       <div class="empty">
         <p class="empty__title">Timeline</p>
@@ -35,7 +36,6 @@ export function Waterfall({ trace }) {
       </div>
     `;
   }
-  const view = waterfallView(trace);
   return html`
     <figure class="waterfall" style=${`--zero:${view.zeroPct}%`}>
       <figcaption class="waterfall__caption">Timeline</figcaption>

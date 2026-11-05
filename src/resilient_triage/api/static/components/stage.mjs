@@ -8,17 +8,13 @@ import { graphView, runAnnouncement, runHeadline } from "../trace-reducer.mjs";
 import { Graph } from "./graph.mjs";
 import { Waterfall } from "./waterfall.mjs";
 
-/**
- * @template T
- * @typedef {import("../trace-reducer.mjs").Loadable<T>} Loadable
- */
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
 
 /**
  * @param {{
  *   run: RunView,
- *   layout: Loadable<GraphLayout>,
+ *   layout: import("../trace-reducer.mjs").Loadable<GraphLayout>,
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
  * }} props
@@ -34,7 +30,7 @@ export function Stage({ run, layout, onReplay, onSelectNode }) {
           : html`<p class="run__line run__line--idle">
               Pick a scenario and its path through the triage graph lights up here, node by node.
             </p>`}
-        ${run.trace.scripted &&
+        ${headline.scripted &&
         html`<span class="badge" data-run-badge>Model replies scripted</span>`}
         ${headline.action &&
         html`<button class="button" type="button" onClick=${onReplay}>${headline.action}</button>`}

@@ -3,16 +3,13 @@
 // only the list of graph nodes from GET /graph/nodes, each a button that opens the node
 // inspector. `data-graph-nodes` on the list's root is the load state; browser tests wait on it.
 import { html } from "htm/preact";
+import { RetryNotice } from "./notice.mjs";
 
-/**
- * @template T
- * @typedef {import("../trace-reducer.mjs").Loadable<T>} Loadable
- */
 /** @typedef {import("../trace-reducer.mjs").GraphNode} GraphNode */
 
 /**
  * @param {{
- *   nodes: Loadable<GraphNode[]>,
+ *   nodes: import("../trace-reducer.mjs").Loadable<GraphNode[]>,
  *   onSelect: (name: string) => void,
  *   onRetry: () => void,
  * }} props
@@ -22,10 +19,7 @@ export function NodeList({ nodes, onSelect, onRetry }) {
   if (nodes === "failed") {
     return html`
       <div class="built__nodes" data-graph-nodes="failed">
-        <p class="notice">
-          The node list didn't load.
-          <button class="button" type="button" onClick=${onRetry}>Retry</button>
-        </p>
+        <${RetryNotice} message="The node list didn't load." onRetry=${onRetry} />
       </div>
     `;
   }

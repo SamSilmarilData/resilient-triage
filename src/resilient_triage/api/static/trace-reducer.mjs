@@ -170,10 +170,11 @@ export function foldTrace(events) {
  */
 
 /**
- * @typedef {{ name: string, terminal: boolean, x: number, y: number, width: number,
- *             height: number, r: number, visits: number,
+ * @typedef {{ name: string, terminal: boolean, selectable: boolean, x: number, y: number,
+ *             width: number, height: number, r: number, visits: number,
  *             state: "idle" | "visited" | "active", label: string }} GraphNodeView
  * `label`: the node's accessible name, its name and how often the run visited it.
+ * `selectable`: the node inspector can open on it (every node but __start__ and __end__).
  * @typedef {{ key: string, source: string, target: string, route: string | null, d: string,
  *             arrow: string, label: { x: number, y: number } | null,
  *             taken: boolean }} GraphEdgeView
@@ -231,9 +232,11 @@ export function graphView(layout, trace) {
     const count = visits[name] ?? 0;
     /** @type {GraphNodeView["state"]} */
     const state = trace.activeNode === name ? "active" : count ? "visited" : "idle";
+    const terminal = box.r !== undefined;
     return {
       name,
-      terminal: box.r !== undefined,
+      terminal,
+      selectable: !terminal,
       x: box.x,
       y: box.y,
       width: box.width ?? 0,
@@ -330,12 +333,14 @@ function readTone(outcome) {
 }
 
 /**
- * The run as waterfall rows, each placed on one axis from the start of setup to the run's end.
+ * The run as waterfall rows, each placed on one axis from the start of setup to the run's end;
+ * null before the run's first event, when there is nothing to draw.
  * @param {TraceView} trace
- * @returns {WaterfallView}
+ * @returns {WaterfallView | null}
  */
 export function waterfallView(trace) {
-  const lastMs = trace.events.length ? Math.max(0, trace.events[trace.events.length - 1].t_ms) : 0;
+  if (!trace.events.length) return null;
+  const lastMs = Math.max(0, trace.events[trace.events.length - 1].t_ms);
   /** @typedef {Omit<WaterfallRow, "leftPct" | "widthPct">} PlacedRow */
   /** @type {PlacedRow[]} */
   const rows = [];
@@ -707,14 +712,24 @@ const STREAM_WATCHDOG_MS = 30_000;
  */
 
 /**
- * What the stage says about a run: its one line, whether to dim the partial trace, and the
- * action its button offers (Replay after a lost stream, Retry after a refusal).
+ * What the stage says about a run: its one line, whether to dim the partial trace, the
+ * action its button offers (Replay after a lost stream, Retry after a refusal), and whether
+ * its model replies are scripted (a scenario run, ADR 0009).
  * @typedef {{ status: RunStatus, line: string | null, dimmed: boolean,
- *             action: "Replay" | "Retry" | null }} RunHeadline
+ *             action: "Replay" | "Retry" | null, scripted: boolean }} RunHeadline
  * @param {RunView} run
  * @returns {RunHeadline}
  */
 export function runHeadline(run) {
+  return { ...runLine(run), scripted: run.trace.scripted };
+}
+
+/**
+ * The headline's status, line, dimming and action.
+ * @param {RunView} run
+ * @returns {Omit<RunHeadline, "scripted">}
+ */
+function runLine(run) {
   const { status, trace } = run;
   const lastMs = trace.events.length ? trace.events[trace.events.length - 1].t_ms : 0;
   switch (status) {
@@ -750,6 +765,17 @@ export function runAnnouncement(run) {
     default:
       return "";
   }
+}
+
+/**
+ * Whether the stage needs scrolling into view for a run that just started: its top is above
+ * the viewport or below its bottom. At phone width it sits below the chapters (#122); pinned
+ * on desktop, it never needs it.
+ * @param {{ top: number }} rect the stage's bounding rectangle
+ * @param {number} viewportHeight
+ */
+export function needsReveal(rect, viewportHeight) {
+  return rect.top < 0 || rect.top >= viewportHeight;
 }
 
 /** @returns {RunView} */
@@ -886,7 +912,9 @@ export function toggledOpen(openId, id) {
 /**
  * What a scenario's Skip to end does, given its run (scenarioRun()): "skip" holds a streaming
  * run until it ends, "start" plays the scenario already skipped (no run yet, or it was lost
- * or refused), null does nothing (the run is finished or already skipped).
+ * or refused), null does nothing (the run is finished or already skipped). Once another
+ * scenario has played on the stage, an earlier scenario has no run, so its Skip to end
+ * re-runs it skipped.
  * @param {RunView | null} run
  * @returns {"skip" | "start" | null}
  */
@@ -908,6 +936,74 @@ export function scenarioRun(run, playedId, id) {
   if (playedId !== id || run.status === "idle") return null;
   const started = run.trace.events.find((event) => event.kind === "trace_started");
   return started && started.scenario_id !== id ? null : run;
+}
+
+/**
+ * The guided scenarios on the stage's run controller: Play and Skip to end by scenario id,
+ * and which run each scenario shows. It owns the id of the scenario played last.
+ * @param {ReturnType<typeof createRunController>} controller
+ * @param {(id: string) => StreamSource} sourceOf the stream of one scenario run
+ */
+export function createScenarioStage(controller, sourceOf) {
+  /** @type {string | null} */
+  let playedId = null;
+
+  /**
+   * @param {string} id
+   * @param {{ skipping?: boolean }} [options]
+   */
+  const start = (id, options) => {
+    playedId = id;
+    return controller.play(sourceOf(id), options);
+  };
+
+  return {
+    /**
+     * This scenario's run, if `run` (the stage's, as last drawn) is it (scenarioRun()).
+     * @param {RunView} run
+     * @param {string} id
+     */
+    runOf(run, id) {
+      return scenarioRun(run, playedId, id);
+    },
+    /**
+     * Play a scenario on the stage from the start.
+     * @param {string} id
+     */
+    play(id) {
+      return start(id);
+    },
+    /**
+     * Skip to end for a scenario, as skipAction() says: hold its streaming run, or play it
+     * already skipped.
+     * @param {string} id
+     */
+    skip(id) {
+      const action = skipAction(scenarioRun(controller.view, playedId, id));
+      if (action === "skip") controller.skipToEnd();
+      if (action === "start") start(id, { skipping: true });
+    },
+  };
+}
+
+/**
+ * What an opened scenario shows of its run: the run's line, the Play button's label, whether
+ * Skip to end has anything left to do, and once the run has finished, its report (or shed
+ * notice) and every event for "Show everything".
+ * @typedef {{ line: string | null, playLabel: "Play" | "Play again", skipDisabled: boolean,
+ *             report: ReportView | null, events: EventRow[] }} ScenarioPanelView
+ * @param {RunView | null} run the scenario's run (scenarioRun()), null if it has none
+ * @returns {ScenarioPanelView}
+ */
+export function scenarioPanelView(run) {
+  const report = run && reportView(run.trace);
+  return {
+    line: run && runHeadline(run).line,
+    playLabel: run ? "Play again" : "Play",
+    skipDisabled: skipAction(run) === null,
+    report,
+    events: run && report ? eventLog(run.trace) : [],
+  };
 }
 
 /**

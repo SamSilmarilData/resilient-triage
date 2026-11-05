@@ -3,12 +3,9 @@
 // catalogue order. All copy comes from the response (#101); none lives here. The region says
 // how its catalogue load went in `data-catalogue` (loading, failed, ready).
 import { html } from "htm/preact";
+import { RetryNotice } from "./notice.mjs";
 import { Scenario } from "./scenario.mjs";
 
-/**
- * @template T
- * @typedef {import("../trace-reducer.mjs").Loadable<T>} Loadable
- */
 /** @typedef {import("../trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("../trace-reducer.mjs").ScenarioView} ScenarioView */
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
@@ -24,8 +21,8 @@ import { Scenario } from "./scenario.mjs";
  */
 
 /**
- * @param {{ catalogue: Loadable<Catalogue>, onRetry: () => void }
- *   & ScenarioHandlers} props
+ * @param {{ catalogue: import("../trace-reducer.mjs").Loadable<Catalogue>,
+ *           onRetry: () => void } & ScenarioHandlers} props
  */
 export function Chapters({ catalogue, onRetry, ...handlers }) {
   if (catalogue === "loading") {
@@ -35,10 +32,10 @@ export function Chapters({ catalogue, onRetry, ...handlers }) {
   }
   if (catalogue === "failed") {
     return html`<div class="chapters__state" data-catalogue="failed">
-      <div class="notice notice--action" role="alert">
-        <p>The scenarios didn't load, so the chapters can't open yet.</p>
-        <button class="button" type="button" onClick=${onRetry}>Retry</button>
-      </div>
+      <${RetryNotice}
+        message="The scenarios didn't load, so the chapters can't open yet."
+        onRetry=${onRetry}
+      />
     </div>`;
   }
   return html`<div class="chapters__state" data-catalogue="ready">
