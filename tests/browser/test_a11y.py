@@ -9,7 +9,15 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from harness import GRAPH_READY, GuardedPages, open_shell, wait_for_run
+from harness import (
+    GRAPH_READY,
+    PAGE_WIDTHS,
+    GuardedPages,
+    axe_violations,
+    describe,
+    open_shell,
+    wait_for_run,
+)
 
 from resilient_triage.scenarios.catalogue import public_catalogue
 
@@ -71,6 +79,22 @@ TOP_IN_VIEW = """(selector) => {
   const top = document.querySelector(selector).getBoundingClientRect().top;
   return top >= 0 && top < innerHeight;
 }"""
+# page.evaluate script: every element that scrolls sideways inside itself (overflow-x auto or
+# scroll with content wider than its box), as "tag.class" strings.
+SIDEWAYS_SCROLLERS = """() => [...document.querySelectorAll("body *")]
+  .filter((el) => ["auto", "scroll"].includes(getComputedStyle(el).overflowX)
+    && el.scrollWidth > el.clientWidth + 1)
+  .map((el) => `${el.tagName.toLowerCase()}.${el.className}`)"""
+# page.evaluate script: the open inspector's box against the viewport.
+DIALOG_FIT = """() => {
+  const r = document.querySelector("dialog.inspector[open]").getBoundingClientRect();
+  return {left: r.left, right: r.right, viewport: document.documentElement.clientWidth};
+}"""
+PHONE_THEMES = {
+    "light": {"color_scheme": "light"},
+    "dark": {"color_scheme": "dark"},
+    "reduced-motion": {"color_scheme": "light", "reduced_motion": "reduce"},
+}
 
 
 def _question(text: str) -> str:
@@ -163,5 +187,75 @@ def test_the_guided_flow_completes_with_the_keyboard_alone(
     )
     free_line = page.locator("#free-play-root [data-run-line]").inner_text()
     assert _announcement(page, "#free-play-root").inner_text() == f"Run finished: {free_line}"
+    assert watch.page_errors == []
+    assert watch.failed == []
+
+
+def _fits(page: "Page", when: str) -> None:
+    """Fail if the page, or anything in it, scrolls sideways."""
+    scroll_width, client_width = page.evaluate(PAGE_WIDTHS)
+    assert scroll_width <= client_width, f"{when}: page is {scroll_width} px in {client_width} px"
+    assert page.evaluate(SIDEWAYS_SCROLLERS) == [], f"{when}: an element scrolls sideways"
+
+
+@pytest.mark.parametrize("theme", PHONE_THEMES)
+def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
+    pages: GuardedPages, theme: str
+):
+    """At 375 px: a played scenario, a free-play run and the open inspector all fit."""
+    scenario = public_catalogue().chapters[-1].scenarios[-1].id
+    page, watch = pages.open(viewport=PHONE, **PHONE_THEMES[theme])
+    open_shell(page)
+    page.wait_for_selector(CATALOGUE_READY, state="attached")
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    _fits(page, "landing")
+
+    page.locator(f"#scenario-{scenario}-toggle").click()
+    page.locator(f'[data-scenario="{scenario}"] [data-action="play"]').click()
+    wait_for_run(page)
+    page.locator(f'[data-scenario="{scenario}"] [data-action="show-everything"]').click()
+    _fits(page, "after a scenario run")
+
+    page.get_by_label("Your incident").fill(_question("Payments API returning 502s"))
+    page.locator("#free-play-root").get_by_role("button", name="Triage").click()
+    page.wait_for_selector(
+        '#free-play-root [data-run-state="finished"]', state="attached", timeout=30_000
+    )
+    _fits(page, "after a free-play run")
+
+    page.locator('#stage-root [data-node="generate_report"]').click()
+    page.wait_for_selector("dialog.inspector[open]")
+    _fits(page, "with the inspector open")
+    box = page.evaluate(DIALOG_FIT)
+    assert box["left"] >= 0 and box["right"] <= box["viewport"], f"inspector overflows: {box}"
+    assert watch.page_errors == []
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+@pytest.mark.parametrize("chapter_id", [chapter.id for chapter in public_catalogue().chapters])
+def test_every_chapters_final_state_has_no_serious_axe_violations(
+    pages: GuardedPages, chapter_id: str, scheme: str
+):
+    """Play a chapter's scenarios in order with Play and Skip; its end state passes axe."""
+    chapter = next(c for c in public_catalogue().chapters if c.id == chapter_id)
+    ids = [scenario.id for scenario in chapter.scenarios]
+    page, watch = pages.open(color_scheme=scheme)
+    open_shell(page)
+    page.wait_for_selector(CATALOGUE_READY, state="attached")
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    page.locator(f"#scenario-{ids[0]}-toggle").click()
+    for index, scenario_id in enumerate(ids):
+        scenario = page.locator(f'[data-scenario="{scenario_id}"]')
+        scenario.locator('[data-action="play"]').click()
+        page.wait_for_selector(
+            f'[data-scenario="{scenario_id}"] [data-report]', state="attached", timeout=30_000
+        )
+        if index < len(ids) - 1:
+            scenario.locator('[data-action="skip"]').click()
+    page.locator(f'[data-scenario="{ids[-1]}"] [data-action="show-everything"]').click()
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
     assert watch.page_errors == []
     assert watch.failed == []

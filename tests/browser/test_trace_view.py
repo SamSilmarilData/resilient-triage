@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from harness import (
     GRAPH_READY,
+    PAGE_WIDTHS,
     GuardedPages,
     axe_violations,
     describe,
@@ -379,9 +380,7 @@ def test_a_finished_run_fits_phone_width(pages: GuardedPages):
     play(page, scenario="everything-down")
     wait_for_run(page)
 
-    widths = page.evaluate(
-        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
-    )
+    widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
     graph = page.locator(".graph").bounding_box()
     waterfall = page.locator(".waterfall").bounding_box()

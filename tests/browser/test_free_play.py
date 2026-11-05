@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
-from harness import GuardedPages, axe_violations, describe, open_shell
+from harness import PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
 
 from resilient_triage.config import Settings, settings
 
@@ -183,9 +183,7 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     _ask(page, _question())
     _wait_for_panel_run(page)
 
-    widths = page.evaluate(
-        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
-    )
+    widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
     graph = _panel(page).locator(".graph").bounding_box()
     assert graph is not None and graph["width"] >= 340
