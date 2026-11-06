@@ -22,6 +22,7 @@ import {
   needsReveal,
   runTicks,
   stageRevealTop,
+  stageScenario,
   toggledOpen,
 } from "./trace-reducer.mjs";
 
@@ -116,7 +117,27 @@ function LiveStage() {
     layout=${layout.value}
     onReplay=${() => stage.replay()}
     onSelectNode=${inspect}
+    scenario=${stageScenario(catalogue.value, stageRun.run.value)}
+    onBack=${backToScenario}
   />`;
+}
+
+// --- #158: back from the stage to its scenario ---
+/**
+ * Take the visitor from the stage back to a scenario's card (the stage's way-back link, at
+ * phone width): open the card if it was closed, so its report shows, then once it has drawn
+ * scroll its top into view and focus its toggle. The scroll follows html's scroll-behavior,
+ * so it is instant under reduced motion.
+ * @param {string} id
+ */
+function backToScenario(id) {
+  if (openId.value !== id) openId.value = id;
+  requestAnimationFrame(() => {
+    const toggle = document.getElementById(`scenario-${id}-toggle`);
+    if (!toggle) return;
+    toggle.closest("[data-scenario]")?.scrollIntoView({ block: "start" });
+    toggle.focus({ preventScroll: true });
+  });
 }
 
 /** The guided chapters, bound to the catalogue and the stage's run. */
