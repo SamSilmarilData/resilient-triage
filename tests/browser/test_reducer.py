@@ -613,13 +613,13 @@ def test_a_budget_shed_counts_down_to_its_retry_time(pages: GuardedPages):
 TRIAGE_ANNOUNCEMENTS = """async ({status, events, nows}) => {
   const reducer = await import("/static/trace-reducer.mjs");
   const run = {...reducer.idleRun(), status, startedAt: 10000, trace: reducer.foldTrace(events)};
-  return nows.map((now) => reducer.triageAnnouncement(run, now));
+  return nows.map((now) => reducer.freePlayAnnouncement(run, now));
 }"""
 
 
 def test_triage_is_announced_back_only_once_a_budget_sheds_countdown_ends(pages: GuardedPages):
-    """Nothing while the countdown runs; at its retry time, that Triage is available again.
-    A capacity shed has no countdown, so nothing to announce."""
+    """The panel's live region says how the run ended while the countdown runs; at its retry
+    time, that Triage is available again. A capacity shed has no countdown: only its ending."""
     capacity = [dict(event) for event in BUDGET_SHED]
     capacity[1] = {**capacity[1], "reason": "capacity", "retry_after_s": None}
     nows = [10_002, 22_001, 22_002, 30_000]
@@ -634,8 +634,11 @@ def test_triage_is_announced_back_only_once_a_budget_sheds_countdown_ends(pages:
     )
 
     back = "Triage is available again."
-    assert budget == ["", "", back, back]
-    assert other == ["", "", "", ""]
+    assert budget[2:] == [back, back]
+    assert budget[0] == budget[1]
+    assert budget[0].startswith("Run finished: Shed after "), budget[0]
+    assert len(set(other)) == 1
+    assert other[0].startswith("Run finished: Shed after "), other[0]
 
 
 def test_a_capacity_shed_has_no_countdown(pages: GuardedPages):

@@ -41,8 +41,11 @@ export function Clocked({ now, text }) {
  *   onBack?: (id: string) => void,
  *   headOnly?: boolean,
  *   normalBackend?: string | null,
+ *   announcement?: any,
  * }} props `now`: the page's ticking clock (a signal), read only by a streaming run's
- *   headline (#156).
+ *   headline (#156). `announcement`: what the live region says instead of how the run ended
+ *   (runAnnouncement()), e.g. free play's Clocked freePlayAnnouncement() during a countdown;
+ *   the stage keeps one live region either way.
  *   `scenario`: the scenario the stage draws (stageScenario(); free play passes none), and
  *   `onBack` takes the visitor back to its card (#158). `headOnly`: draw the headline but
  *   no graph or timeline, for a run refused before any graph ran (#160). Free play only: the
@@ -61,11 +64,14 @@ export function Stage({
   onBack,
   headOnly,
   normalBackend,
+  announcement,
 }) {
   const headline = runHeadline(run);
   return html`
     <div class="run" data-run-state=${run.status} data-dimmed=${String(headline.dimmed)}>
-      <p class="visually-hidden" role="status" data-run-announcement>${runAnnouncement(run)}</p>
+      <p class="visually-hidden" role="status" data-run-announcement>
+        ${announcement || runAnnouncement(run)}
+      </p>
       ${scenario && html`<${StageScenarioLine} scenario=${scenario} onBack=${onBack} />`}
       <div class="run__head">
         ${headline.line

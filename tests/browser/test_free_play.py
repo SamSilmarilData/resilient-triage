@@ -664,10 +664,11 @@ def test_a_budget_shed_counts_down_and_triage_comes_back_at_zero(pages: GuardedP
     expect(_triage(page)).to_be_enabled()
 
 
-# Free play's live region saying Triage is back once a budget shed's countdown ends.
-TRIAGE_BACK = f"{PANEL} [data-triage-announcement]"
+# Free play's one live region (its stage's): how the run ended, then, once a budget shed's
+# countdown ends, that Triage is back.
+TRIAGE_BACK = f"{PANEL} [data-run-announcement]"
 TRIAGE_BACK_TEXT = "Triage is available again."
-# page.evaluate script: record every text the Triage-back live region shows from now on.
+# page.evaluate script: record every text the live region shows from now on.
 RECORD_TRIAGE_BACK = f"""() => {{
   const region = document.querySelector("{TRIAGE_BACK}");
   window.__triageBack = [];
@@ -678,23 +679,25 @@ RECORD_TRIAGE_BACK = f"""() => {{
 
 @pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
 def test_triage_coming_back_after_a_countdown_is_announced_once(pages: GuardedPages):
-    """A screen reader hears once, politely, that Triage is back when the countdown reaches
-    zero, and nothing while it counts down."""
+    """A screen reader hears once, politely, in the panel's one live region, that Triage is
+    back when the countdown reaches zero, and nothing new while it counts down."""
     page, _ = pages.open()
     page.clock.install()
     open_shell(page)
 
     _shed_on_budget(page)
+    assert _panel(page).locator('[role="status"]').count() == 1
     region = page.locator(TRIAGE_BACK)
     assert region.get_attribute("role") == "status"
-    assert region.text_content() == ""
+    shed = region.text_content() or ""
+    assert shed.startswith("Run finished: Shed after "), shed
     page.evaluate(RECORD_TRIAGE_BACK)
     notice = _panel(page).locator("[data-shed-reason]")
     left = int(notice.get_attribute("data-retry-after") or "0")
 
     page.clock.fast_forward(5_000)
     expect(notice).to_have_text(COUNTDOWN)
-    assert region.text_content() == ""
+    assert region.text_content() == shed
     page.clock.fast_forward(left * 1_000)
     expect(_triage(page)).to_be_enabled()
     page.clock.fast_forward(5_000)  # past zero, the clock stands still: nothing more is said
