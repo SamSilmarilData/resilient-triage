@@ -324,10 +324,14 @@ class TriageGateway:
             admission = self._budget.admit()
             if admission is None:
                 return self._over_budget(self._budget, trace)
-        if not await self._acquire_run_slot(trace):
+        try:
+            acquired = await self._acquire_run_slot(trace)
+        except asyncio.CancelledError:
+            self._refund(admission)  # cancelled while queued: no graph ran
+            raise
+        if not acquired:
             logger.warning("No run slot freed up in time; shed request.")
-            if self._budget is not None and admission is not None:
-                self._budget.refund(admission)  # no graph ran, so the budget is untouched
+            self._refund(admission)  # no graph ran, so the budget is untouched
             return Shed(reason="capacity")
         try:
             analysis = await self._analyze(query, scope, trace)
@@ -336,6 +340,11 @@ class TriageGateway:
         _raise_if_cancelled()  # a cancelled run caches nothing, even if the graph swallowed it
         await self._store(query, scope, analysis, trace)
         return analysis.report
+
+    def _refund(self, admission: Admission | None) -> None:
+        """Give back a budget admission whose request ran no graph."""
+        if self._budget is not None and admission is not None:
+            self._budget.refund(admission)
 
     def _over_budget(self, budget: RunBudget, trace: TraceRecorder) -> Shed:
         """Shed a run the budget refused, recording why and when to retry, without queueing."""
