@@ -291,10 +291,10 @@ Read-only content for the page's node inspector (#121): one entry per triage gra
   "nodes": [
     {
       "name": "generate_report",
-      "purpose": "Invokes LLM to produce candidate report JSON.",
+      "purpose": "Asks the model for a draft report as JSON.",
       "file": "src/resilient_triage/graph/nodes/generate_report.py",
       "config_fields": [
-        {"name": "groq_model", "description": "Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)"}
+        {"name": "groq_model", "description": "Groq model asked first (for example qwen/qwen3.8-27b)"}
       ],
       "adrs": ["docs/decisions/0006-project-owned-llm-gateway.md"]
     }
@@ -305,7 +305,7 @@ Read-only content for the page's node inspector (#121): one entry per triage gra
 | Field | Meaning |
 | :--- | :--- |
 | `name` | The node's name in `get_graph()`, as in trace events and `graph-layout.json`. |
-| `purpose` | One sentence: the node module's docstring. |
+| `purpose` | One sentence, written for the page's visitors (sentence case, "the model" rather than "LLM"): the node module's docstring. Config descriptions are plain words too; `tests/test_node_inspector.py` checks both. |
 | `file`, `adrs[]` | Repository-relative paths; the page links them on GitHub. `file` follows the module, so `synthesize_telemetry` is `synthesize.py` and `finalize_report` is `finalize.py`. |
 | `config_fields[]` | The `Settings` fields that tune the node: `name` and `description`, never the value. |
 

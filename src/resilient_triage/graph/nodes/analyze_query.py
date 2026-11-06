@@ -1,4 +1,4 @@
-"""Node: analyze_query - Normalizes the query and scope and picks the run's Targeted sources."""
+"""Node: analyze_query - Cleans up the question and picks which telemetry sources to read."""
 
 from typing import Any
 

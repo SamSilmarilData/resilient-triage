@@ -29,9 +29,10 @@ const REQUEST_LIMITS = Object.freeze({
  *   onSubmit: (request: TriageRequest) => void,
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
- * }} props
+ *   now?: number,
+ * }} props `now`: the page's ticking clock, for the run's headline (#156)
  */
-export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode }) {
+export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now }) {
   /** @param {SubmitEvent} event */
   const submit = (event) => {
     event.preventDefault();
@@ -94,6 +95,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode }) {
         <div class="free-play__run">
           <${Stage}
             run=${run}
+            now=${now}
             layout=${layout}
             onReplay=${onReplay}
             onSelectNode=${onSelectNode}

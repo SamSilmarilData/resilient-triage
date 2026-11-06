@@ -1,4 +1,4 @@
-"""Node: generate_report - Invokes LLM to produce candidate report JSON."""
+"""Node: generate_report - Asks the model for a draft report as JSON."""
 
 import logging
 from typing import Any

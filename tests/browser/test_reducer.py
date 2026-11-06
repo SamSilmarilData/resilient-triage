@@ -74,7 +74,7 @@ SUMMARY_LINES = {
     "reconciliation": "Report in {t} · 1 action held for approval",
     "unavailable-source": "Report in {t} · Statuspage unavailable",
     "tripped-breaker": "Report in {t} · Statuspage breaker open",
-    "run-deadline": "Fallback report in {t} · run deadline hit",
+    "run-deadline": "Fallback report in {t} · run deadline hit, answered outside the graph",
     "shed-request": "Shed after {t}, before the graph ran",
     "everything-down": (
         "Fallback report in {t} · Statuspage breaker open · Cluster Sentinel breaker open"
@@ -127,3 +127,86 @@ def test_the_reducers_copied_constants_match_python(pages: GuardedPages):
         pages.server.runtime.deps.telemetry.source_ids
     ), "a Telemetry source is missing from TELEMETRY_SOURCES"
     assert constants["sources"] == {source.id: source.display_name for source in TELEMETRY_SOURCES}
+
+
+# --- #156: the run's clock ---
+# page.evaluate script: the headline a run gets at a given wall-clock `now`, and whether the
+# shell's clock should tick for it. The run started at wall time `startedAt`; its events are
+# folded with the reducer, so their `t_ms` is the trace's own clock.
+RUN_CLOCK = """async ({status, startedAt, now, events}) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const run = {...reducer.idleRun(), status, startedAt, trace: reducer.foldTrace(events)};
+  return {line: reducer.runHeadline(run, now ?? undefined).line, ticks: reducer.runTicks(run),
+          summary: reducer.summaryLine(reducer.summarize(events))};
+}"""
+STARTED_EVENT = {
+    "kind": "trace_started",
+    "seq": 0,
+    "t_ms": 0,
+    "schema_version": 1,
+    "scenario_id": "run-deadline",
+    "scoped": False,
+    "force_refresh": False,
+}
+NODE_EVENT = {"kind": "node_started", "seq": 1, "t_ms": 3, "node": "analyze_query"}
+
+
+def _run_clock(pages: GuardedPages, **run: Any) -> dict[str, Any]:
+    """The headline and ticking of a run built in a fresh page (see RUN_CLOCK)."""
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+    result: dict[str, Any] = page.evaluate(RUN_CLOCK, run)
+    return result
+
+
+def test_a_streaming_runs_clock_counts_wall_time_since_it_started(pages: GuardedPages):
+    """Waiting on something slow, the headline keeps counting from when the run started."""
+    clock = _run_clock(
+        pages, status="streaming", startedAt=10_000, now=11_800, events=[STARTED_EVENT, NODE_EVENT]
+    )
+
+    assert clock["line"] == "Running, 1.8 s in"
+    assert clock["ticks"] is True
+
+
+def test_a_streaming_runs_clock_never_reads_behind_its_last_event(pages: GuardedPages):
+    """A `now` sampled before the latest event landed still shows at least that event's time."""
+    clock = _run_clock(
+        pages, status="streaming", startedAt=10_000, now=10_001, events=[STARTED_EVENT, NODE_EVENT]
+    )
+
+    assert clock["line"] == "Running, 3 ms in"
+
+
+def test_a_streaming_run_without_a_now_reads_its_last_event(pages: GuardedPages):
+    """No wall clock given: the headline reads the trace's own last timestamp."""
+    clock = _run_clock(
+        pages, status="streaming", startedAt=10_000, now=None, events=[STARTED_EVENT, NODE_EVENT]
+    )
+
+    assert clock["line"] == "Running, 3 ms in"
+
+
+def test_an_ended_run_ignores_the_wall_clock_and_stops_ticking(pages: GuardedPages):
+    """Once a run ends, its line is the trace summary's own duration and the clock is idle."""
+    finished_event = {
+        "kind": "trace_finished",
+        "seq": 1,
+        "t_ms": 3012,
+        "outcome": "shed",
+        "response": None,
+    }
+
+    finished = _run_clock(
+        pages,
+        status="finished",
+        startedAt=10_000,
+        now=99_000,
+        events=[STARTED_EVENT, finished_event],
+    )
+    idle = _run_clock(pages, status="idle", startedAt=None, now=99_000, events=[])
+
+    assert finished["line"] == finished["summary"]
+    assert "3.0 s" in finished["line"]
+    assert finished["ticks"] is False
+    assert idle["ticks"] is False

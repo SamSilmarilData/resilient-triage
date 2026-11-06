@@ -172,6 +172,70 @@ def test_conditional_edges_carry_a_clear_router_label(layout: dict[str, Any]):
         assert not _overlaps(box_a, box_b), f"labels of {a} and {b} overlap"
 
 
+# Parallel runs of two edges closer than this read as one line (#162): the loop-back edges
+# (refine, repair, fallback) used to run 8 and 12 units apart along the graph's right side.
+MIN_LANE_GAP = 16
+
+Segment = tuple[list[float], list[float]]
+
+
+def _segments(edge: dict[str, Any]) -> list[Segment]:
+    return list(itertools.pairwise(edge["points"]))
+
+
+def _edge_name(edge: dict[str, Any]) -> str:
+    return f"{edge['source']} to {edge['target']} ({edge.get('route', '-')})"
+
+
+def _parallel_gap(a: Segment, b: Segment) -> float | None:
+    """How far apart two parallel segments run where their spans overlap; None otherwise."""
+    axis = 0 if a[0][0] == a[1][0] else 1  # 0: vertical (constant x), 1: horizontal
+    if (b[0][0] == b[1][0]) != (axis == 0):
+        return None
+    along = 1 - axis
+    a_lo, a_hi = sorted((a[0][along], a[1][along]))
+    b_lo, b_hi = sorted((b[0][along], b[1][along]))
+    if min(a_hi, b_hi) - max(a_lo, b_lo) <= 0:
+        return None
+    return abs(a[0][axis] - b[0][axis])
+
+
+def test_no_two_edges_run_along_each_other(layout: dict[str, Any]):
+    """Where two edges run side by side they keep a lane apart, so each branch can be followed."""
+    for a, b in itertools.combinations(layout["edges"], 2):
+        for seg_a in _segments(a):
+            for seg_b in _segments(b):
+                gap = _parallel_gap(seg_a, seg_b)
+                assert gap is None or gap >= MIN_LANE_GAP, (
+                    f"{_edge_name(a)} runs {gap} units from {_edge_name(b)}"
+                )
+
+
+def _box_to_segment(box: Box, segment: Segment) -> float:
+    """The shortest distance between a box and an axis-aligned segment."""
+    (x1, y1), (x2, y2) = segment
+    dx = max(box[0] - max(x1, x2), min(x1, x2) - box[2], 0)
+    dy = max(box[1] - max(y1, y2), min(y1, y2) - box[3], 0)
+    return float((dx**2 + dy**2) ** 0.5)
+
+
+def _box_to_edge(box: Box, edge: dict[str, Any]) -> float:
+    return min(_box_to_segment(box, segment) for segment in _segments(edge))
+
+
+def test_each_router_label_sits_nearest_its_own_edge(layout: dict[str, Any]):
+    """A router label is closer to the edge it names than to any other edge."""
+    for edge in (e for e in layout["edges"] if "route" in e):
+        box = _label_box(layout, edge)
+        own = _box_to_edge(box, edge)
+        for other in layout["edges"]:
+            if other is edge:
+                continue
+            assert own < _box_to_edge(box, other), (
+                f"label {edge['route']!r} of {_edge_name(edge)} is as near {_edge_name(other)}"
+            )
+
+
 async def test_layout_is_served_to_the_page(client: httpx.AsyncClient):
     """The page fetches the layout as JSON from /static, revalidated like unversioned files."""
     response = await client.get("/static/graph-layout.json")
