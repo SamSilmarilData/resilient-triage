@@ -118,3 +118,18 @@ def test_a_deep_link_scrolls_once_and_instantly_under_reduced_motion(
     assert page.evaluate("window.scrollY") == 0, "the page scrolled to the fragment again"
     violations = axe_violations(page)
     assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("fragment", ["%E0%A4%A", "%"])
+def test_a_malformed_deep_link_still_settles_without_a_page_error(
+    pages: GuardedPages, fragment: str
+):
+    """A fragment that doesn't decode scrolls nowhere, throws nothing, and still marks the
+    deep link done (the pages fixture fails the test on any page error)."""
+    page, watch = pages.open(viewport=DESKTOP)
+
+    open_shell(page, path=f"/#{fragment}")
+    page.wait_for_selector(DEEP_LINK_DONE, state="attached")
+
+    assert page.evaluate("window.scrollY") == 0
+    assert watch.page_errors == []

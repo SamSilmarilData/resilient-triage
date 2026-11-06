@@ -17,6 +17,7 @@ import { freePlaySource, loadInto, scenarioSource } from "./sse.mjs";
 import {
   createRunController,
   createScenarioStage,
+  fragmentId,
   freePlaySubmit,
   freePlayTicks,
   idleRun,
@@ -284,8 +285,8 @@ async function landOnFragment(loads) {
   await Promise.allSettled([...loads, document.fonts.ready]);
   // Signal changes re-render on the next tick; wait for that render to be laid out.
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  const id = decodeURIComponent(location.hash.slice(1));
-  if (id) document.getElementById(id)?.scrollIntoView({ block: "start" });
+  const id = fragmentId(location.hash);
+  if (id !== null) document.getElementById(id)?.scrollIntoView({ block: "start" });
   document.documentElement.dataset.deepLink = "done";
 }
 

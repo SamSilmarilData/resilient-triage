@@ -637,3 +637,21 @@ def test_a_run_that_reached_the_graph_is_not_refused(
     )
 
     assert (view["canTriage"], view["refused"], view["ticks"]) == (can_triage, False, False)
+
+
+# --- #163: deep links ---
+# page.evaluate script: the element id each URL fragment (location.hash) names.
+FRAGMENT_IDS = """async (hashes) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  return hashes.map((hash) => reducer.fragmentId(hash));
+}"""
+
+
+def test_a_fragment_names_its_decoded_id_and_a_malformed_one_names_none(pages: GuardedPages):
+    """A percent-encoded fragment decodes; one that doesn't decode (a broken escape), or an
+    empty one, names no element rather than throwing."""
+    hashes = ["#free-play", "#caf%C3%A9", "", "#", "#%E0%A4%A", "#%"]
+
+    ids = _free_play(pages, FRAGMENT_IDS, hashes)
+
+    assert ids == ["free-play", "café", None, None, None, None]

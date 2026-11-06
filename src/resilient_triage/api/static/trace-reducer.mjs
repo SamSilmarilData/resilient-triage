@@ -1787,3 +1787,21 @@ function countdownLine(retryAfterS, retryAt, now) {
   if (left <= 0) return "The free-play budget was spent for that minute. Try again now.";
   return `${BUDGET_SPENT} Try again in ${left} s.`;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Deep links (#163): the page scrolls to the URL's fragment once its regions have filled in.
+
+/**
+ * The element id a URL fragment (`location.hash`, with its "#") names, percent-decoded; null
+ * for an empty fragment or one that doesn't decode (a broken escape like `#%E0%A4%A`), so a
+ * bad link scrolls nowhere instead of throwing.
+ * @param {string} hash
+ * @returns {string | null}
+ */
+export function fragmentId(hash) {
+  try {
+    return decodeURIComponent(hash.slice(1)) || null;
+  } catch {
+    return null;
+  }
+}
