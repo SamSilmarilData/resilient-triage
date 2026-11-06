@@ -898,7 +898,15 @@ export function runHeadline(run, now) {
  * @param {TraceView} trace
  */
 function calledAModel(trace) {
-  return trace.events.some((event) => event.kind === "model_call");
+  return modelCallEvents(trace).length > 0;
+}
+
+/**
+ * The trace's model_call events, in order.
+ * @param {TraceView} trace
+ */
+function modelCallEvents(trace) {
+  return trace.events.filter((event) => event.kind === "model_call");
 }
 
 /**
@@ -1551,11 +1559,8 @@ export function freePlayRequest({ query, service_filter, force_refresh }) {
  * @returns {string | null}
  */
 export function answeringModel(trace) {
-  for (let i = trace.events.length - 1; i >= 0; i--) {
-    const e = trace.events[i];
-    if (e.kind === "model_call" && e.outcome === "completion") return e.model;
-  }
-  return null;
+  const answered = modelCallEvents(trace).findLast((call) => call.outcome === "completion");
+  return answered?.model ?? null;
 }
 
 /**
