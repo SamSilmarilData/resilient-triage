@@ -186,6 +186,25 @@ def test_every_outcome_reaches_the_finished_state(
     assert watch.failed == []
 
 
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_deadline_cut_run_says_its_fallback_came_from_outside_the_graph(
+    pages: GuardedPages, color_scheme: str
+):
+    """The deadline's fallback never lights fallback_report; the headline says where it's from."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    play(page, scenario="run-deadline")
+    wait_for_run(page)
+
+    line = page.locator("[data-run-line]").inner_text()
+    assert line.startswith("Fallback report in "), line
+    assert "run deadline hit, answered outside the graph" in line, line
+    assert "fallback_report" not in graph_state(page).visited
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
 def _sse(events: list[TraceEvent]) -> str:
     """Events framed as the server frames them."""
     return "".join(f"event: {e.kind}\ndata: {e.model_dump_json()}\n\n" for e in events)
