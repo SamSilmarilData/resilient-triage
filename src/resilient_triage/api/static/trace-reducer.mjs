@@ -887,6 +887,19 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
   };
 }
 
+// --- #157: pinned stage reveal ---
+
+/**
+ * Where to scroll the stage itself for a run that just started, so its graph shows: back to
+ * its top when the pinned stage scrolls inside itself (#157) and has been scrolled down, else
+ * null (below the wide breakpoint the stage does not scroll; needsReveal() moves the page).
+ * @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} stage
+ * @returns {number | null}
+ */
+export function stageRevealTop(stage) {
+  return stage.scrollHeight > stage.clientHeight && stage.scrollTop > 0 ? 0 : null;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Guided chapters (#119): GET /scenarios as the page draws it, and which run a scenario shows.
 
