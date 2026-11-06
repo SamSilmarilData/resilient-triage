@@ -24,6 +24,7 @@ import {
   needsReveal,
   normalCacheBackend,
   runTicks,
+  scenarioToggleId,
   stageRevealTop,
   stageScenario,
   toggledOpen,
@@ -153,7 +154,7 @@ function LiveStage() {
 function backToScenario(id) {
   if (openId.value !== id) openId.value = id;
   requestAnimationFrame(() => {
-    const toggle = document.getElementById(`scenario-${id}-toggle`);
+    const toggle = document.getElementById(scenarioToggleId(id));
     if (!toggle) return;
     toggle.closest("[data-scenario]")?.scrollIntoView({ block: "start" });
     toggle.focus({ preventScroll: true });

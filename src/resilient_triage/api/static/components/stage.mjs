@@ -4,7 +4,7 @@
 // `data-run-state` on the stage is the run's status; browser tests wait on it. Its one live
 // region says only how a run ended (runAnnouncement), not the headline's running tick.
 import { html } from "htm/preact";
-import { graphView, runAnnouncement, runHeadline } from "../trace-reducer.mjs";
+import { graphView, runAnnouncement, runHeadline, scenarioToggleId } from "../trace-reducer.mjs";
 import { Graph } from "./graph.mjs";
 import { Waterfall } from "./waterfall.mjs";
 
@@ -86,7 +86,7 @@ function StageScenarioLine({ scenario, onBack }) {
     ${scenario.offerBack &&
     html`<a
       class="run__back"
-      href=${`#scenario-${scenario.id}-toggle`}
+      href=${`#${scenarioToggleId(scenario.id)}`}
       data-stage-back
       onClick=${(/** @type {MouseEvent} */ event) => {
         if (!onBack) return;

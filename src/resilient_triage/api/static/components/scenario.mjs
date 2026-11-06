@@ -5,7 +5,7 @@
 // shows an expected path: only what the run's own trace says (#96).
 import { html } from "htm/preact";
 import { useState } from "preact/hooks";
-import { scenarioPanelView } from "../trace-reducer.mjs";
+import { scenarioPanelView, scenarioToggleId } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").ScenarioView} ScenarioView */
@@ -30,7 +30,7 @@ export function Scenario({ scenario, open, now, run, finishedOnce, onToggle, onP
       <h4 class="scenario__heading">
         <button
           class="scenario__toggle"
-          id=${`scenario-${scenario.id}-toggle`}
+          id=${scenarioToggleId(scenario.id)}
           type="button"
           aria-expanded=${String(open)}
           aria-controls=${panelId}

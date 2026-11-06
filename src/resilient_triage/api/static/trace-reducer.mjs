@@ -1162,6 +1162,14 @@ export function toggledOpen(openId, id) {
 }
 
 /**
+ * The element id of a scenario's disclosure toggle; the stage's way back links to it (#158).
+ * @param {string} id
+ */
+export function scenarioToggleId(id) {
+  return `scenario-${id}-toggle`;
+}
+
+/**
  * What a scenario's Skip to end does, given its run (scenarioRun()): "skip" holds a streaming
  * run until it ends, "start" plays the scenario already skipped (no run yet, or it was lost
  * or refused), null does nothing (the run is finished or already skipped). Once another
