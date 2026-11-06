@@ -100,7 +100,7 @@ class AppRuntime:
         # Only free play spends the run budget; scenario gateways get none (ADR-009).
         self.free_play_budget = RunBudget(runs_per_minute=settings.free_play_runs_per_minute)
         self.triage_gateway = TriageGateway(
-            cache, self.run_graph, settings, budget=self.free_play_budget
+            cache, self.run_graph, settings, budget=self.free_play_budget, simulated=llm.simulated
         )
         # Scenario runs share one slot pool, separate from free play's, so neither sheds the
         # other; each run's other collaborators are private (ADR-009).

@@ -67,6 +67,11 @@ class TraceStarted(_TraceEvent):
     )
     scoped: bool = Field(default=False, description="True if the request had a service filter")
     force_refresh: bool = Field(default=False, description="True if the cache was bypassed")
+    simulated: bool = Field(
+        default=False,
+        description="True if the run's model replies come from the keyless simulation "
+        "(no model API key, not a scenario run)",
+    )
 
 
 class ScenarioSetup(_TraceEvent):
