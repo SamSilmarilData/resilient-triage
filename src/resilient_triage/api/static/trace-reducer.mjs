@@ -704,10 +704,12 @@ const STREAM_WATCHDOG_MS = 30_000;
  * early; the partial trace stays. error: the stream was refused or never connected.
  * `skipping`: Skip to end was pressed during this stream; the controller folds its events
  * without reporting them until the run ends, so the stage holds still and then shows the
- * final state at once.
+ * final state at once. `startedAt`: the wall-clock ms (the controller's clock) the run
+ * started at, null before any run; the streaming headline counts from it (#156).
  * @typedef {"idle" | "streaming" | "finished" | "lost" | "error"} RunStatus
  * @typedef {{ status: RunStatus, trace: TraceView, error: string | null,
- *             skipping: boolean }} RunView
+ *             skipping: boolean,
+ *             startedAt: number | null }} RunView
  * @typedef {import("./sse.mjs").StreamSource} StreamSource
  */
 
@@ -718,28 +720,34 @@ const STREAM_WATCHDOG_MS = 30_000;
  * @typedef {{ status: RunStatus, line: string | null, dimmed: boolean,
  *             action: "Replay" | "Retry" | null, scripted: boolean }} RunHeadline
  * @param {RunView} run
+ * @param {number} [now] wall-clock ms on the run's clock, for a streaming run's headline
  * @returns {RunHeadline}
  */
-export function runHeadline(run) {
-  return { ...runLine(run), scripted: run.trace.scripted };
+export function runHeadline(run, now) {
+  return { ...runLine(run, now), scripted: run.trace.scripted };
 }
 
 /**
  * The headline's status, line, dimming and action.
  * @param {RunView} run
+ * @param {number} [now]
  * @returns {Omit<RunHeadline, "scripted">}
  */
-function runLine(run) {
-  const { status, trace } = run;
-  const lastMs = trace.events.length ? trace.events[trace.events.length - 1].t_ms : 0;
+function runLine(run, now) {
+  const { status } = run;
   switch (status) {
     case "idle":
       return { status, line: null, dimmed: false, action: null };
     case "streaming":
       if (run.skipping) return { status, line: "Skipping to the end", dimmed: false, action: null };
-      return { status, line: `Running, ${formatMs(lastMs)} in`, dimmed: false, action: null };
+      return {
+        status,
+        line: `Running, ${formatMs(runElapsedMs(run, now))} in`,
+        dimmed: false,
+        action: null,
+      };
     case "finished":
-      return { status, line: summaryLine(summarize(trace.events)), dimmed: false, action: null };
+      return { status, line: summaryLine(summarize(run.trace.events)), dimmed: false, action: null };
     case "lost":
       return { status, line: "Connection lost", dimmed: true, action: "Replay" };
     case "error":
@@ -780,7 +788,32 @@ export function needsReveal(rect, viewportHeight) {
 
 /** @returns {RunView} */
 export function idleRun() {
-  return { status: "idle", trace: initialTrace(), error: null, skipping: false };
+  return { status: "idle", trace: initialTrace(), error: null, skipping: false, startedAt: null };
+}
+
+// --- #156: the run's clock ---
+
+/**
+ * How long a streaming run has been going: wall time since it started, never less than its
+ * last event's own `t_ms` (a `now` sampled before that event landed). Without a `now` or a
+ * start, the last event's `t_ms`.
+ * @param {RunView} run
+ * @param {number} [now]
+ */
+function runElapsedMs(run, now) {
+  const { events } = run.trace;
+  const lastMs = events.length ? events[events.length - 1].t_ms : 0;
+  if (now === undefined || run.startedAt === null) return lastMs;
+  return Math.max(lastMs, now - run.startedAt);
+}
+
+/**
+ * Whether the page's clock should tick for this run: only while it streams and its headline
+ * counts (not while skipping to the end, which holds the stage still).
+ * @param {RunView} run
+ */
+export function runTicks(run) {
+  return run.status === "streaming" && !run.skipping;
 }
 
 const UNREACHABLE = "Couldn't reach the server. Check your connection and try again.";
@@ -790,10 +823,16 @@ const UNREACHABLE = "Couldn't reach the server. Check your connection and try ag
  * time: play() supersedes the run before it and resolves with the run's last view. Skip to
  * end (skipToEnd(), or play with `skipping`) stops reporting the views a stream's events make
  * until the run ends: the stream is real time, so the end can't come sooner, but nothing in
- * between is drawn. `view` is always the latest fold.
- * @param {{ onChange: (view: RunView) => void, watchdogMs?: number }} options
+ * between is drawn. `view` is always the latest fold. `clock` stamps each run's `startedAt`
+ * (wall-clock ms); the page's ticking `now` must read the same clock.
+ * @param {{ onChange: (view: RunView) => void, watchdogMs?: number,
+ *           clock?: () => number }} options
  */
-export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS }) {
+export function createRunController({
+  onChange,
+  watchdogMs = STREAM_WATCHDOG_MS,
+  clock = Date.now,
+}) {
   let view = idleRun();
   let runId = 0;
   /** @type {AbortController | null} */
@@ -844,7 +883,7 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
       timer = setTimeout(() => end("lost"), watchdogMs);
     };
 
-    set({ status: "streaming", trace: initialTrace(), error: null, skipping });
+    set({ status: "streaming", trace: initialTrace(), error: null, skipping, startedAt: clock() });
     arm();
     try {
       for await (const message of source(abort.signal)) {
