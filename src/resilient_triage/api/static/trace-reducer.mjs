@@ -1259,9 +1259,7 @@ export function createScenarioStage(controller, sourceOf) {
  * @param {RunView} view the stage's view when this scenario's play() resolved
  */
 function keepRun(kept, id, view) {
-  if (view.status !== "finished") return;
-  const started = view.trace.events.find((event) => event.kind === "trace_started");
-  if (started?.scenario_id === id) kept.set(id, view);
+  if (view.status === "finished" && view.trace.scenarioId === id) kept.set(id, view);
 }
 
 /**
