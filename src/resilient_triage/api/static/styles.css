@@ -949,11 +949,12 @@
     border-radius: var(--radius);
     background: var(--surface);
 
-    /* Like the stage: at phone width the graph gets the full content width. */
+    /* #155: at phone width the card keeps its surface, top and bottom rules and padding but
+       runs edge to edge, so its graph still gets the 343 px graph-layout.json is sized for. */
     @media (max-width: 30rem) {
-      padding: 0;
-      border: 0;
-      background: none;
+      margin-inline: calc(-1 * var(--gutter));
+      border-inline: 0;
+      border-radius: 0;
     }
   }
 }
@@ -1291,5 +1292,13 @@
     .stage .waterfall__axis {
       grid-template-columns: 10.5rem minmax(0, 1fr);
     }
+  }
+}
+
+/* #155: free play's finished run shows its report under the stage, inside the run's card. */
+@layer components {
+  .free-play__run {
+    display: grid;
+    gap: 1rem;
   }
 }
