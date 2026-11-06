@@ -420,6 +420,39 @@ def test_a_finished_run_fits_phone_width(pages: GuardedPages):
     assert graph["width"] >= 340
 
 
+# --- #163: malformed streams ---
+MALFORMED_BLOCK = "event: node_started\ndata: {not json\n\n"
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+@pytest.mark.parametrize("events_first", [0, 3], ids=["at-once", "mid-run"])
+def test_a_malformed_stream_says_the_runs_data_couldnt_be_read(
+    pages: GuardedPages, color_scheme: str, events_first: int
+):
+    """A stream the server sent but that doesn't parse is its own error, not "unreachable"."""
+    events = stream_scenario(pages.server, "healthy-run")
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+    page.route(
+        "**/scenarios/healthy-run/stream",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/event-stream",
+            body=_sse(events[:events_first]) + MALFORMED_BLOCK,
+        ),
+    )
+
+    play(page, scenario="healthy-run")
+    wait_for_run(page, "error")
+
+    line = page.locator("[data-run-line]").inner_text()
+    assert line.startswith("Couldn't read the run's data"), line
+    assert "reach the server" not in line
+    assert page.get_by_role("button", name="Retry").count() == 1
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
 # --- #156: the run's clock ---
 # Init script: counts the page's live setInterval timers, so a test can see the clock stop.
 COUNT_INTERVALS = """(() => {

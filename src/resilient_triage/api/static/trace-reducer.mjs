@@ -2,7 +2,7 @@
 // The trace-to-view reducer (ADR 0008, #118): the page's one logic module. Everything the page
 // shows about a run is derived here from the run's trace events; components only draw what
 // these functions return (CODING_STANDARDS.md, Frontend).
-import { StreamHttpError } from "./sse.mjs";
+import { StreamDataError, StreamHttpError } from "./sse.mjs";
 
 /**
  * One trace event as it arrives on the wire (trace/events.py); `kind` discriminates.
@@ -701,7 +701,8 @@ const STREAM_WATCHDOG_MS = 30_000;
 /**
  * idle: nothing played yet. streaming: events arriving. finished: trace_finished arrived
  * (a cache hit, an analyzed run or a shed alike). lost: the stream went silent or closed
- * early; the partial trace stays. error: the stream was refused or never connected.
+ * early; the partial trace stays. error: the stream was refused, never connected, or sent data
+ * that didn't parse (#163; any partial trace stays).
  * `skipping`: Skip to end was pressed during this stream; the controller folds its events
  * without reporting them until the run ends, so the stage holds still and then shows the
  * final state at once. `startedAt`: the wall-clock ms (the controller's clock) the run
@@ -716,7 +717,7 @@ const STREAM_WATCHDOG_MS = 30_000;
 /**
  * What the stage says about a run: its one line, whether to dim the partial trace, the
  * action its button offers (Replay after a lost stream, Retry after a refusal), and whether
- * its model replies are scripted (a scenario run, ADR 0009).
+ * its model replies are scripted (a scenario run that called a model, ADR 0009; #161).
  * @typedef {{ status: RunStatus, line: string | null, dimmed: boolean,
  *             action: "Replay" | "Retry" | null, scripted: boolean }} RunHeadline
  * @param {RunView} run
@@ -724,7 +725,18 @@ const STREAM_WATCHDOG_MS = 30_000;
  * @returns {RunHeadline}
  */
 export function runHeadline(run, now) {
-  return { ...runLine(run, now), scripted: run.trace.scripted };
+  return { ...runLine(run, now), scripted: run.trace.scripted && calledAModel(run.trace) };
+}
+
+// --- #161: scripted badge only on runs that called a model ---
+
+/**
+ * Whether a trace records at least one model call: a cache hit or a shed request never
+ * calls one, so it has no reply to call scripted.
+ * @param {TraceView} trace
+ */
+function calledAModel(trace) {
+  return trace.events.some((event) => event.kind === "model_call");
 }
 
 /**
@@ -817,6 +829,9 @@ export function runTicks(run) {
 }
 
 const UNREACHABLE = "Couldn't reach the server. Check your connection and try again.";
+// --- #163: malformed streams ---
+/** The stream arrived but didn't parse: a different failure from an unreachable server. */
+const MALFORMED = "Couldn't read the run's data: the server's stream didn't parse. Try again.";
 
 /**
  * Plays stream sources into RunViews, reporting each new view to `onChange`. One run at a
@@ -900,6 +915,7 @@ export function createRunController({
       end("lost"); // closed before trace_finished
     } catch (error) {
       if (error instanceof StreamHttpError) end("error", error.message);
+      else if (error instanceof StreamDataError) end("error", MALFORMED);
       else if (view.trace.events.length) end("lost");
       else end("error", UNREACHABLE);
     }
@@ -924,6 +940,19 @@ export function createRunController({
       return view;
     },
   };
+}
+
+// --- #157: pinned stage reveal ---
+
+/**
+ * Where to scroll the stage itself for a run that just started, so its graph shows: back to
+ * its top when the pinned stage scrolls inside itself (#157) and has been scrolled down, else
+ * null (below the wide breakpoint the stage does not scroll; needsReveal() moves the page).
+ * @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} stage
+ * @returns {number | null}
+ */
+export function stageRevealTop(stage) {
+  return stage.scrollHeight > stage.clientHeight && stage.scrollTop > 0 ? 0 : null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -952,8 +981,8 @@ export function toggledOpen(openId, id) {
  * What a scenario's Skip to end does, given its run (scenarioRun()): "skip" holds a streaming
  * run until it ends, "start" plays the scenario already skipped (no run yet, or it was lost
  * or refused), null does nothing (the run is finished or already skipped). Once another
- * scenario has played on the stage, an earlier scenario has no run, so its Skip to end
- * re-runs it skipped.
+ * scenario has played on the stage, an earlier scenario shows its kept finished run
+ * (keepRun()), so its Skip to end has nothing to do.
  * @param {RunView | null} run
  * @returns {"skip" | "start" | null}
  */
@@ -979,13 +1008,21 @@ export function scenarioRun(run, playedId, id) {
 
 /**
  * The guided scenarios on the stage's run controller: Play and Skip to end by scenario id,
- * and which run each scenario shows. It owns the id of the scenario played last.
+ * and which run each scenario shows. It owns the id of the scenario played last and each
+ * scenario's last finished run (#161).
  * @param {ReturnType<typeof createRunController>} controller
  * @param {(id: string) => StreamSource} sourceOf the stream of one scenario run
  */
 export function createScenarioStage(controller, sourceOf) {
   /** @type {string | null} */
   let playedId = null;
+  /** @type {Map<string, RunView>} */
+  const kept = new Map();
+  /**
+   * @param {RunView} run
+   * @param {string} id
+   */
+  const shown = (run, id) => scenarioRun(run, playedId, id) ?? kept.get(id) ?? null;
 
   /**
    * @param {string} id
@@ -993,17 +1030,28 @@ export function createScenarioStage(controller, sourceOf) {
    */
   const start = (id, options) => {
     playedId = id;
-    return controller.play(sourceOf(id), options);
+    return controller.play(sourceOf(id), options).then((view) => {
+      keepRun(kept, id, view);
+      return view;
+    });
   };
 
   return {
     /**
-     * This scenario's run, if `run` (the stage's, as last drawn) is it (scenarioRun()).
+     * This scenario's run: `run` (the stage's, as last drawn) if it is this scenario's
+     * (scenarioRun()), else its last finished run, if it has one.
      * @param {RunView} run
      * @param {string} id
      */
     runOf(run, id) {
-      return scenarioRun(run, playedId, id);
+      return shown(run, id);
+    },
+    /**
+     * Whether a run of this scenario has finished on the stage (so Play is "Play again").
+     * @param {string} id
+     */
+    finishedOnce(id) {
+      return kept.has(id);
     },
     /**
      * Play a scenario on the stage from the start.
@@ -1018,11 +1066,37 @@ export function createScenarioStage(controller, sourceOf) {
      * @param {string} id
      */
     skip(id) {
-      const action = skipAction(scenarioRun(controller.view, playedId, id));
+      const action = skipAction(shown(controller.view, id));
       if (action === "skip") controller.skipToEnd();
       if (action === "start") start(id, { skipping: true });
     },
   };
+}
+
+// --- #161: scenario panels keep their results ---
+
+/**
+ * Keep a scenario's run as its last result once it has finished. A run another play
+ * superseded, or one that was lost or refused, leaves the kept one as it was.
+ * @param {Map<string, RunView>} kept last finished run by scenario id
+ * @param {string} id
+ * @param {RunView} view the stage's view when this scenario's play() resolved
+ */
+function keepRun(kept, id, view) {
+  if (view.status !== "finished") return;
+  const started = view.trace.events.find((event) => event.kind === "trace_started");
+  if (started?.scenario_id === id) kept.set(id, view);
+}
+
+/**
+ * The Play button's label: "Play" until a run of the scenario has finished, then "Play
+ * again", including while its next run streams.
+ * @param {RunView | null} run the scenario's run (runOf())
+ * @param {boolean} finishedOnce
+ * @returns {"Play" | "Play again"}
+ */
+function playLabel(run, finishedOnce) {
+  return finishedOnce || run?.status === "finished" ? "Play again" : "Play";
 }
 
 /**
@@ -1031,14 +1105,15 @@ export function createScenarioStage(controller, sourceOf) {
  * notice) and every event for "Show everything".
  * @typedef {{ line: string | null, playLabel: "Play" | "Play again", skipDisabled: boolean,
  *             report: ReportView | null, events: EventRow[] }} ScenarioPanelView
- * @param {RunView | null} run the scenario's run (scenarioRun()), null if it has none
+ * @param {RunView | null} run the scenario's run (runOf()), null if it has none
+ * @param {boolean} [finishedOnce] a run of this scenario has finished before (finishedOnce())
  * @returns {ScenarioPanelView}
  */
-export function scenarioPanelView(run) {
+export function scenarioPanelView(run, finishedOnce = false) {
   const report = run && reportView(run.trace);
   return {
     line: run && runHeadline(run).line,
-    playLabel: run ? "Play again" : "Play",
+    playLabel: playLabel(run, finishedOnce),
     skipDisabled: skipAction(run) === null,
     report,
     events: run && report ? eventLog(run.trace) : [],
