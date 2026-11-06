@@ -190,7 +190,11 @@ def test_a_played_scenario_ends_with_its_trace_summary_and_report(
     graph = graph_state(page)
     assert graph.visited == set(path)
     assert graph.taken_pairs == path_edges(path)
-    assert page.locator("[data-run-badge]").inner_text() == "Model replies scripted"
+    badge = page.locator("[data-run-badge]")
+    if summary.model_calls:
+        assert badge.inner_text() == "Model replies scripted"
+    else:  # #161: a run that never called a model claims no scripted reply
+        assert badge.count() == 0
     line = _scenario(page, scenario_id, "[data-scenario-line]").inner_text()
     assert line and line == page.locator("[data-run-line]").inner_text()
 
@@ -290,3 +294,31 @@ def test_skip_to_end_is_offered_on_every_scenario_including_the_last(pages: Guar
     skip = _scenario(page, last, '[data-action="skip"]')
     assert skip.inner_text() == "Skip to end"
     assert skip.get_attribute("aria-disabled") == "false"
+
+
+# --- #161: scenario panels keep their results and label honestly ---
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+@pytest.mark.parametrize("scenario_id", ["cache-hit", "shed-request", "healthy-run"])
+def test_the_scripted_badge_shows_only_on_runs_that_called_a_model(
+    pages: GuardedPages, scenario_id: str, scheme: str
+):
+    """A cache hit or a shed request never calls a model, so it never claims scripted replies."""
+    called_a_model = bool(summarize(stream_scenario(pages.server, scenario_id)).model_calls)
+    assert called_a_model == (scenario_id == "healthy-run")
+    page, _ = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    page.locator(f"#scenario-{scenario_id}-toggle").click()
+    _scenario(page, scenario_id, '[data-action="play"]').click()
+    wait_for_run(page)
+
+    badge = page.locator("#stage-root [data-run-badge]")
+    if called_a_model:
+        assert badge.inner_text() == "Model replies scripted"
+    else:
+        assert badge.count() == 0
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
