@@ -213,7 +213,7 @@ function LiveFreePlay() {
     layout=${layout.value}
     inputError=${freePlayInputError.value}
     normalBackend=${normalCacheBackend(freePlayRun.run.value.trace, catalogue.value, health.value)}
-    onSubmit=${(/** @type {import("./components/free-play.mjs").FreePlayFields} */ fields) => {
+    onSubmit=${(/** @type {import("./trace-reducer.mjs").FreePlayFields} */ fields) => {
       // The controller's view and the wall clock, not the last render: a double click's
       // second press lands before the first one's run has re-rendered the button (#160).
       const { error, request } = freePlaySubmit(fields, freePlay.view, wallClock());

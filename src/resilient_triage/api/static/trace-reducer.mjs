@@ -1555,9 +1555,14 @@ function adrLabel(number) {
 // about its run beyond the stage's headline.
 
 /**
+ * The free-play form's fields, as typed.
+ * @typedef {{ query: string, service_filter: string, force_refresh: boolean }} FreePlayFields
+ */
+
+/**
  * The POST /triage/stream body from the free-play form's fields: the question trimmed, an
  * empty service filter left out.
- * @param {{ query: string, service_filter: string, force_refresh: boolean }} fields
+ * @param {FreePlayFields} fields
  * @returns {import("./sse.mjs").TriageRequest}
  */
 export function freePlayRequest({ query, service_filter, force_refresh }) {
@@ -1684,6 +1689,16 @@ export function freePlayView(run, now) {
 
 /** TriageRequest's shortest question (schemas/api.py), counted after trimming. */
 export const QUERY_MIN_LENGTH = 3;
+/**
+ * TriageRequest's limits (schemas/api.py), so the browser refuses a bad request first.
+ * tests/browser/test_free_play.py fails if the drawn form drifts from its JSON schema.
+ */
+export const REQUEST_LIMITS = Object.freeze({
+  queryMinLength: QUERY_MIN_LENGTH,
+  queryMaxLength: 2000,
+  serviceMaxLength: 100,
+  servicePattern: String.raw`[A-Za-z0-9_\s\-]+`,
+});
 /** What the form says about a question too short to send. */
 const QUERY_TOO_SHORT = `Describe the incident in at least ${QUERY_MIN_LENGTH} characters.`;
 
@@ -1692,7 +1707,7 @@ const QUERY_TOO_SHORT = `Describe the incident in at least ${QUERY_MIN_LENGTH} c
  * than the minimum once trimmed gets a plain message (not the server's validation error); a
  * press while the panel's run streams, or before a budget shed's retry time (a double click),
  * sends nothing and says nothing.
- * @param {{ query: string, service_filter: string, force_refresh: boolean }} fields
+ * @param {FreePlayFields} fields
  * @param {RunView} run the panel's run as it is now
  * @param {number} now wall-clock ms on the run's clock
  * @returns {{ error: string | null, request: import("./sse.mjs").TriageRequest | null }}
