@@ -435,3 +435,134 @@ def test_the_stage_names_its_runs_scenario_and_offers_a_way_back_once_finished(
         None,
     ]
     assert loading == [None]
+
+
+# --- #160: free play's input, double submits and refusals ---
+# page.evaluate script: what a free-play submit does with the form's fields, given the panel's
+# run (a status and its events, started at wall time 10 000) at wall time `now`.
+FREE_PLAY_SUBMIT = """async ({query, status, events, now}) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const run = {...reducer.idleRun(), status, startedAt: status === "idle" ? null : 10000,
+               trace: reducer.foldTrace(events)};
+  return reducer.freePlaySubmit({query, service_filter: " ", force_refresh: false}, run, now);
+}"""
+# page.evaluate script: the free-play view of a run started at wall time 10 000, at each `now`.
+FREE_PLAY_AT = """async ({status, events, nows}) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const run = {...reducer.idleRun(), status, startedAt: 10000, trace: reducer.foldTrace(events)};
+  return nows.map((now) => {
+    const view = reducer.freePlayView(run, now);
+    return {line: view.shed?.line ?? null, canTriage: view.canTriage, refused: view.refused,
+            retryAt: view.retryAt, ticks: reducer.freePlayTicks(run, now)};
+  });
+}"""
+FREE_PLAY_STARTED = {**STARTED_EVENT, "scenario_id": None}
+BUDGET_SHED = [
+    FREE_PLAY_STARTED,
+    {
+        "kind": "run_slot",
+        "seq": 1,
+        "t_ms": 2,
+        "acquired": False,
+        "waited_ms": 0,
+        "capacity": 4,
+        "reason": "budget",
+        "retry_after_s": 12,
+    },
+    {"kind": "trace_finished", "seq": 2, "t_ms": 3, "outcome": "shed", "response": None},
+]
+BUDGET_HEAD = "The free-play budget is spent for this minute."
+TOO_SHORT = "Describe the incident in at least 3 characters."
+
+
+def _free_play(pages: GuardedPages, script: str, arg: dict[str, Any]) -> Any:
+    """Evaluate a free-play reducer script in a fresh page."""
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+    return page.evaluate(script, arg)
+
+
+@pytest.mark.parametrize("query", ["", "   ", "\n\t \n", "  ab  "])
+def test_a_question_too_short_after_trimming_is_refused_with_a_plain_message(
+    pages: GuardedPages, query: str
+):
+    """Spaces don't count: fewer than 3 characters left after trimming sends nothing."""
+    submit = _free_play(
+        pages, FREE_PLAY_SUBMIT, {"query": query, "status": "idle", "events": [], "now": 0}
+    )
+
+    assert submit == {"error": TOO_SHORT, "request": None}
+
+
+def test_a_question_is_sent_trimmed(pages: GuardedPages):
+    """Three characters after trimming are enough; the request carries the trimmed question."""
+    submit = _free_play(
+        pages, FREE_PLAY_SUBMIT, {"query": "  5xx \n", "status": "idle", "events": [], "now": 0}
+    )
+
+    assert submit == {
+        "error": None,
+        "request": {"query": "5xx", "service_filter": None, "force_refresh": False},
+    }
+
+
+def test_no_second_run_is_sent_while_one_streams(pages: GuardedPages):
+    """A second submit while the panel's run streams sends nothing (a double click)."""
+    submit = _free_play(
+        pages,
+        FREE_PLAY_SUBMIT,
+        {"query": "Checkout down", "status": "streaming", "events": [], "now": 10_005},
+    )
+
+    assert submit == {"error": None, "request": None}
+
+
+def test_a_budget_shed_counts_down_to_its_retry_time(pages: GuardedPages):
+    """The retry deadline is when the shed arrived plus its retry-after; the notice counts down
+    in whole seconds to it, and Triage comes back when it passes."""
+    nows = [10_000, 10_002, 13_500, 22_001, 22_002]
+    views = _free_play(
+        pages, FREE_PLAY_AT, {"status": "finished", "events": BUDGET_SHED, "nows": nows}
+    )
+
+    assert [view["line"] for view in views] == [
+        f"{BUDGET_HEAD} Try again in 12 s.",
+        f"{BUDGET_HEAD} Try again in 12 s.",
+        f"{BUDGET_HEAD} Try again in 9 s.",
+        f"{BUDGET_HEAD} Try again in 1 s.",
+        "The free-play budget was spent for that minute. Try again now.",
+    ]
+    assert {view["retryAt"] for view in views} == {22_002}
+    assert [view["canTriage"] for view in views] == [False, False, False, False, True]
+    assert [view["ticks"] for view in views] == [True, True, True, True, False]
+    assert all(view["refused"] for view in views)
+
+
+def test_a_capacity_shed_has_no_countdown(pages: GuardedPages):
+    """A capacity shed carries no retry-after: Triage is available again at once."""
+    events = [dict(event) for event in BUDGET_SHED]
+    events[1] = {**events[1], "reason": "capacity", "retry_after_s": None}
+
+    (view,) = _free_play(
+        pages, FREE_PLAY_AT, {"status": "finished", "events": events, "nows": [10_005]}
+    )
+
+    assert view == {
+        "line": "Every run slot is busy right now. Try again in a moment.",
+        "canTriage": True,
+        "refused": True,
+        "retryAt": None,
+        "ticks": False,
+    }
+
+
+@pytest.mark.parametrize(("status", "can_triage"), [("streaming", False), ("finished", True)])
+def test_a_run_that_reached_the_graph_is_not_refused(
+    pages: GuardedPages, status: str, can_triage: bool
+):
+    """Triage waits for a streaming run; neither it nor a finished run is a refusal."""
+    (view,) = _free_play(
+        pages, FREE_PLAY_AT, {"status": status, "events": [FREE_PLAY_STARTED], "nows": [10_005]}
+    )
+
+    assert (view["canTriage"], view["refused"], view["ticks"]) == (can_triage, False, False)
