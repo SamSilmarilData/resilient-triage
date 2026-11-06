@@ -151,6 +151,14 @@ export function reduceTrace(trace, event) {
 }
 
 /**
+ * The last event's t_ms, or 0 before any event.
+ * @param {TraceEvent[]} events
+ */
+function lastEventMs(events) {
+  return events.length ? events[events.length - 1].t_ms : 0;
+}
+
+/**
  * Fold a whole event list.
  * @param {TraceEvent[]} events
  */
@@ -355,7 +363,7 @@ export function waterfallView(
   normalBackend = DEPLOYED_BACKEND,
 ) {
   if (!trace.events.length) return null;
-  const lastMs = Math.max(0, trace.events[trace.events.length - 1].t_ms);
+  const lastMs = Math.max(0, lastEventMs(trace.events));
   /** @typedef {Omit<WaterfallRow, "leftPct" | "widthPct">} PlacedRow */
   /** @type {PlacedRow[]} */
   const rows = [];
@@ -726,7 +734,7 @@ export function summarize(events) {
     }
   }
 
-  const lastMs = events.length ? events[events.length - 1].t_ms : originMs;
+  const lastMs = lastEventMs(events); // 0 when there are none, as originMs then is
   const runMs =
     runStartedMs !== null && runFinishedMs !== null ? runFinishedMs - runStartedMs : null;
   // Summed in event order, as Python's sum(), so the float result is the same.
@@ -974,8 +982,7 @@ export function idleRun() {
  * @param {number} [now]
  */
 function runElapsedMs(run, now) {
-  const { events } = run.trace;
-  const lastMs = events.length ? events[events.length - 1].t_ms : 0;
+  const lastMs = lastEventMs(run.trace.events);
   if (now === undefined || run.startedAt === null) return lastMs;
   return Math.max(lastMs, now - run.startedAt);
 }
