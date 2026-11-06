@@ -687,3 +687,16 @@ def test_no_summary_field_can_hold_free_text() -> None:
 
     assert strings
     assert [p for p, s in strings if not ({"enum", "const", "pattern"} & s.keys())] == []
+
+
+def test_a_trace_started_from_before_the_simulation_flag_still_parses() -> None:
+    old = (
+        '{"kind":"trace_started","seq":0,"t_ms":0,"schema_version":1,'
+        '"scenario_id":null,"scoped":false,"force_refresh":false}'
+    )
+
+    parsed = parse_trace_event(old)
+
+    assert isinstance(parsed, TraceStarted)
+    assert parsed.simulated is False
+    assert parsed.schema_version == 1

@@ -47,6 +47,8 @@ __all__ = [
 
 def build_llm_gateway(app_settings: Settings, adapter: ModelAdapter | None = None) -> LLMGateway:
     """Build the gateway; with no adapter, a Groq key selects Groq, else the simulation."""
+    # A given adapter stands in for a provider; only the simulation chosen here is "simulated".
+    simulated = adapter is None and not app_settings.groq_api_key
     if adapter is None:
         if app_settings.groq_api_key:
             adapter = GroqAdapter(
@@ -60,4 +62,5 @@ def build_llm_gateway(app_settings: Settings, adapter: ModelAdapter | None = Non
         primary=primary,
         fallback=app_settings.groq_fallback_model,
         label=adapter.label(primary),
+        simulated=simulated,
     )

@@ -153,6 +153,7 @@ class TriageGateway:
         *,
         slots: RunSlotPool | None = None,
         budget: RunBudget | None = None,
+        simulated: bool = False,
     ) -> None:
         # Without a slot pool the gateway builds its own from settings; a scenario run's
         # gateway is handed one (ADR-009).
@@ -165,6 +166,8 @@ class TriageGateway:
             queue_timeout_s=settings.triage_queue_timeout_s,
         )
         self._budget = budget
+        # True when the keyless simulation answers this gateway's free-play runs.
+        self._simulated = simulated
         self._metrics = TriageMetrics()
 
     @property
@@ -195,7 +198,10 @@ class TriageGateway:
             record_event(
                 recorder,
                 lambda: TraceStarted(
-                    scenario_id=scenario_id, scoped=bool(scope), force_refresh=force_refresh
+                    scenario_id=scenario_id,
+                    scoped=bool(scope),
+                    force_refresh=force_refresh,
+                    simulated=self._simulated and scenario_id is None,
                 ),
             )
             answer: _Answer = (

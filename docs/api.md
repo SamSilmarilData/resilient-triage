@@ -174,7 +174,7 @@ The summary is derived from the request's trace events. `POST /triage` returns o
 | `kind` | Fields (besides `seq`, `t_ms`) |
 |---|---|
 | `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source` / `set_run_deadline`), `count`, `source` (`fail_source`), `deadline_s` (`set_run_deadline`) |
-| `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh` |
+| `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh`, `simulated` (true when the keyless simulation answers: no model API key and not a scenario run; absent in older traces, read as false) |
 | `cache_lookup` | `backend`, `hit`, `similarity`, `threshold`, `duration_ms` |
 | `run_slot` | `acquired`, `waited_ms`, `capacity`, `reason` (`capacity` / `budget` when shed, else none), `retry_after_s` (budget sheds only) |
 | `node_started` | `node` |
@@ -210,7 +210,7 @@ Runs the same triage as `POST /triage` (same `TriageRequest` body, same cache, r
 Each trace event is one SSE event: `event:` is its `kind` and `data:` is the event as JSON. While nothing happens the server sends a `: ping` comment line every 15 s; skip comment lines. Responses carry `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
 ```text
 event: trace_started
-data: {"kind":"trace_started","seq":0,"t_ms":0.0,"schema_version":1,"scenario_id":null,"scoped":false,"force_refresh":false}
+data: {"kind":"trace_started","seq":0,"t_ms":0.0,"schema_version":1,"scenario_id":null,"scoped":false,"force_refresh":false,"simulated":false}
 
 event: cache_lookup
 data: {"kind":"cache_lookup","seq":1,"t_ms":4.1,"backend":"in_memory","hit":false,"similarity":null,"threshold":0.85,"duration_ms":4.0}
