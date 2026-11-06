@@ -155,6 +155,12 @@
     outline: none;
   }
 
+  /* #154: hidden always wins. A component's display (.events is a grid) beats the UA's
+     [hidden] rule; an !important declaration in this earliest layer beats every later one. */
+  [hidden] {
+    display: none !important;
+  }
+
   @media (prefers-reduced-motion: no-preference) {
     html {
       scroll-behavior: smooth;
