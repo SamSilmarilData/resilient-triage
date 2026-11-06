@@ -8,15 +8,15 @@ import { waterfallView } from "../trace-reducer.mjs";
 /** @typedef {import("../trace-reducer.mjs").TraceView} TraceView */
 /** @typedef {import("../trace-reducer.mjs").WaterfallRow} WaterfallRow */
 
-/** @param {{ row: WaterfallRow }} props */
-function Row({ row }) {
+/** @param {{ row: WaterfallRow, separator: string }} props */
+function Row({ row, separator }) {
   return html`
     <li class="waterfall__row" data-kind=${row.kind} data-tone=${row.tone} data-depth=${row.depth}>
       <span class="waterfall__label">
         <span class="waterfall__name">${row.name}</span>
         <span class="waterfall__detail">
           ${row.detailParts.map(
-            (part, i) => html`${i > 0 && " · "}<span class="waterfall__part">${part}</span>`,
+            (part, i) => html`${i > 0 && separator}<span class="waterfall__part">${part}</span>`,
           )}${row.tag && html` <span class="waterfall__tag">${row.tag}</span>`}
         </span>
       </span>
@@ -45,12 +45,15 @@ export function Waterfall({ trace, normalBackend = null }) {
     <figure class="waterfall" style=${`--zero:${view.zeroPct}%`}>
       <figcaption class="waterfall__caption">Timeline</figcaption>
       <ol class="waterfall__rows">
-        ${view.rows.map((row) => html`<${Row} key=${row.key} row=${row} />`)}
+        ${view.rows.map(
+          (row) => html`<${Row} key=${row.key} row=${row} separator=${view.separator} />`,
+        )}
       </ol>
       <div class="waterfall__axis" aria-hidden="true">
         <span></span>
         <span class="waterfall__track waterfall__track--axis">
-          ${view.zeroPct > 0 && html`<span class="waterfall__tick waterfall__tick--setup">setup</span>`}
+          ${view.showSetupLabel &&
+          html`<span class="waterfall__tick waterfall__tick--setup">setup</span>`}
           <span class="waterfall__zero">
             ${view.showZeroLabel && html`<span class="waterfall__tick">0</span>`}
           </span>

@@ -302,7 +302,10 @@ export function graphView(layout, trace) {
  *             detailParts: string[] }} WaterfallRow
  * @typedef {{ rows: WaterfallRow[], setupMs: number, runMs: number, zeroPct: number,
  *             endLabel: string,
- *             showZeroLabel: boolean }} WaterfallView
+ *             showZeroLabel: boolean, showSetupLabel: boolean,
+ *             separator: string }} WaterfallView
+ * `showSetupLabel`: the axis has a setup span to label. `separator`: what goes between a
+ * row's detailParts when drawn.
  */
 
 // Setup with no measured duration (seeding the cache, holding slots) still gets this share of
@@ -501,6 +504,8 @@ export function waterfallView(
     zeroPct: axis.zeroPct,
     endLabel,
     showZeroLabel: !axisLabelsCollide(axis.zeroPct, endLabel, trackPx),
+    showSetupLabel: axis.zeroPct > 0,
+    separator: DETAIL_SEPARATOR,
   };
 }
 
