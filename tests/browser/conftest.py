@@ -35,10 +35,16 @@ def live_settings(request: pytest.FixtureRequest) -> Settings:
 
 
 @pytest.fixture
-def live_server(live_settings: Settings) -> Iterator[LiveServer]:
+def live_keyless(request: pytest.FixtureRequest) -> bool:
+    """Whether the live app runs keyless (the simulation answers), via indirect parametrize."""
+    return bool(getattr(request, "param", False))
+
+
+@pytest.fixture
+def live_server(live_settings: Settings, live_keyless: bool) -> Iterator[LiveServer]:
     """The app on `127.0.0.1:<free port>` over a fresh scripted runtime, its cache emptied."""
     try:
-        with serve_live_app(live_settings) as live:
+        with serve_live_app(live_settings, keyless=live_keyless) as live:
             yield live
     except HarnessError as exc:
         pytest.fail(str(exc), pytrace=False)

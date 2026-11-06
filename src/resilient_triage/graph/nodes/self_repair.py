@@ -1,4 +1,4 @@
-"""Node: self_repair - Prepares corrective prompt for LLM retry cycle."""
+"""Node: self_repair - Tells the model what was wrong with its JSON, so it can try again."""
 
 from typing import Any
 

@@ -174,7 +174,7 @@ The summary is derived from the request's trace events. `POST /triage` returns o
 | `kind` | Fields (besides `seq`, `t_ms`) |
 |---|---|
 | `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source` / `set_run_deadline`), `count`, `source` (`fail_source`), `deadline_s` (`set_run_deadline`) |
-| `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh` |
+| `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh`, `simulated` (true when the keyless simulation answers: no model API key and not a scenario run; absent in older traces, read as false) |
 | `cache_lookup` | `backend`, `hit`, `similarity`, `threshold`, `duration_ms` |
 | `run_slot` | `acquired`, `waited_ms`, `capacity`, `reason` (`capacity` / `budget` when shed, else none), `retry_after_s` (budget sheds only) |
 | `node_started` | `node` |
@@ -210,7 +210,7 @@ Runs the same triage as `POST /triage` (same `TriageRequest` body, same cache, r
 Each trace event is one SSE event: `event:` is its `kind` and `data:` is the event as JSON. While nothing happens the server sends a `: ping` comment line every 15 s; skip comment lines. Responses carry `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
 ```text
 event: trace_started
-data: {"kind":"trace_started","seq":0,"t_ms":0.0,"schema_version":1,"scenario_id":null,"scoped":false,"force_refresh":false}
+data: {"kind":"trace_started","seq":0,"t_ms":0.0,"schema_version":1,"scenario_id":null,"scoped":false,"force_refresh":false,"simulated":false}
 
 event: cache_lookup
 data: {"kind":"cache_lookup","seq":1,"t_ms":4.1,"backend":"in_memory","hit":false,"similarity":null,"threshold":0.85,"duration_ms":4.0}
@@ -291,10 +291,10 @@ Read-only content for the page's node inspector (#121): one entry per triage gra
   "nodes": [
     {
       "name": "generate_report",
-      "purpose": "Invokes LLM to produce candidate report JSON.",
+      "purpose": "Asks the model for a draft report as JSON.",
       "file": "src/resilient_triage/graph/nodes/generate_report.py",
       "config_fields": [
-        {"name": "groq_model", "description": "Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)"}
+        {"name": "groq_model", "description": "Groq model asked first (for example qwen/qwen3.8-27b)"}
       ],
       "adrs": ["docs/decisions/0006-project-owned-llm-gateway.md"]
     }
@@ -305,7 +305,7 @@ Read-only content for the page's node inspector (#121): one entry per triage gra
 | Field | Meaning |
 | :--- | :--- |
 | `name` | The node's name in `get_graph()`, as in trace events and `graph-layout.json`. |
-| `purpose` | One sentence: the node module's docstring. |
+| `purpose` | One sentence, written for the page's visitors (sentence case, "the model" rather than "LLM"): the node module's docstring. Config descriptions are plain words too; `tests/test_node_inspector.py` checks both. |
 | `file`, `adrs[]` | Repository-relative paths; the page links them on GitHub. `file` follows the module, so `synthesize_telemetry` is `synthesize.py` and `finalize_report` is `finalize.py`. |
 | `config_fields[]` | The `Settings` fields that tune the node: `name` and `description`, never the value. |
 

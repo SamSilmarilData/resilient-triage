@@ -5,10 +5,12 @@ Sequences are compared on (kind, key fields) only: no timing assertions.
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 import pytest_asyncio
+from fakes import fake_statuspage_http
 
 from resilient_triage.cache.embeddings import DeterministicEmbeddingProvider
 from resilient_triage.cache.semantic_cache import SemanticCacheManager
@@ -16,11 +18,12 @@ from resilient_triage.config import Settings, settings
 from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.llm import DEFAULT_REPORT_JSON, RateLimited, ScriptedAdapter
 from resilient_triage.resilience.circuit_breaker import force_open_for_tests
-from resilient_triage.runtime import AppRuntime
+from resilient_triage.runtime import AppRuntime, build_runtime
+from resilient_triage.scenarios.catalogue import get_scenario
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
 from resilient_triage.schemas.state import TriageState
 from resilient_triage.schemas.telemetry import ChaosConfig
-from resilient_triage.trace.events import Reconciled, TraceEvent, TraceFinished
+from resilient_triage.trace.events import Reconciled, TraceEvent, TraceFinished, TraceStarted
 from resilient_triage.trace.recorder import ListTrace, NullTrace, TraceRecorder
 from resilient_triage.trace.summary import summarize
 from resilient_triage.triage.gateway import Analyzed, CacheHit, Shed, TriageGateway
@@ -476,3 +479,59 @@ async def test_a_raising_recorder_does_not_change_the_outcome(
     if isinstance(actual, CacheHit):
         assert isinstance(expected, CacheHit)
         assert actual.similarity == expected.similarity
+
+
+# --- #153: keyless simulation flag on trace_started ---
+
+
+def _trace_started(trace: ListTrace) -> TraceStarted:
+    first = next(e for e in trace.events if e.kind == "trace_started")
+    assert isinstance(first, TraceStarted)
+    return first
+
+
+@asynccontextmanager
+async def _keyless_runtime() -> AsyncIterator[AppRuntime]:
+    """A runtime as a deployment with no model API key builds it: the simulation answers."""
+    rt = build_runtime(
+        _settings(groq_api_key=None),
+        embedder=DeterministicEmbeddingProvider(),
+        statuspage_http=fake_statuspage_http(),
+    )
+    await rt.start()
+    await rt.cache.clear()
+    try:
+        yield rt
+    finally:
+        await rt.aclose()
+
+
+async def test_a_keyless_free_play_run_records_that_the_simulation_answered() -> None:
+    async with _keyless_runtime() as keyless:
+        trace = ListTrace()
+
+        await keyless.triage_gateway.triage(QUERY, None, trace=trace)
+
+    assert _trace_started(trace).simulated is True
+
+
+async def test_a_run_on_an_adapter_standing_in_for_a_provider_is_not_simulated(
+    runtime: AppRuntime,
+) -> None:
+    trace = ListTrace()
+
+    await runtime.triage_gateway.triage(QUERY, None, trace=trace)
+
+    assert _trace_started(trace).simulated is False
+
+
+async def test_a_scenario_run_on_a_keyless_runtime_is_scripted_not_simulated() -> None:
+    scenario = get_scenario("healthy-run")
+    assert scenario is not None
+    async with _keyless_runtime() as keyless:
+        trace = ListTrace()
+
+        await keyless.scenarios.build(scenario).triage(trace=trace)
+
+    started = _trace_started(trace)
+    assert (started.scenario_id, started.simulated) == ("healthy-run", False)

@@ -39,7 +39,7 @@
     },
     {
       "source": "generate_report", "target": "fallback_report", "route": "fallback",
-      "points": [[146, 352], [336, 352], [336, 520], [312, 520]], "label": [232, 368]
+      "points": [[146, 344], [336, 344], [336, 520], [312, 520]], "label": [232, 358]
     },
     {
       "source": "generate_report", "target": "finalize_report", "route": "finalize",
@@ -47,11 +47,11 @@
     },
     {
       "source": "validate_report", "target": "self_repair", "route": "repair",
-      "points": [[146, 442], [250, 442], [250, 418]], "label": [180, 436]
+      "points": [[146, 440], [250, 440], [250, 418]], "label": [160, 436]
     },
     {
       "source": "validate_report", "target": "refine_reflection", "route": "refine",
-      "points": [[146, 454], [328, 454], [328, 316], [320, 316]], "label": [180, 470]
+      "points": [[146, 456], [310, 456], [310, 330]], "label": [260, 470]
     },
     {
       "source": "validate_report", "target": "fallback_report", "route": "fallback",
@@ -61,8 +61,8 @@
       "source": "validate_report", "target": "finalize_report", "route": "finalize",
       "points": [[84, 462], [84, 578]], "label": [90, 552]
     },
-    { "source": "refine_reflection", "target": "generate_report", "points": [[180, 316], [174, 316], [174, 344], [146, 344]] },
-    { "source": "self_repair", "target": "generate_report", "points": [[202, 404], [174, 404], [174, 360], [146, 360]] },
+    { "source": "refine_reflection", "target": "generate_report", "points": [[180, 316], [130, 316], [130, 338]] },
+    { "source": "self_repair", "target": "generate_report", "points": [[202, 404], [166, 404], [166, 360], [146, 360]] },
     { "source": "fallback_report", "target": "finalize_report", "points": [[250, 534], [250, 592], [146, 592]] },
     { "source": "finalize_report", "target": "__end__", "points": [[84, 606], [84, 635]] }
   ]

@@ -104,9 +104,11 @@ class LLMGateway:
         fallback: str,
         label: str,
         *,
+        simulated: bool = False,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.adapter = adapter
+        self.simulated = simulated
         self.primary = primary
         self.fallback = fallback
         self._label = label
