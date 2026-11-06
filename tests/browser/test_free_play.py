@@ -128,6 +128,23 @@ def test_a_free_play_run_draws_its_trace_and_names_the_real_model(pages: Guarded
     assert page.locator(run_selector("idle")).count() == 1, "stage untouched"
 
 
+def test_a_free_play_run_on_the_deployments_cache_names_no_backend(pages: GuardedPages):
+    """Free play's cache is the deployment's, as GET /health reports it: its rows name none."""
+    page, watch = pages.open()
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+
+    rows = _panel(page).locator(
+        '.waterfall__row[data-kind="cache"], .waterfall__row[data-kind="store"]'
+    )
+    assert rows.count() == 2
+    for i in range(rows.count()):
+        assert rows.nth(i).locator(".waterfall__part").all_inner_texts()[-1] in ("miss", "stored")
+    assert any(url.endswith("/health") for url in watch.requests)
+
+
 def _budget_of(runs: int) -> Settings:
     """Settings allowing `runs` free-play graph runs a minute."""
     return settings.model_copy(update={"free_play_runs_per_minute": runs})

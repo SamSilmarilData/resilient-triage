@@ -554,6 +554,32 @@ def test_a_redis_down_run_says_its_cache_ran_in_memory(pages: GuardedPages, colo
         assert parts[-1] == "in memory"
 
 
+CACHE_ROWS = (
+    '#stage-root .waterfall__row[data-kind="cache"], #stage-root .waterfall__row[data-kind="store"]'
+)
+# Every catalogued scenario but the one whose setup takes Redis down.
+REDIS_UP = [scenario.id for scenario in SCENARIOS if scenario.id != "everything-down"]
+
+
+@pytest.mark.parametrize("scenario_id", REDIS_UP)
+def test_a_scenario_with_redis_up_names_no_cache_backend(pages: GuardedPages, scenario_id: str):
+    """A scenario's private in-memory cache (ADR 0009) stands in for the normal one: its cache
+    rows name no backend unless its setup takes Redis down."""
+    (scenario,) = [scenario for scenario in SCENARIOS if scenario.id == scenario_id]
+    assert not any("Redis" in note for note in scenario.setup_notes)
+    page, _ = pages.open()
+    open_shell(page)
+
+    play(page, scenario=scenario_id)
+    wait_for_run(page)
+
+    cache = page.locator(CACHE_ROWS)
+    assert cache.count() >= 1
+    for i in range(cache.count()):
+        parts = cache.nth(i).locator(".waterfall__part").all_inner_texts()
+        assert "in memory" not in parts and "Redis" not in " ".join(parts), parts
+
+
 # --- #163: malformed streams ---
 MALFORMED_BLOCK = "event: node_started\ndata: {not json\n\n"
 
