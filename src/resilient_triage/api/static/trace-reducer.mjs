@@ -1237,12 +1237,13 @@ function playLabel(run, finishedOnce) {
  *             report: ReportView | null, events: EventRow[] }} ScenarioPanelView
  * @param {RunView | null} run the scenario's run (runOf()), null if it has none
  * @param {boolean} [finishedOnce] a run of this scenario has finished before (finishedOnce())
+ * @param {number} [now] the page's ticking clock, so a streaming run's line counts (#156)
  * @returns {ScenarioPanelView}
  */
-export function scenarioPanelView(run, finishedOnce = false) {
+export function scenarioPanelView(run, finishedOnce = false, now) {
   const report = run && reportView(run.trace);
   return {
-    line: run && runHeadline(run).line,
+    line: run && runHeadline(run, now).line,
     playLabel: playLabel(run, finishedOnce),
     skipDisabled: skipAction(run) === null,
     report,

@@ -159,6 +159,7 @@ function GuidedChapters() {
     catalogue=${catalogue.value}
     onRetry=${loadCatalogue}
     openId=${openId.value}
+    now=${now.value}
     runOf=${(/** @type {string} */ id) => scenarios.runOf(run, id)}
     finishedOnce=${(/** @type {string} */ id) => scenarios.finishedOnce(id)}
     onToggle=${(/** @type {string} */ id) => {
