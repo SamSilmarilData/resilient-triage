@@ -20,11 +20,13 @@ import { Waterfall } from "./waterfall.mjs";
  *   now?: number,
  *   scenario?: import("../trace-reducer.mjs").StageScenario | null,
  *   onBack?: (id: string) => void,
+ *   headOnly?: boolean,
  * }} props `now`: the page's ticking clock, for a streaming run's headline (#156).
  *   `scenario`: the scenario the stage draws (stageScenario(); free play passes none), and
- *   `onBack` takes the visitor back to its card (#158)
+ *   `onBack` takes the visitor back to its card (#158). `headOnly`: draw the headline but
+ *   no graph or timeline, for a run refused before any graph ran (#160)
  */
-export function Stage({ run, layout, onReplay, onSelectNode, now, scenario, onBack }) {
+export function Stage({ run, layout, onReplay, onSelectNode, now, scenario, onBack, headOnly }) {
   const headline = runHeadline(run, now);
   return html`
     <div class="run" data-run-state=${run.status} data-dimmed=${String(headline.dimmed)}>
@@ -41,14 +43,15 @@ export function Stage({ run, layout, onReplay, onSelectNode, now, scenario, onBa
         ${headline.action &&
         html`<button class="button" type="button" onClick=${onReplay}>${headline.action}</button>`}
       </div>
-      <div class="run__panels">
+      ${!headOnly &&
+      html`<div class="run__panels">
         ${layout === "loading"
           ? null
           : layout === "failed"
             ? html`<p class="notice">The graph's layout didn't load. The timeline below still shows the run.</p>`
             : html`<${Graph} view=${graphView(layout, run.trace)} onSelectNode=${onSelectNode} />`}
         <${Waterfall} trace=${run.trace} />
-      </div>
+      </div>`}
     </div>
   `;
 }

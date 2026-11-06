@@ -17,6 +17,8 @@ import { freePlaySource, loadInto, scenarioSource } from "./sse.mjs";
 import {
   createRunController,
   createScenarioStage,
+  freePlaySubmit,
+  freePlayTicks,
   idleRun,
   inspectorView,
   needsReveal,
@@ -41,11 +43,13 @@ const CLOCK_TICK_MS = 250;
  * A `now` signal (wall-clock ms) that ticks while `active` is true and holds still otherwise:
  * its one timer runs only then, so an idle page has none. Components read `now` and never
  * keep a timer of their own. Widen `active` for anything else that counts (#160's countdown).
- * @param {import("@preact/signals").ReadonlySignal<boolean>} active
+ * `active` is given the clock itself, so a countdown can stop the clock once it reaches zero.
+ * @param {(now: number) => boolean} isActive
  * @param {number} [periodMs]
  */
-function tickingClock(active, periodMs = CLOCK_TICK_MS) {
+function tickingClock(isActive, periodMs = CLOCK_TICK_MS) {
   const now = signal(wallClock());
+  const active = computed(() => isActive(now.value));
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let timer;
   effect(() => {
@@ -104,10 +108,18 @@ const freePlayRun = runSignal();
 /** The free-play panel's run controller: a visitor's question plays here, not on the stage. */
 export const freePlay = freePlayRun.controller;
 
-/** The page's clock: ticks while either run's headline counts (#156). */
+/**
+ * The page's clock: ticks while either run's headline counts (#156) or free play's budget
+ * shed counts down to its retry time (#160).
+ */
 const now = tickingClock(
-  computed(() => runTicks(stageRun.run.value) || runTicks(freePlayRun.run.value)),
+  (time) =>
+    runTicks(stageRun.run.value) ||
+    runTicks(freePlayRun.run.value) ||
+    freePlayTicks(freePlayRun.run.value, time),
 );
+/** Free play's message about a question it won't send, if any (#160). */
+const freePlayInputError = signal(/** @type {string | null} */ (null));
 
 /** The live-trace column, bound to the stage's signals. */
 function LiveStage() {
@@ -189,7 +201,14 @@ function LiveFreePlay() {
     run=${freePlayRun.run.value}
     now=${now.value}
     layout=${layout.value}
-    onSubmit=${(request) => freePlay.play(freePlaySource(request))}
+    inputError=${freePlayInputError.value}
+    onSubmit=${(/** @type {import("./components/free-play.mjs").FreePlayFields} */ fields) => {
+      // The controller's view and the wall clock, not the last render: a double click's
+      // second press lands before the first one's run has re-rendered the button (#160).
+      const { error, request } = freePlaySubmit(fields, freePlay.view, wallClock());
+      freePlayInputError.value = error;
+      if (request) freePlay.play(freePlaySource(request));
+    }}
     onReplay=${() => freePlay.replay()}
     onSelectNode=${inspect}
   />`;

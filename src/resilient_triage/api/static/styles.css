@@ -1334,3 +1334,25 @@
     }
   }
 }
+
+/* #160: free play's plain message about a question it won't send, and Triage while it can't
+   ask (a run streaming, or a budget shed's countdown): unavailable as the quiet button's
+   disabled state, but aria-disabled (not disabled) keeps a keyboard user's focus on it. */
+@layer components {
+  .ask__error {
+    color: var(--bad);
+    font-size: 0.875rem;
+  }
+
+  .ask__input[aria-invalid="true"] {
+    border-color: var(--bad);
+  }
+
+  .button--primary[aria-disabled="true"] {
+    border-style: dashed;
+    border-color: var(--line);
+    background: var(--sunken);
+    color: var(--faint);
+    cursor: not-allowed;
+  }
+}

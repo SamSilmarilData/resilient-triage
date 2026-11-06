@@ -5,20 +5,23 @@
 // the panel's run controller lives in app.mjs. A finished run's report sits under its stage, in
 // the same card (#155). Errors and lost streams stay in this panel (#101).
 import { html } from "htm/preact";
-import { freePlayRequest, freePlayView } from "../trace-reducer.mjs";
+import { QUERY_MIN_LENGTH, freePlayView } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
 import { Stage } from "./stage.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
-/** @typedef {import("../sse.mjs").TriageRequest} TriageRequest */
+/** @typedef {{ query: string, service_filter: string, force_refresh: boolean }} FreePlayFields */
+
+/** The id of the form's message about a question too short to send (#160). */
+const INPUT_ERROR_ID = "free-play-query-error";
 
 /**
  * TriageRequest's limits (schemas/api.py), so the browser refuses a bad request first.
  * tests/browser/test_free_play.py fails if the drawn form drifts from its JSON schema.
  */
 const REQUEST_LIMITS = Object.freeze({
-  queryMinLength: 3,
+  queryMinLength: QUERY_MIN_LENGTH,
   queryMaxLength: 2000,
   serviceMaxLength: 100,
   servicePattern: String.raw`[A-Za-z0-9_\s\-]+`,
@@ -28,27 +31,28 @@ const REQUEST_LIMITS = Object.freeze({
  * @param {{
  *   run: RunView,
  *   layout: import("../trace-reducer.mjs").Loadable<GraphLayout>,
- *   onSubmit: (request: TriageRequest) => void,
+ *   onSubmit: (fields: FreePlayFields) => void,
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
  *   now?: number,
- * }} props `now`: the page's ticking clock, for the run's headline (#156)
+ *   inputError?: string | null,
+ * }} props `now`: the page's ticking clock, for the run's headline (#156) and a budget
+ *   shed's countdown (#160). `onSubmit` gets the form's fields; the shell asks the reducer
+ *   whether they make a request (freePlaySubmit) and passes back `inputError` when not.
  */
-export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now }) {
+export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now, inputError }) {
   /** @param {SubmitEvent} event */
   const submit = (event) => {
     event.preventDefault();
     const form = /** @type {HTMLFormElement} */ (event.currentTarget);
     const data = new FormData(form);
-    onSubmit(
-      freePlayRequest({
-        query: String(data.get("query") ?? ""),
-        service_filter: String(data.get("service_filter") ?? ""),
-        force_refresh: data.get("force_refresh") !== null,
-      }),
-    );
+    onSubmit({
+      query: String(data.get("query") ?? ""),
+      service_filter: String(data.get("service_filter") ?? ""),
+      force_refresh: data.get("force_refresh") !== null,
+    });
   };
-  const { model, shed, report } = freePlayView(run);
+  const { model, shed, report, refused, canTriage } = freePlayView(run, now);
   return html`
     <div class="free-play__panel">
       <form class="ask" onSubmit=${submit}>
@@ -63,7 +67,13 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now })
             minlength=${REQUEST_LIMITS.queryMinLength}
             maxlength=${REQUEST_LIMITS.queryMaxLength}
             placeholder="Stripe webhooks timing out with 504s since 14:05"
+            aria-invalid=${inputError ? "true" : undefined}
+            aria-describedby=${inputError ? INPUT_ERROR_ID : undefined}
           ></textarea>
+          ${inputError &&
+          html`<p id=${INPUT_ERROR_ID} class="ask__error" role="alert" data-input-error>
+            ${inputError}
+          </p>`}
         </div>
         <div class="ask__row">
           <div class="ask__field">
@@ -81,7 +91,13 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now })
           <label class="ask__check">
             <input type="checkbox" name="force_refresh" /> Skip the cache
           </label>
-          <button class="button button--primary" type="submit">Triage</button>
+          <button
+            class="button button--primary"
+            type="submit"
+            aria-disabled=${String(!canTriage)}
+          >
+            Triage
+          </button>
         </div>
       </form>
       ${run.status !== "idle" &&
@@ -100,6 +116,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now })
             layout=${layout}
             onReplay=${onReplay}
             onSelectNode=${onSelectNode}
+            headOnly=${refused}
           />
           ${report && html`<${Report} view=${report} />`}
         </div>

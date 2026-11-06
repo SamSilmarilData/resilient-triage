@@ -15,6 +15,7 @@ import pytest
 from harness import (
     PAGE_WIDTHS,
     GuardedPages,
+    PageWatch,
     axe_violations,
     describe,
     open_shell,
@@ -23,6 +24,7 @@ from harness import (
     unique_question,
     wait_for_run,
 )
+from playwright.sync_api import expect
 
 from resilient_triage.config import Settings, settings
 from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, ScriptedReply
@@ -133,8 +135,10 @@ def _budget_of(runs: int) -> Settings:
 
 @pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
 def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: GuardedPages):
-    """Over the budget the run is shed with its retry-after; the same page answers the next."""
+    """Over the budget the run is shed with its retry-after; the same page answers the next
+    once the retry time has passed (Triage waits for it, #160)."""
     page, _ = pages.open()
+    page.clock.install()
     open_shell(page)
     page.evaluate("() => { window.notReloaded = true; }")
     panel = _panel(page)
@@ -158,6 +162,9 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     assert len(pages.server.llm.calls) == 1, "a shed run never reaches the model"
 
     # A cache hit doesn't count against the budget: the same page, unreloaded, answers it.
+    # Triage comes back only once the retry time has passed (#160), so skip the page ahead.
+    page.clock.fast_forward(retry_after * 1_000)
+    expect(panel.get_by_role("button", name="Triage")).to_be_enabled()
     _ask(page, question)
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="detached")
     wait_for_run(page, root=PANEL)
@@ -497,6 +504,173 @@ def test_a_free_play_report_has_no_serious_axe_violations(pages: GuardedPages, c
     _ask(page, unique_question())
     wait_for_run(page, root=PANEL)
     assert _report(page).count() == 1
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+# --- #160: input errors, double submits and refusals ---
+
+TOO_SHORT = "Describe the incident in at least 3 characters."
+BUDGET_HEAD = "The free-play budget is spent for this minute."
+COUNTDOWN = re.compile(re.escape(BUDGET_HEAD) + r" Try again in (\d+) s\.")
+
+
+def _triage(page: Page) -> Locator:
+    """Free play's Triage button."""
+    return _panel(page).get_by_role("button", name="Triage")
+
+
+def _stream_requests(watch: PageWatch) -> list[str]:
+    """Every free-play stream the page posted."""
+    return [url for url in watch.requests if url.endswith("/triage/stream")]
+
+
+def _shed_on_budget(page: Page) -> None:
+    """Spend a one-run budget, then ask again and wait for the shed run."""
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+    _ask(page, unique_question("Checkout latency doubled after the 14:00 deploy"))
+    page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="attached")
+    wait_for_run(page, root=PANEL)
+
+
+@pytest.mark.parametrize("query", ["      ", "  ab  "])
+def test_a_question_too_short_after_trimming_is_refused_before_sending(
+    pages: GuardedPages, query: str
+):
+    """Only spaces, or under three characters once trimmed: a plain message, no request."""
+    page, watch = pages.open()
+    open_shell(page)
+
+    _ask(page, query)
+
+    field = _panel(page).get_by_label("Your incident")
+    message = _panel(page).locator("[data-input-error]")
+    expect(message).to_have_text(TOO_SHORT)
+    assert field.get_attribute("aria-invalid") == "true"
+    assert message.get_attribute("id") in (field.get_attribute("aria-describedby") or "").split()
+    assert _stream_requests(watch) == []
+    assert _panel(page).locator("[data-run-state]").count() == 0, "no run started"
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+    assert message.count() == 0, "a question sent clears the message"
+    assert field.get_attribute("aria-invalid") is None
+
+
+@pytest.mark.real_scripted_delays
+def test_triage_is_disabled_while_a_run_streams_so_a_double_click_starts_one(
+    pages: GuardedPages,
+):
+    """A double click on Triage posts one run; the button comes back when it ends."""
+    llm = pages.server.llm
+    llm.script = [*llm.script[: len(llm.calls)], ScriptedReply(DEFAULT_REPORT_JSON, delay_s=1)]
+    page, watch = pages.open()
+    open_shell(page)
+
+    _panel(page).get_by_label("Your incident").fill(unique_question())
+    _triage(page).dblclick()
+    wait_for_run(page, "streaming", root=PANEL)
+    expect(_triage(page)).to_be_disabled()
+    wait_for_run(page, root=PANEL)
+
+    expect(_triage(page)).to_be_enabled()
+    assert _stream_requests(watch) == [f"{pages.server.url}/triage/stream"]
+    assert len(llm.calls) == 1, "one run, one model call"
+
+
+@pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
+def test_a_shed_run_draws_only_its_notice_and_names_its_reason_once(pages: GuardedPages):
+    """No graph, no empty timeline: the notice says why and when, the headline stays short."""
+    page, _ = pages.open()
+    open_shell(page)
+
+    _shed_on_budget(page)
+
+    panel = _panel(page)
+    assert panel.locator(".graph").count() == 0
+    assert panel.locator(".waterfall, .empty").count() == 0
+    assert COUNTDOWN.fullmatch(panel.locator("[data-shed-reason]").inner_text())
+    line = panel.locator("[data-run-line]").inner_text()
+    assert re.fullmatch(r"Shed after .+, before the graph ran", line)
+    assert panel.inner_text().count("budget") == 1, "the reason is said once, in the notice"
+
+
+def test_a_rejected_request_draws_only_its_notice(pages: GuardedPages):
+    """A request the server refuses (422) shows its message and Retry, not an empty graph."""
+    page, _ = pages.open()
+    open_shell(page)
+    page.route(
+        "**/triage/stream",
+        lambda route: route.fulfill(
+            status=422,
+            content_type="application/json",
+            body=json.dumps({"detail": "The question was refused."}),
+        ),
+    )
+
+    _ask(page, unique_question())
+    wait_for_run(page, "error", root=PANEL)
+
+    panel = _panel(page)
+    assert panel.locator("[data-run-line]").inner_text() == "The question was refused."
+    assert panel.get_by_role("button", name="Retry").count() == 1
+    assert panel.locator(".graph, .waterfall, .empty").count() == 0
+
+
+@pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
+def test_a_budget_shed_counts_down_and_triage_comes_back_at_zero(pages: GuardedPages):
+    """The retry time ticks down by the second; at zero Triage is available again."""
+    page, _ = pages.open()
+    page.clock.install()
+    open_shell(page)
+
+    _shed_on_budget(page)
+    notice = _panel(page).locator("[data-shed-reason]")
+    match = COUNTDOWN.fullmatch(notice.inner_text())
+    assert match is not None, notice.inner_text()
+    left = int(match.group(1))
+    # One budgeted run a minute, just spent: the full minute is left to wait.
+    assert left == int(notice.get_attribute("data-retry-after") or "0") > 10
+    expect(_triage(page)).to_be_disabled()
+
+    # The page's clock keeps flowing, so 5 s on it reads 5 s less, or 6 at a second's edge.
+    page.clock.fast_forward(5_000)
+    expect(notice).to_have_text(
+        re.compile(rf"{re.escape(BUDGET_HEAD)} Try again in ({left - 5}|{left - 6}) s\.")
+    )
+    expect(_triage(page)).to_be_disabled()
+    page.clock.fast_forward(left * 1_000)
+
+    expect(notice).to_have_text("The free-play budget was spent for that minute. Try again now.")
+    expect(_triage(page)).to_be_enabled()
+
+
+@pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_refused_free_play_run_has_no_serious_axe_violations(
+    pages: GuardedPages, color_scheme: str
+):
+    """The shed notice, its short headline and the disabled Triage pass axe-core in both themes."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    _shed_on_budget(page)
+    expect(_triage(page)).to_be_disabled()
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_an_input_error_has_no_serious_axe_violations(pages: GuardedPages, color_scheme: str):
+    """The form's plain message for a too-short question passes axe-core in both themes."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    _ask(page, "      ")
+    expect(_panel(page).locator("[data-input-error]")).to_have_text(TOO_SHORT)
 
     violations = axe_violations(page)
     assert violations == [], describe(violations)
