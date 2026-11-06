@@ -15,7 +15,9 @@ function Row({ row }) {
       <span class="waterfall__label">
         <span class="waterfall__name">${row.name}</span>
         <span class="waterfall__detail">
-          ${row.detail}${row.tag && html` <span class="waterfall__tag">${row.tag}</span>`}
+          ${row.detailParts.map(
+            (part, i) => html`${i > 0 && " · "}<span class="waterfall__part">${part}</span>`,
+          )}${row.tag && html` <span class="waterfall__tag">${row.tag}</span>`}
         </span>
       </span>
       <span class="waterfall__track">
@@ -45,8 +47,10 @@ export function Waterfall({ trace }) {
       <div class="waterfall__axis" aria-hidden="true">
         <span></span>
         <span class="waterfall__track waterfall__track--axis">
-          ${view.setupMs > 0 && html`<span class="waterfall__tick waterfall__tick--setup">setup</span>`}
-          <span class="waterfall__zero"><span class="waterfall__tick">0</span></span>
+          ${view.zeroPct > 0 && html`<span class="waterfall__tick waterfall__tick--setup">setup</span>`}
+          <span class="waterfall__zero">
+            ${view.showZeroLabel && html`<span class="waterfall__tick">0</span>`}
+          </span>
           <span class="waterfall__tick waterfall__tick--end">${view.endLabel}</span>
         </span>
       </div>

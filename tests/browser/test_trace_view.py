@@ -26,6 +26,7 @@ from harness import (
 )
 
 from resilient_triage.config import settings
+from resilient_triage.scenarios.catalogue import SCENARIOS
 from resilient_triage.trace.events import (
     ModelCall,
     NodeFinished,
@@ -437,6 +438,120 @@ def test_a_finished_run_fits_phone_width(pages: GuardedPages):
     assert graph is not None and waterfall is not None
     assert graph["y"] + graph["height"] <= waterfall["y"]
     assert graph["width"] >= 340
+
+
+# --- #159: readable timeline ---------------------------------------------------------------
+SIDE_PANEL = {"width": 1280, "height": 720}
+PHONE = {"width": 375, "height": 812}
+# The axis's zero label (null if hidden), end label, track and zero line, as client rects.
+AXIS_LABELS = """() => {
+  const box = (selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return null;
+    const {left, right, top, bottom} = el.getBoundingClientRect();
+    return {left, right, top, bottom};
+  };
+  return {zero: box(".waterfall__zero .waterfall__tick"), end: box(".waterfall__tick--end"),
+          track: box(".waterfall__track--axis"), zeroLine: box(".waterfall__zero")};
+}"""
+# Every word in a waterfall row's name or detail value that the browser broke across lines,
+# and every detail value drawn on more than one line.
+BROKEN_LABELS = """() => {
+  const broken = [];
+  for (const label of document.querySelectorAll(".waterfall__name, .waterfall__part")) {
+    const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (const word of node.data.matchAll(/\\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, word.index);
+        range.setEnd(node, word.index + word[0].length);
+        if (range.getClientRects().length > 1) broken.push(word[0]);
+      }
+    }
+  }
+  for (const part of document.querySelectorAll(".waterfall__part")) {
+    const line = parseFloat(getComputedStyle(part).lineHeight);
+    if (part.getBoundingClientRect().height > line * 1.5) broken.push(part.textContent);
+  }
+  return broken;
+}"""
+
+
+def _overlap(a: dict[str, float], b: dict[str, float]) -> bool:
+    """Whether two client rects intersect."""
+    across = a["left"] < b["right"] and b["left"] < a["right"]
+    return across and a["top"] < b["bottom"] and b["top"] < a["bottom"]
+
+
+@pytest.mark.parametrize("scenario_id", [scenario.id for scenario in SCENARIOS])
+def test_the_zero_and_end_labels_never_meet_and_the_run_keeps_the_axis(
+    pages: GuardedPages, scenario_id: str
+):
+    """In the side panel and at phone width the axis labels stay apart; setup takes <= 1/4."""
+    for viewport in (SIDE_PANEL, PHONE):
+        page, _ = pages.open(viewport=viewport)
+        open_shell(page)
+
+        play(page, scenario=scenario_id)
+        wait_for_run(page)
+
+        axis = page.evaluate(AXIS_LABELS)
+        assert axis["zero"] is not None, f"zero label hidden at {viewport}"
+        assert not _overlap(axis["zero"], axis["end"]), (viewport, axis)
+        track = axis["track"]
+        setup_share = (axis["zeroLine"]["left"] - track["left"]) / (track["right"] - track["left"])
+        assert setup_share <= 0.25 + 0.005, (viewport, setup_share)
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+@pytest.mark.parametrize("scenario_id", ["everything-down", "tripped-breaker"])
+def test_side_panel_labels_and_details_never_break_mid_phrase(
+    pages: GuardedPages, scenario_id: str, color_scheme: str
+):
+    """In the pinned side panel no name or value wraps inside a word or a value; axe passes."""
+    page, _ = pages.open(viewport=SIDE_PANEL, color_scheme=color_scheme)
+    open_shell(page)
+
+    play(page, scenario=scenario_id)
+    wait_for_run(page)
+
+    assert page.locator(".stage .waterfall__part").count() > 0
+    assert page.evaluate(BROKEN_LABELS) == []
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+def test_setup_steps_draw_above_the_reads_they_caused(pages: GuardedPages):
+    """A tripped breaker's setup step is the first setup row; its reads follow, indented."""
+    page, _ = pages.open()
+    open_shell(page)
+
+    play(page, scenario="tripped-breaker")
+    wait_for_run(page)
+
+    rows = page.locator('.waterfall__row[data-kind="setup"]')
+    assert rows.first.locator(".waterfall__name").inner_text().startswith("Fail Statuspage")
+    assert rows.first.get_attribute("data-depth") == "0"
+    assert rows.count() > 1
+    assert all(rows.nth(i).get_attribute("data-depth") == "1" for i in range(1, rows.count()))
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_redis_down_run_says_its_cache_ran_in_memory(pages: GuardedPages, color_scheme: str):
+    """Everything down: the cache rows say "in memory", as the scenario's setup note does."""
+    (scenario,) = [scenario for scenario in SCENARIOS if scenario.id == "everything-down"]
+    assert any("cache runs in memory" in note for note in scenario.setup_notes)
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    play(page, scenario="everything-down")
+    wait_for_run(page)
+
+    cache = page.locator('.waterfall__row[data-kind="cache"], .waterfall__row[data-kind="store"]')
+    assert cache.count() == 2
+    for i in range(cache.count()):
+        parts = cache.nth(i).locator(".waterfall__part").all_inner_texts()
+        assert parts[-1] == "in memory"
 
 
 # --- #163: malformed streams ---

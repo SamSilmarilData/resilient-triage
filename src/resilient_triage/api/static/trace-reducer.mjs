@@ -290,9 +290,11 @@ export function graphView(layout, trace) {
  * @typedef {"ok" | "warn" | "bad" | "running" | "setup"} RowTone
  * @typedef {{ key: string, kind: RowKind, name: string, detail: string, tag: string | null,
  *             depth: 0 | 1, startMs: number, durationMs: number, tone: RowTone,
- *             leftPct: number, widthPct: number }} WaterfallRow
+ *             leftPct: number, widthPct: number,
+ *             detailParts: string[] }} WaterfallRow
  * @typedef {{ rows: WaterfallRow[], setupMs: number, runMs: number, zeroPct: number,
- *             endLabel: string }} WaterfallView
+ *             endLabel: string,
+ *             showZeroLabel: boolean }} WaterfallView
  */
 
 // Setup with no measured duration (seeding the cache, holding slots) still gets this share of
@@ -340,9 +342,11 @@ function readTone(outcome) {
  * The run as waterfall rows, each placed on one axis from the start of setup to the run's end;
  * null before the run's first event, when there is nothing to draw.
  * @param {TraceView} trace
+ * @param {number} [trackPx] how wide the axis's track is drawn: the zero label hides if it
+ *   would meet the end label there
  * @returns {WaterfallView | null}
  */
-export function waterfallView(trace) {
+export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
   if (!trace.events.length) return null;
   const lastMs = Math.max(0, trace.events[trace.events.length - 1].t_ms);
   /** @typedef {Omit<WaterfallRow, "leftPct" | "widthPct">} PlacedRow */
@@ -350,6 +354,7 @@ export function waterfallView(trace) {
   const rows = [];
   let setupCursor = 0; // where the next setup read starts: setup reads lie end to end from 0
   let stepStart = 0; // where the current setup step's first read started
+  let stepRow = 0; // the row index of the current setup step's first read
   let open = 0; // node visits started and not yet finished: steps inside one are indented
   /** @type {number[]} row index of each node visit, in visit order */
   const visitRows = [];
@@ -377,7 +382,9 @@ export function waterfallView(trace) {
         const name = SETUP_STEPS[e.step]?.(e) ?? words(e.step);
         const span = { startMs: stepStart, durationMs: setupCursor - stepStart };
         add(e, { kind: "setup", name, detail: "setup", tone: "setup", ...span });
+        listStepFirst(rows, stepRow);
         stepStart = setupCursor;
+        stepRow = rows.length;
         break;
       }
       case "telemetry_read": {
@@ -394,7 +401,10 @@ export function waterfallView(trace) {
         break;
       }
       case "cache_lookup": {
-        const detail = e.hit ? `hit · similarity ${e.similarity.toFixed(2)}` : "miss";
+        const detail = withBackend(
+          e.hit ? `hit · similarity ${e.similarity.toFixed(2)}` : "miss",
+          e.backend,
+        );
         const span = endedAt(e, e.duration_ms);
         add(e, { kind: "cache", name: "cache lookup", detail, tone: "ok", ...span });
         break;
@@ -433,7 +443,8 @@ export function waterfallView(trace) {
       case "cache_store": {
         const tone = e.outcome === "stored" ? "ok" : "warn";
         const span = endedAt(e, e.duration_ms);
-        add(e, { kind: "store", name: "cache store", detail: words(e.outcome), tone, ...span });
+        const detail = withBackend(words(e.outcome), e.backend);
+        add(e, { kind: "store", name: "cache store", detail, tone, ...span });
         break;
       }
       case "deadline_exceeded": {
@@ -460,19 +471,114 @@ export function waterfallView(trace) {
   const runEnds = rows.filter((r) => r.kind !== "setup").map((r) => r.startMs + r.durationMs);
   const runMs = Math.max(lastMs, ...runEnds);
   const hasSetup = rows.some((r) => r.kind === "setup");
-  const setupMs = hasSetup ? Math.max(setupCursor, MIN_SETUP_SHARE * runMs) : 0;
-  const scale = setupMs + runMs || 1;
+  const axis = waterfallAxis(hasSetup, setupCursor, runMs);
+  const endLabel = formatMs(runMs);
   return {
-    // The axis runs from the start of setup: setup rows from 0, the run's from setupMs (t = 0).
-    rows: rows.map((row) => {
-      const start = row.kind === "setup" ? row.startMs : setupMs + row.startMs;
-      return { ...row, leftPct: (start / scale) * 100, widthPct: (row.durationMs / scale) * 100 };
-    }),
-    setupMs,
+    // The axis runs from the start of setup: setup rows from 0, the run's from zeroPct (t = 0).
+    rows: rows.map((row) => ({
+      ...row,
+      ...axis.place(row.kind === "setup", row.startMs, row.durationMs),
+      detailParts: row.detail.split(DETAIL_SEPARATOR),
+    })),
+    setupMs: axis.setupMs,
     runMs,
-    zeroPct: (setupMs / scale) * 100,
-    endLabel: formatMs(runMs),
+    zeroPct: axis.zeroPct,
+    endLabel,
+    showZeroLabel: !axisLabelsCollide(axis.zeroPct, endLabel, trackPx),
   };
+}
+
+// --- #159: readable timeline ---
+// Setup draws on a scale of its own, compressed to at most MAX_SETUP_SHARE of the axis, so a
+// long setup never squeezes the run; shorter, it keeps the run's clock. Setup steps list before
+// the reads they made. The zero tick's label hides rather than meet the end label.
+
+// The most of the axis setup may take: the run keeps at least the rest.
+export const MAX_SETUP_SHARE = 0.25;
+// The narrowest the waterfall's track is drawn (a 320 px phone): label collisions are judged on it.
+export const NARROWEST_TRACK_PX = 120;
+// Axis tick text (styles.css `.waterfall__tick`): 0.7rem JetBrains Mono, 0.6em per character,
+// inset 0.25rem from the zero line; labels closer than LABEL_GAP_PX read as one.
+const TICK_CHAR_PX = 0.7 * 16 * 0.6;
+const TICK_INSET_PX = 4;
+const LABEL_GAP_PX = 4;
+const ZERO_LABEL = "0";
+const DETAIL_SEPARATOR = " · ";
+
+// What a cache row says about a backend other than the deployment's normal one, Redis with
+// vector search; in memory is the fallback a Redis outage leaves (and every scenario's
+// private cache, ADR 0009).
+const OTHER_BACKENDS = /** @type {Record<string, string>} */ ({
+  in_memory: "in memory",
+  redis_hash_fallback: "Redis without search",
+});
+
+/**
+ * A cache row's detail, naming the backend that served it when it isn't the normal one.
+ * @param {string} detail
+ * @param {string} backend
+ */
+function withBackend(detail, backend) {
+  const other = OTHER_BACKENDS[backend];
+  return other ? `${detail}${DETAIL_SEPARATOR}${other}` : detail;
+}
+
+/**
+ * Move the setup step just added (the last row) up to `at`, ahead of the reads it made from
+ * there on, and indent those reads under it. Setup comes before any node visit is recorded.
+ * @template {{ depth: 0 | 1 }} Row
+ * @param {Row[]} rows
+ * @param {number} at
+ */
+function listStepFirst(rows, at) {
+  const step = /** @type {Row} */ (rows.pop());
+  for (let i = at; i < rows.length; i++) rows[i] = { ...rows[i], depth: 1 };
+  rows.splice(at, 0, step);
+}
+
+/**
+ * The waterfall's axis: setup's share of it, and where a row's bar goes, in percent.
+ * @param {boolean} hasSetup
+ * @param {number} setupSpanMs setup reads laid end to end
+ * @param {number} runMs
+ */
+export function waterfallAxis(hasSetup, setupSpanMs, runMs) {
+  const linear = setupSpanMs + runMs > 0 ? setupSpanMs / (setupSpanMs + runMs) : 1;
+  const share = hasSetup ? Math.min(MAX_SETUP_SHARE, Math.max(MIN_SETUP_SHARE, linear)) : 0;
+  // Setup's own clock: its real span, or the run's clock when setup is shorter than the minimum.
+  const setupMs = hasSetup ? Math.max(setupSpanMs, (share / (1 - share)) * runMs) : 0;
+  const setupScale = setupMs || 1;
+  const runScale = runMs || 1;
+  return {
+    setupMs,
+    zeroPct: share * 100,
+    /**
+     * @param {boolean} setup whether the row is setup's (else the run's, from t = 0)
+     * @param {number} startMs
+     * @param {number} durationMs
+     */
+    place(setup, startMs, durationMs) {
+      if (setup) {
+        const unit = (share * 100) / setupScale;
+        return { leftPct: startMs * unit, widthPct: durationMs * unit };
+      }
+      const unit = ((1 - share) * 100) / runScale;
+      return { leftPct: share * 100 + startMs * unit, widthPct: durationMs * unit };
+    },
+  };
+}
+
+/**
+ * Whether the zero tick's label and the end label would meet on a track `trackPx` wide: the
+ * zero label starts just right of the zero line, the end label ends at the track's end.
+ * @param {number} zeroPct
+ * @param {string} endLabel
+ * @param {number} trackPx
+ */
+export function axisLabelsCollide(zeroPct, endLabel, trackPx) {
+  const zeroEnd = (zeroPct / 100) * trackPx + TICK_INSET_PX + ZERO_LABEL.length * TICK_CHAR_PX;
+  const endStart = trackPx - endLabel.length * TICK_CHAR_PX;
+  return zeroEnd + LABEL_GAP_PX > endStart;
 }
 
 // ---------------------------------------------------------------------------------------------
