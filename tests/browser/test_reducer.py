@@ -74,7 +74,7 @@ SUMMARY_LINES = {
     "reconciliation": "Report in {t} · 1 action held for approval",
     "unavailable-source": "Report in {t} · Statuspage unavailable",
     "tripped-breaker": "Report in {t} · Statuspage breaker open",
-    "run-deadline": "Fallback report in {t} · run deadline hit",
+    "run-deadline": "Fallback report in {t} · run deadline hit, answered outside the graph",
     "shed-request": "Shed after {t}, before the graph ran",
     "everything-down": (
         "Fallback report in {t} · Statuspage breaker open · Cluster Sentinel breaker open"
