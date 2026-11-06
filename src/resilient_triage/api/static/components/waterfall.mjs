@@ -27,9 +27,12 @@ function Row({ row }) {
   `;
 }
 
-/** @param {{ trace: TraceView }} props */
-export function Waterfall({ trace }) {
-  const view = waterfallView(trace);
+/**
+ * @param {{ trace: TraceView, normalBackend?: string | null }} props `normalBackend`: the
+ *   cache backend normal for the run (normalCacheBackend()); cache rows name any other
+ */
+export function Waterfall({ trace, normalBackend = null }) {
+  const view = waterfallView(trace, undefined, normalBackend);
   if (view === null) {
     return html`
       <div class="empty">

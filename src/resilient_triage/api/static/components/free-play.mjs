@@ -36,11 +36,22 @@ const REQUEST_LIMITS = Object.freeze({
  *   onSelectNode?: (name: string) => void,
  *   now?: number,
  *   inputError?: string | null,
+ *   normalBackend?: string | null,
  * }} props `now`: the page's ticking clock, for the run's headline (#156) and a budget
  *   shed's countdown (#160). `onSubmit` gets the form's fields; the shell asks the reducer
  *   whether they make a request (freePlaySubmit) and passes back `inputError` when not.
+ *   `normalBackend`: the cache backend normal for the run (normalCacheBackend())
  */
-export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now, inputError }) {
+export function FreePlay({
+  run,
+  layout,
+  onSubmit,
+  onReplay,
+  onSelectNode,
+  now,
+  inputError,
+  normalBackend,
+}) {
   /** @param {SubmitEvent} event */
   const submit = (event) => {
     event.preventDefault();
@@ -117,6 +128,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now, i
             onReplay=${onReplay}
             onSelectNode=${onSelectNode}
             headOnly=${refused}
+            normalBackend=${normalBackend}
           />
           ${report && html`<${Report} view=${report} />`}
         </div>

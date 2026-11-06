@@ -344,9 +344,16 @@ function readTone(outcome) {
  * @param {TraceView} trace
  * @param {number} [trackPx] how wide the axis's track is drawn: the zero label hides if it
  *   would meet the end label there
+ * @param {string | null} [normalBackend] the cache backend normal for this run
+ *   (normalCacheBackend()): cache rows name theirs only when it differs; null names none.
+ *   Without one, the deployment's normal backend, Redis with vector search
  * @returns {WaterfallView | null}
  */
-export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
+export function waterfallView(
+  trace,
+  trackPx = NARROWEST_TRACK_PX,
+  normalBackend = DEPLOYED_BACKEND,
+) {
   if (!trace.events.length) return null;
   const lastMs = Math.max(0, trace.events[trace.events.length - 1].t_ms);
   /** @typedef {Omit<WaterfallRow, "leftPct" | "widthPct">} PlacedRow */
@@ -404,6 +411,7 @@ export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
         const detail = withBackend(
           e.hit ? `hit · similarity ${e.similarity.toFixed(2)}` : "miss",
           e.backend,
+          normalBackend,
         );
         const span = endedAt(e, e.duration_ms);
         add(e, { kind: "cache", name: "cache lookup", detail, tone: "ok", ...span });
@@ -443,7 +451,7 @@ export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
       case "cache_store": {
         const tone = e.outcome === "stored" ? "ok" : "warn";
         const span = endedAt(e, e.duration_ms);
-        const detail = withBackend(words(e.outcome), e.backend);
+        const detail = withBackend(words(e.outcome), e.backend, normalBackend);
         add(e, { kind: "store", name: "cache store", detail, tone, ...span });
         break;
       }
@@ -505,22 +513,53 @@ const LABEL_GAP_PX = 4;
 const ZERO_LABEL = "0";
 const DETAIL_SEPARATOR = " · ";
 
-// What a cache row says about a backend other than the deployment's normal one, Redis with
-// vector search; in memory is the fallback a Redis outage leaves (and every scenario's
-// private cache, ADR 0009).
-const OTHER_BACKENDS = /** @type {Record<string, string>} */ ({
-  in_memory: "in memory",
+// --- Cache backend: rows name it only when it isn't the run's normal one ---
+
+// What a cache row calls the backend that served it.
+const BACKEND_NAMES = /** @type {Record<string, string>} */ ({
+  redisearch: "Redis",
   redis_hash_fallback: "Redis without search",
+  in_memory: "in memory",
 });
+// A deployment's normal cache backend: Redis with vector search.
+const DEPLOYED_BACKEND = "redisearch";
+// A scenario setup note saying Redis is down (Everything down's). The trace records no setup
+// step for it: every scenario's cache is private and in memory (ADR 0009), so the catalogue's
+// note is the only place a scenario says it means Redis down.
+const REDIS_DOWN_NOTE = /\bRedis is (?:unreachable|down)\b/;
+
+/**
+ * GET /health as the page reads it: only the deployment's active cache driver.
+ * @typedef {{ cache_driver: string }} HealthView
+ */
 
 /**
  * A cache row's detail, naming the backend that served it when it isn't the normal one.
  * @param {string} detail
  * @param {string} backend
+ * @param {string | null} normalBackend null: name none
  */
-function withBackend(detail, backend) {
-  const other = OTHER_BACKENDS[backend];
-  return other ? `${detail}${DETAIL_SEPARATOR}${other}` : detail;
+function withBackend(detail, backend, normalBackend) {
+  if (normalBackend === null || backend === normalBackend) return detail;
+  return `${detail}${DETAIL_SEPARATOR}${BACKEND_NAMES[backend] ?? words(backend)}`;
+}
+
+/**
+ * The cache backend normal for a run, against which its cache rows name theirs. A scenario
+ * run's private in-memory cache stands in for the deployment's (ADR 0009), so it is normal
+ * unless the scenario's setup takes Redis down; then the deployment's Redis is the normal
+ * one it lost. A free-play run uses the deployment's cache, so its normal backend is the one
+ * GET /health reports. Null (name none) while that or the catalogue is unknown.
+ * @param {TraceView} trace
+ * @param {Loadable<Catalogue>} catalogue
+ * @param {Loadable<HealthView>} health
+ * @returns {string | null}
+ */
+export function normalCacheBackend(trace, catalogue, health) {
+  if (trace.scenarioId === null) return typeof health === "object" ? health.cache_driver : null;
+  const scenario = catalogueScenario(catalogue, trace.scenarioId);
+  const redisDown = scenario?.setup_notes.some((note) => REDIS_DOWN_NOTE.test(note));
+  return redisDown ? DEPLOYED_BACKEND : null;
 }
 
 /**
@@ -1385,12 +1424,21 @@ export function eventLog(trace) {
  */
 export function stageScenario(catalogue, run) {
   const id = run.trace.scenarioId;
-  if (id === null || typeof catalogue !== "object") return null;
-  const scenario = catalogue.chapters
-    .flatMap((chapter) => chapter.scenarios)
-    .find((candidate) => candidate.id === id);
-  if (!scenario) return null;
+  const scenario = id === null ? null : catalogueScenario(catalogue, id);
+  if (id === null || !scenario) return null;
   return { id, title: scenario.title, offerBack: run.status === "finished" };
+}
+
+/**
+ * A catalogued scenario by id; null if it isn't there or the catalogue hasn't loaded.
+ * @param {Loadable<Catalogue>} catalogue
+ * @param {string} id
+ * @returns {ScenarioView | null}
+ */
+function catalogueScenario(catalogue, id) {
+  if (typeof catalogue !== "object") return null;
+  const scenarios = catalogue.chapters.flatMap((chapter) => chapter.scenarios);
+  return scenarios.find((candidate) => candidate.id === id) ?? null;
 }
 
 // ---------------------------------------------------------------------------------------------

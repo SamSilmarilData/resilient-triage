@@ -22,6 +22,7 @@ import {
   idleRun,
   inspectorView,
   needsReveal,
+  normalCacheBackend,
   runTicks,
   stageRevealTop,
   stageScenario,
@@ -90,6 +91,12 @@ const layout = signal(
 const catalogue = signal(
   /** @type {import("./trace-reducer.mjs").Loadable<Catalogue>} */ ("loading"),
 );
+/** GET /health once fetched: the deployment's cache backend, normal for free play's runs. */
+const health = signal(
+  /** @type {import("./trace-reducer.mjs").Loadable<import("./trace-reducer.mjs").HealthView>} */ (
+    "loading"
+  ),
+);
 /** The scenario opened inline, if any; one at a time. */
 const openId = signal(/** @type {string | null} */ (null));
 
@@ -131,6 +138,7 @@ function LiveStage() {
     onSelectNode=${inspect}
     scenario=${stageScenario(catalogue.value, stageRun.run.value)}
     onBack=${backToScenario}
+    normalBackend=${normalCacheBackend(stageRun.run.value.trace, catalogue.value, health.value)}
   />`;
 }
 
@@ -203,6 +211,7 @@ function LiveFreePlay() {
     now=${now.value}
     layout=${layout.value}
     inputError=${freePlayInputError.value}
+    normalBackend=${normalCacheBackend(freePlayRun.run.value.trace, catalogue.value, health.value)}
     onSubmit=${(/** @type {import("./components/free-play.mjs").FreePlayFields} */ fields) => {
       // The controller's view and the wall clock, not the last render: a double click's
       // second press lands before the first one's run has re-rendered the button (#160).
@@ -285,6 +294,7 @@ function main() {
   mount("chapters-root", html`<${GuidedChapters} />`);
   mount("free-play-root", html`<${LiveFreePlay} />`);
   loads.push(loadGraphNodes());
+  loadInto(health, "/health");
   mount("built-nodes-root", html`<${BuiltNodes} />`);
   mount("node-inspector-root", html`<${Inspector} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.
