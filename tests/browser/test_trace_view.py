@@ -277,8 +277,8 @@ def test_a_silent_stream_is_lost_after_30_seconds_and_pings_keep_it_alive(pages:
     page.clock.install()
     open_shell(page, wait_for_requests=False)
     page.wait_for_selector(GRAPH_READY, state="attached")
-    # From here the page's clock moves only when the test moves it.
-    page.clock.pause_at(page.evaluate("Date.now()") + 1_000)
+    # From here the page's clock moves only when the test moves it. pause_at takes seconds.
+    page.clock.pause_at((page.evaluate("Date.now()") + 1_000) / 1_000)
     page.evaluate(MANUAL_SOURCE)
     page.evaluate("(message) => window.feed(message)", STARTED)
     wait_for_run(page, "streaming")
