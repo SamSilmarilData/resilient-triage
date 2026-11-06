@@ -1264,3 +1264,15 @@
     overscroll-behavior: contain;
   }
 }
+
+/* #161: a Skip to end with nothing left to skip looks unavailable, as a quiet button's
+   disabled state; aria-disabled (not disabled) keeps it focusable. */
+@layer components {
+  .button--quiet[aria-disabled="true"] {
+    border-style: dashed;
+    border-color: var(--line);
+    background: var(--sunken);
+    color: var(--faint);
+    cursor: not-allowed;
+  }
+}

@@ -16,12 +16,13 @@ import { Report } from "./report.mjs";
  *   scenario: ScenarioView,
  *   open: boolean,
  *   run: RunView | null,
+ *   finishedOnce: boolean,
  *   onToggle: () => void,
  *   onPlay: () => void,
  *   onSkip: () => void,
  * }} props
  */
-export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
+export function Scenario({ scenario, open, run, finishedOnce, onToggle, onPlay, onSkip }) {
   const panelId = `scenario-${scenario.id}-panel`;
   return html`
     <article class="scenario" data-scenario=${scenario.id} data-open=${String(open)}>
@@ -43,6 +44,7 @@ export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
         html`<${ScenarioPanel}
           scenario=${scenario}
           run=${run}
+          finishedOnce=${finishedOnce}
           onPlay=${onPlay}
           onSkip=${onSkip}
         />`}
@@ -55,12 +57,12 @@ export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
  * The opened scenario: setup notes, controls, then what this scenario's run showed.
  * Skip to end stays in place once there's nothing left to skip (aria-disabled, not
  * disabled), so a keyboard user's focus stays on it.
- * @param {{ scenario: ScenarioView, run: RunView | null,
+ * @param {{ scenario: ScenarioView, run: RunView | null, finishedOnce: boolean,
  *           onPlay: () => void, onSkip: () => void }} props
  */
-function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
+function ScenarioPanel({ scenario, run, finishedOnce, onPlay, onSkip }) {
   const [everything, setEverything] = useState(false);
-  const view = scenarioPanelView(run);
+  const view = scenarioPanelView(run, finishedOnce);
   const eventsId = `scenario-${scenario.id}-events`;
   return html`
     ${scenario.setup_notes.length > 0 &&
