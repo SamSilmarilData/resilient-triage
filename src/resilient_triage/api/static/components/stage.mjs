@@ -25,8 +25,11 @@ import { Waterfall } from "./waterfall.mjs";
  * }} props `now`: the page's ticking clock, for a streaming run's headline (#156).
  *   `scenario`: the scenario the stage draws (stageScenario(); free play passes none), and
  *   `onBack` takes the visitor back to its card (#158). `headOnly`: draw the headline but
- *   no graph or timeline, for a run refused before any graph ran (#160). `normalBackend`: the
- *   cache backend normal for the run (normalCacheBackend()), for the timeline's cache rows
+ *   no graph or timeline, for a run refused before any graph ran (#160). Free play only: the
+ *   Shed request scenario keeps both, as its timeline shows the held slots and the wait its
+ *   setup note describes, and its idle graph that the request never reached it.
+ *   `normalBackend`: the cache backend normal for the run (normalCacheBackend()), for the
+ *   timeline's cache rows
  */
 export function Stage({
   run,
