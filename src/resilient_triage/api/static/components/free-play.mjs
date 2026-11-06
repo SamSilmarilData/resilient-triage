@@ -5,7 +5,7 @@
 // the panel's run controller lives in app.mjs. A finished run's report sits under its stage, in
 // the same card (#155). Errors and lost streams stay in this panel (#101).
 import { html } from "htm/preact";
-import { REQUEST_LIMITS, freePlayView } from "../trace-reducer.mjs";
+import { REQUEST_LIMITS, freePlayView, triageAnnouncement } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
 import { Clocked, Stage } from "./stage.mjs";
 
@@ -28,8 +28,9 @@ const INPUT_ERROR_ID = "free-play-query-error";
  *   inputError?: string | null,
  *   normalBackend?: string | null,
  * }} props `now`: the page's ticking clock (a signal), read only by what counts: the run's
- *   streaming headline (#156) and a budget shed's countdown and Triage button (#160). `onSubmit` gets the form's fields; the shell asks the reducer
- *   whether they make a request (freePlaySubmit) and passes back `inputError` when not.
+ *   streaming headline (#156) and a budget shed's countdown, Triage button and the live
+ *   region saying Triage is back (#160). `onSubmit` gets the form's fields; the shell asks the
+ *   reducer whether they make a request (freePlaySubmit) and passes back `inputError` when not.
  *   `normalBackend`: the cache backend normal for the run (normalCacheBackend())
  */
 export function FreePlay({
@@ -58,6 +59,13 @@ export function FreePlay({
   const countdown = retryAt === null ? undefined : now;
   return html`
     <div class="free-play__panel">
+      <p class="visually-hidden" role="status" data-triage-announcement>
+        ${countdown &&
+        html`<${Clocked}
+          now=${countdown}
+          text=${(/** @type {number} */ t) => triageAnnouncement(run, t)}
+        />`}
+      </p>
       <form class="ask" onSubmit=${submit}>
         <div class="ask__field">
           <label class="ask__label" for="free-play-query">Your incident</label>

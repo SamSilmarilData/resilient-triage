@@ -1788,6 +1788,23 @@ function countdownLine(retryAfterS, retryAt, now) {
   return `${BUDGET_SPENT} Try again in ${left} s.`;
 }
 
+// --- Triage coming back is announced ---
+
+/**
+ * What free play's polite live region says about Triage: once a budget shed's countdown has
+ * reached its retry time, that Triage is back; empty before, and for any other run. The text
+ * changes once, at zero (the clock stops there), so a screen reader hears it once, not each
+ * second of the countdown.
+ * @param {RunView} run
+ * @param {number | undefined} now wall-clock ms on the run's clock
+ * @returns {string}
+ */
+export function triageAnnouncement(run, now) {
+  const retryAt = retryDeadline(run);
+  if (retryAt === null || now === undefined || now < retryAt) return "";
+  return "Triage is available again.";
+}
+
 // ---------------------------------------------------------------------------------------------
 // Deep links (#163): the page scrolls to the URL's fragment once its regions have filled in.
 

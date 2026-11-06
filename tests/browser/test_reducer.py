@@ -609,6 +609,35 @@ def test_a_budget_shed_counts_down_to_its_retry_time(pages: GuardedPages):
     assert all(view["refused"] for view in views)
 
 
+# page.evaluate script: what free play's live region says about Triage at each `now`.
+TRIAGE_ANNOUNCEMENTS = """async ({status, events, nows}) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const run = {...reducer.idleRun(), status, startedAt: 10000, trace: reducer.foldTrace(events)};
+  return nows.map((now) => reducer.triageAnnouncement(run, now));
+}"""
+
+
+def test_triage_is_announced_back_only_once_a_budget_sheds_countdown_ends(pages: GuardedPages):
+    """Nothing while the countdown runs; at its retry time, that Triage is available again.
+    A capacity shed has no countdown, so nothing to announce."""
+    capacity = [dict(event) for event in BUDGET_SHED]
+    capacity[1] = {**capacity[1], "reason": "capacity", "retry_after_s": None}
+    nows = [10_002, 22_001, 22_002, 30_000]
+
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+    budget = page.evaluate(
+        TRIAGE_ANNOUNCEMENTS, {"status": "finished", "events": BUDGET_SHED, "nows": nows}
+    )
+    other = page.evaluate(
+        TRIAGE_ANNOUNCEMENTS, {"status": "finished", "events": capacity, "nows": nows}
+    )
+
+    back = "Triage is available again."
+    assert budget == ["", "", back, back]
+    assert other == ["", "", "", ""]
+
+
 def test_a_capacity_shed_has_no_countdown(pages: GuardedPages):
     """A capacity shed carries no retry-after: Triage is available again at once."""
     events = [dict(event) for event in BUDGET_SHED]
