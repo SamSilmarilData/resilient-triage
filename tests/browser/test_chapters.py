@@ -322,3 +322,43 @@ def test_the_scripted_badge_shows_only_on_runs_that_called_a_model(
         assert badge.count() == 0
     violations = axe_violations(page)
     assert violations == [], describe(violations)
+
+
+def _panel_result(page: "Page", scenario_id: str) -> dict[str, str]:
+    """What an open scenario's panel shows of its last run: its line and its report."""
+    return {
+        "line": _scenario(page, scenario_id, "[data-scenario-line]").inner_text(),
+        "report": _scenario(page, scenario_id, "[data-report]").inner_text(),
+    }
+
+
+def _play_to_report(page: "Page", scenario_id: str) -> None:
+    """Open a scenario, press Play and wait for its report in its own panel."""
+    page.locator(f"#scenario-{scenario_id}-toggle").click()
+    _scenario(page, scenario_id, '[data-action="play"]').click()
+    page.wait_for_selector(_scenario_selector(scenario_id, "[data-report]"), state="attached")
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_each_scenario_keeps_its_last_result_after_another_plays(pages: GuardedPages, scheme: str):
+    """Play A, then B: reopened, A still shows A's own summary and report, and B keeps B's."""
+    page, _ = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    _play_to_report(page, "healthy-run")
+    first = _panel_result(page, "healthy-run")
+    _play_to_report(page, "shed-request")
+    second = _panel_result(page, "shed-request")
+    assert first != second
+
+    page.locator("#scenario-healthy-run-toggle").click()
+    assert _panel_result(page, "healthy-run") == first
+    assert _scenario(page, "healthy-run", '[data-action="play"]').inner_text() == "Play again"
+    skip = _scenario(page, "healthy-run", '[data-action="skip"]')
+    assert skip.get_attribute("aria-disabled") == "true", "a kept result has nothing to skip"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    page.locator("#scenario-shed-request-toggle").click()
+    assert _panel_result(page, "shed-request") == second
