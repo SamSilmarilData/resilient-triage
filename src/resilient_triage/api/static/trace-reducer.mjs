@@ -669,7 +669,9 @@ export function summaryLine(summary) {
   const head = summary.degradation === "SEVERELY_DEGRADED" ? "Fallback report" : "Report";
   /** @type {string[]} */
   const parts = [`${head} in ${total}`];
-  if (summary.deadline_exceeded) parts.push("run deadline hit");
+  // #162: the deadline's fallback is the gateway's, not fallback_report, so the lit path
+  // never shows it; the line says where the answer came from.
+  if (summary.deadline_exceeded) parts.push("run deadline hit, answered outside the graph");
   /** @type {Set<string>} */
   const seen = new Set();
   for (const read of summary.telemetry) {
