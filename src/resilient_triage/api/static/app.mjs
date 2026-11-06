@@ -22,7 +22,9 @@ import {
   idleRun,
   inspectorView,
   needsReveal,
+  normalCacheBackend,
   runTicks,
+  scenarioToggleId,
   stageRevealTop,
   stageScenario,
   toggledOpen,
@@ -32,7 +34,7 @@ import {
 /** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("./trace-reducer.mjs").GraphNode} GraphNode */
 
-// --- #156: the page's clock ---
+// --- The page's clock ---
 
 /** The wall clock: run controllers stamp `startedAt` with it and the ticking `now` reads it. */
 const wallClock = () => Date.now();
@@ -90,6 +92,12 @@ const layout = signal(
 const catalogue = signal(
   /** @type {import("./trace-reducer.mjs").Loadable<Catalogue>} */ ("loading"),
 );
+/** GET /health once fetched: the deployment's cache backend, normal for free play's runs. */
+const health = signal(
+  /** @type {import("./trace-reducer.mjs").Loadable<import("./trace-reducer.mjs").HealthView>} */ (
+    "loading"
+  ),
+);
 /** The scenario opened inline, if any; one at a time. */
 const openId = signal(/** @type {string | null} */ (null));
 
@@ -131,10 +139,11 @@ function LiveStage() {
     onSelectNode=${inspect}
     scenario=${stageScenario(catalogue.value, stageRun.run.value)}
     onBack=${backToScenario}
+    normalBackend=${normalCacheBackend(stageRun.run.value.trace, catalogue.value, health.value)}
   />`;
 }
 
-// --- #158: back from the stage to its scenario ---
+// --- Back from the stage to its scenario ---
 /**
  * Take the visitor from the stage back to a scenario's card (the stage's way-back link, at
  * phone width): open the card if it was closed, so its report shows, then once it has drawn
@@ -145,7 +154,7 @@ function LiveStage() {
 function backToScenario(id) {
   if (openId.value !== id) openId.value = id;
   requestAnimationFrame(() => {
-    const toggle = document.getElementById(`scenario-${id}-toggle`);
+    const toggle = document.getElementById(scenarioToggleId(id));
     if (!toggle) return;
     toggle.closest("[data-scenario]")?.scrollIntoView({ block: "start" });
     toggle.focus({ preventScroll: true });
@@ -159,6 +168,7 @@ function GuidedChapters() {
     catalogue=${catalogue.value}
     onRetry=${loadCatalogue}
     openId=${openId.value}
+    now=${now.value}
     runOf=${(/** @type {string} */ id) => scenarios.runOf(run, id)}
     finishedOnce=${(/** @type {string} */ id) => scenarios.finishedOnce(id)}
     onToggle=${(/** @type {string} */ id) => {
@@ -202,7 +212,8 @@ function LiveFreePlay() {
     now=${now.value}
     layout=${layout.value}
     inputError=${freePlayInputError.value}
-    onSubmit=${(/** @type {import("./components/free-play.mjs").FreePlayFields} */ fields) => {
+    normalBackend=${normalCacheBackend(freePlayRun.run.value.trace, catalogue.value, health.value)}
+    onSubmit=${(/** @type {import("./trace-reducer.mjs").FreePlayFields} */ fields) => {
       // The controller's view and the wall clock, not the last render: a double click's
       // second press lands before the first one's run has re-rendered the button (#160).
       const { error, request } = freePlaySubmit(fields, freePlay.view, wallClock());
@@ -261,7 +272,7 @@ function loadLayout() {
   return loadInto(layout, "/static/graph-layout.json");
 }
 
-// --- #163: deep links ---
+// --- Deep links ---
 /**
  * Scroll to the URL's fragment (a link like `/#free-play`) once, after the regions above it
  * have filled in: the browser's own jump lands before the chapters grow, so it ends up a
@@ -284,6 +295,7 @@ function main() {
   mount("chapters-root", html`<${GuidedChapters} />`);
   mount("free-play-root", html`<${LiveFreePlay} />`);
   loads.push(loadGraphNodes());
+  loadInto(health, "/health");
   mount("built-nodes-root", html`<${BuiltNodes} />`);
   mount("node-inspector-root", html`<${Inspector} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.

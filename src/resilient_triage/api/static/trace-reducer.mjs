@@ -151,6 +151,14 @@ export function reduceTrace(trace, event) {
 }
 
 /**
+ * The last event's t_ms, or 0 before any event.
+ * @param {TraceEvent[]} events
+ */
+function lastEventMs(events) {
+  return events.length ? events[events.length - 1].t_ms : 0;
+}
+
+/**
  * Fold a whole event list.
  * @param {TraceEvent[]} events
  */
@@ -294,7 +302,10 @@ export function graphView(layout, trace) {
  *             detailParts: string[] }} WaterfallRow
  * @typedef {{ rows: WaterfallRow[], setupMs: number, runMs: number, zeroPct: number,
  *             endLabel: string,
- *             showZeroLabel: boolean }} WaterfallView
+ *             showZeroLabel: boolean, showSetupLabel: boolean,
+ *             separator: string }} WaterfallView
+ * `showSetupLabel`: the axis has a setup span to label. `separator`: what goes between a
+ * row's detailParts when drawn.
  */
 
 // Setup with no measured duration (seeding the cache, holding slots) still gets this share of
@@ -338,17 +349,62 @@ function readTone(outcome) {
   return outcome === "read" ? "ok" : outcome === "tripped" ? "bad" : "warn";
 }
 
+// --- Model replies: scripted, simulated or real ---
+
+/**
+ * Where a run's model replies come from: scripted (a scenario run, ADR 0009), the keyless
+ * simulation (free play with no model API key, #153), or a real provider.
+ * @typedef {"scripted" | "simulated" | "real"} ReplyKind
+ * @param {TraceView} trace
+ * @returns {ReplyKind}
+ */
+function replyKind(trace) {
+  if (trace.scripted) return "scripted";
+  return trace.simulated ? "simulated" : "real";
+}
+
+/** The report's provenance names its model text by where the replies came from. */
+const REPLY_SOURCES = /** @type {Record<ReplyKind, string>} */ ({
+  scripted: "the scripted model reply",
+  simulated: "the keyless simulation's reply",
+  real: "the model's reply",
+});
+
+/** The waterfall's tag on a model call; a real provider's reply has none. */
+const REPLY_TAGS = /** @type {Record<ReplyKind, string | null>} */ ({
+  scripted: "scripted reply",
+  simulated: "simulated reply",
+  real: null,
+});
+
+/**
+ * The waterfall tag on a model call: scenario runs are scripted, keyless free play is the
+ * simulation, and a real provider's reply has no tag.
+ * @param {TraceView} trace
+ * @returns {string | null}
+ */
+export function modelReplyTag(trace) {
+  return REPLY_TAGS[replyKind(trace)];
+}
+
 /**
  * The run as waterfall rows, each placed on one axis from the start of setup to the run's end;
  * null before the run's first event, when there is nothing to draw.
  * @param {TraceView} trace
  * @param {number} [trackPx] how wide the axis's track is drawn: the zero label hides if it
  *   would meet the end label there
+ * @param {string | null} [normalBackend] the cache backend normal for this run
+ *   (normalCacheBackend()): cache rows name theirs only when it differs; null names none.
+ *   Without one, the deployment's normal backend, Redis with vector search
  * @returns {WaterfallView | null}
  */
-export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
+export function waterfallView(
+  trace,
+  trackPx = NARROWEST_TRACK_PX,
+  normalBackend = DEPLOYED_BACKEND,
+) {
   if (!trace.events.length) return null;
-  const lastMs = Math.max(0, trace.events[trace.events.length - 1].t_ms);
+  const lastMs = Math.max(0, lastEventMs(trace.events));
   /** @typedef {Omit<WaterfallRow, "leftPct" | "widthPct">} PlacedRow */
   /** @type {PlacedRow[]} */
   const rows = [];
@@ -404,6 +460,7 @@ export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
         const detail = withBackend(
           e.hit ? `hit · similarity ${e.similarity.toFixed(2)}` : "miss",
           e.backend,
+          normalBackend,
         );
         const span = endedAt(e, e.duration_ms);
         add(e, { kind: "cache", name: "cache lookup", detail, tone: "ok", ...span });
@@ -443,7 +500,7 @@ export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
       case "cache_store": {
         const tone = e.outcome === "stored" ? "ok" : "warn";
         const span = endedAt(e, e.duration_ms);
-        const detail = withBackend(words(e.outcome), e.backend);
+        const detail = withBackend(words(e.outcome), e.backend, normalBackend);
         add(e, { kind: "store", name: "cache store", detail, tone, ...span });
         break;
       }
@@ -485,10 +542,12 @@ export function waterfallView(trace, trackPx = NARROWEST_TRACK_PX) {
     zeroPct: axis.zeroPct,
     endLabel,
     showZeroLabel: !axisLabelsCollide(axis.zeroPct, endLabel, trackPx),
+    showSetupLabel: axis.zeroPct > 0,
+    separator: DETAIL_SEPARATOR,
   };
 }
 
-// --- #159: readable timeline ---
+// --- Readable timeline: compressed setup, ordered rows, apart labels ---
 // Setup draws on a scale of its own, compressed to at most MAX_SETUP_SHARE of the axis, so a
 // long setup never squeezes the run; shorter, it keeps the run's clock. Setup steps list before
 // the reads they made. The zero tick's label hides rather than meet the end label.
@@ -505,22 +564,53 @@ const LABEL_GAP_PX = 4;
 const ZERO_LABEL = "0";
 const DETAIL_SEPARATOR = " · ";
 
-// What a cache row says about a backend other than the deployment's normal one, Redis with
-// vector search; in memory is the fallback a Redis outage leaves (and every scenario's
-// private cache, ADR 0009).
-const OTHER_BACKENDS = /** @type {Record<string, string>} */ ({
-  in_memory: "in memory",
+// --- Cache backend: rows name it only when it isn't the run's normal one ---
+
+// What a cache row calls the backend that served it.
+const BACKEND_NAMES = /** @type {Record<string, string>} */ ({
+  redisearch: "Redis",
   redis_hash_fallback: "Redis without search",
+  in_memory: "in memory",
 });
+// A deployment's normal cache backend: Redis with vector search.
+const DEPLOYED_BACKEND = "redisearch";
+// A scenario setup note saying Redis is down (Everything down's). The trace records no setup
+// step for it: every scenario's cache is private and in memory (ADR 0009), so the catalogue's
+// note is the only place a scenario says it means Redis down.
+const REDIS_DOWN_NOTE = /\bRedis is (?:unreachable|down)\b/;
+
+/**
+ * GET /health as the page reads it: only the deployment's active cache driver.
+ * @typedef {{ cache_driver: string }} HealthView
+ */
 
 /**
  * A cache row's detail, naming the backend that served it when it isn't the normal one.
  * @param {string} detail
  * @param {string} backend
+ * @param {string | null} normalBackend null: name none
  */
-function withBackend(detail, backend) {
-  const other = OTHER_BACKENDS[backend];
-  return other ? `${detail}${DETAIL_SEPARATOR}${other}` : detail;
+function withBackend(detail, backend, normalBackend) {
+  if (normalBackend === null || backend === normalBackend) return detail;
+  return `${detail}${DETAIL_SEPARATOR}${BACKEND_NAMES[backend] ?? words(backend)}`;
+}
+
+/**
+ * The cache backend normal for a run, against which its cache rows name theirs. A scenario
+ * run's private in-memory cache stands in for the deployment's (ADR 0009), so it is normal
+ * unless the scenario's setup takes Redis down; then the deployment's Redis is the normal
+ * one it lost. A free-play run uses the deployment's cache, so its normal backend is the one
+ * GET /health reports. Null (name none) while that or the catalogue is unknown.
+ * @param {TraceView} trace
+ * @param {Loadable<Catalogue>} catalogue
+ * @param {Loadable<HealthView>} health
+ * @returns {string | null}
+ */
+export function normalCacheBackend(trace, catalogue, health) {
+  if (trace.scenarioId === null) return typeof health === "object" ? health.cache_driver : null;
+  const scenario = catalogueScenario(catalogue, trace.scenarioId);
+  const redisDown = scenario?.setup_notes.some((note) => REDIS_DOWN_NOTE.test(note));
+  return redisDown ? DEPLOYED_BACKEND : null;
 }
 
 /**
@@ -687,7 +777,7 @@ export function summarize(events) {
     }
   }
 
-  const lastMs = events.length ? events[events.length - 1].t_ms : originMs;
+  const lastMs = lastEventMs(events); // 0 when there are none, as originMs then is
   const runMs =
     runStartedMs !== null && runFinishedMs !== null ? runFinishedMs - runStartedMs : null;
   // Summed in event order, as Python's sum(), so the float result is the same.
@@ -843,7 +933,7 @@ export function runHeadline(run, now) {
   return { ...runLine(run, now), scripted: run.trace.scripted && calledAModel(run.trace) };
 }
 
-// --- #161: scripted badge only on runs that called a model ---
+// --- Scripted badge: only on runs that called a model ---
 
 /**
  * Whether a trace records at least one model call: a cache hit or a shed request never
@@ -851,7 +941,15 @@ export function runHeadline(run, now) {
  * @param {TraceView} trace
  */
 function calledAModel(trace) {
-  return trace.events.some((event) => event.kind === "model_call");
+  return modelCallEvents(trace).length > 0;
+}
+
+/**
+ * The trace's model_call events, in order.
+ * @param {TraceView} trace
+ */
+function modelCallEvents(trace) {
+  return trace.events.filter((event) => event.kind === "model_call");
 }
 
 /**
@@ -902,17 +1000,6 @@ export function runAnnouncement(run) {
   }
 }
 
-/**
- * Whether the stage needs scrolling into view for a run that just started: its top is above
- * the viewport or below its bottom. At phone width it sits below the chapters (#122); pinned
- * on desktop, it never needs it.
- * @param {{ top: number }} rect the stage's bounding rectangle
- * @param {number} viewportHeight
- */
-export function needsReveal(rect, viewportHeight) {
-  return rect.top < 0 || rect.top >= viewportHeight;
-}
-
 /** @returns {RunView} */
 export function idleRun() {
   return {
@@ -925,7 +1012,31 @@ export function idleRun() {
   };
 }
 
-// --- #156: the run's clock ---
+// --- Revealing the stage for a run that just started ---
+
+/**
+ * Whether the stage needs scrolling into view for a run that just started: its top is above
+ * the viewport or below its bottom. At phone width it sits below the chapters (#122); pinned
+ * on desktop, it never needs it.
+ * @param {{ top: number }} rect the stage's bounding rectangle
+ * @param {number} viewportHeight
+ */
+export function needsReveal(rect, viewportHeight) {
+  return rect.top < 0 || rect.top >= viewportHeight;
+}
+
+/**
+ * Where to scroll the stage itself for a run that just started, so its graph shows: back to
+ * its top when the pinned stage scrolls inside itself (#157) and has been scrolled down, else
+ * null (below the wide breakpoint the stage does not scroll; needsReveal() moves the page).
+ * @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} stage
+ * @returns {number | null}
+ */
+export function stageRevealTop(stage) {
+  return stage.scrollHeight > stage.clientHeight && stage.scrollTop > 0 ? 0 : null;
+}
+
+// --- The run's clock ---
 
 /**
  * How long a streaming run has been going: wall time since it started, never less than its
@@ -935,8 +1046,7 @@ export function idleRun() {
  * @param {number} [now]
  */
 function runElapsedMs(run, now) {
-  const { events } = run.trace;
-  const lastMs = events.length ? events[events.length - 1].t_ms : 0;
+  const lastMs = lastEventMs(run.trace.events);
   if (now === undefined || run.startedAt === null) return lastMs;
   return Math.max(lastMs, now - run.startedAt);
 }
@@ -951,7 +1061,7 @@ export function runTicks(run) {
 }
 
 const UNREACHABLE = "Couldn't reach the server. Check your connection and try again.";
-// --- #163: malformed streams ---
+// --- Malformed streams ---
 /** The stream arrived but didn't parse: a different failure from an unreachable server. */
 const MALFORMED = "Couldn't read the run's data: the server's stream didn't parse. Try again.";
 
@@ -1072,19 +1182,6 @@ export function createRunController({
   };
 }
 
-// --- #157: pinned stage reveal ---
-
-/**
- * Where to scroll the stage itself for a run that just started, so its graph shows: back to
- * its top when the pinned stage scrolls inside itself (#157) and has been scrolled down, else
- * null (below the wide breakpoint the stage does not scroll; needsReveal() moves the page).
- * @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} stage
- * @returns {number | null}
- */
-export function stageRevealTop(stage) {
-  return stage.scrollHeight > stage.clientHeight && stage.scrollTop > 0 ? 0 : null;
-}
-
 // ---------------------------------------------------------------------------------------------
 // Guided chapters (#119): GET /scenarios as the page draws it, and which run a scenario shows.
 
@@ -1105,6 +1202,14 @@ export function stageRevealTop(stage) {
  */
 export function toggledOpen(openId, id) {
   return openId === id ? null : id;
+}
+
+/**
+ * The element id of a scenario's disclosure toggle; the stage's way back links to it (#158).
+ * @param {string} id
+ */
+export function scenarioToggleId(id) {
+  return `scenario-${id}-toggle`;
 }
 
 /**
@@ -1203,7 +1308,7 @@ export function createScenarioStage(controller, sourceOf) {
   };
 }
 
-// --- #161: scenario panels keep their results ---
+// --- Scenario panels keep their results ---
 
 /**
  * Keep a scenario's run as its last result once it has finished. A run another play
@@ -1213,9 +1318,7 @@ export function createScenarioStage(controller, sourceOf) {
  * @param {RunView} view the stage's view when this scenario's play() resolved
  */
 function keepRun(kept, id, view) {
-  if (view.status !== "finished") return;
-  const started = view.trace.events.find((event) => event.kind === "trace_started");
-  if (started?.scenario_id === id) kept.set(id, view);
+  if (view.status === "finished" && view.trace.scenarioId === id) kept.set(id, view);
 }
 
 /**
@@ -1237,12 +1340,13 @@ function playLabel(run, finishedOnce) {
  *             report: ReportView | null, events: EventRow[] }} ScenarioPanelView
  * @param {RunView | null} run the scenario's run (runOf()), null if it has none
  * @param {boolean} [finishedOnce] a run of this scenario has finished before (finishedOnce())
+ * @param {number} [now] the page's ticking clock, so a streaming run's line counts (#156)
  * @returns {ScenarioPanelView}
  */
-export function scenarioPanelView(run, finishedOnce = false) {
+export function scenarioPanelView(run, finishedOnce = false, now) {
   const report = run && reportView(run.trace);
   return {
-    line: run && runHeadline(run).line,
+    line: run && runHeadline(run, now).line,
     playLabel: playLabel(run, finishedOnce),
     skipDisabled: skipAction(run) === null,
     report,
@@ -1279,11 +1383,7 @@ function provenance(trace, response) {
     trace.visits.some((visit) => visit.node === "fallback_report") ||
     trace.events.some((event) => event.kind === "deadline_exceeded");
   if (fellBack) return "Built by fallback_report from what the run saw: no model text.";
-  const model = trace.scripted
-    ? "the scripted model reply"
-    : trace.simulated
-      ? "the keyless simulation's reply"
-      : "the model's reply";
+  const model = REPLY_SOURCES[replyKind(trace)];
   return `Summary, analysis and actions are ${model}. Status, breakers and approvals are set by reconcile.`;
 }
 
@@ -1369,7 +1469,7 @@ export function eventLog(trace) {
   });
 }
 
-// --- #158: the stage names its scenario ---
+// --- The stage names its scenario ---
 
 /**
  * The scenario the stage is drawing, as the stage names it: its id and catalogue title, once
@@ -1384,12 +1484,21 @@ export function eventLog(trace) {
  */
 export function stageScenario(catalogue, run) {
   const id = run.trace.scenarioId;
-  if (id === null || typeof catalogue !== "object") return null;
-  const scenario = catalogue.chapters
-    .flatMap((chapter) => chapter.scenarios)
-    .find((candidate) => candidate.id === id);
-  if (!scenario) return null;
+  const scenario = id === null ? null : catalogueScenario(catalogue, id);
+  if (id === null || !scenario) return null;
   return { id, title: scenario.title, offerBack: run.status === "finished" };
+}
+
+/**
+ * A catalogued scenario by id; null if it isn't there or the catalogue hasn't loaded.
+ * @param {Loadable<Catalogue>} catalogue
+ * @param {string} id
+ * @returns {ScenarioView | null}
+ */
+function catalogueScenario(catalogue, id) {
+  if (typeof catalogue !== "object") return null;
+  const scenarios = catalogue.chapters.flatMap((chapter) => chapter.scenarios);
+  return scenarios.find((candidate) => candidate.id === id) ?? null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1449,7 +1558,7 @@ export function inspectorView(nodes, name) {
   };
 }
 
-// --- #165: ADR links name their record ---
+// --- ADR links name their record ---
 
 /**
  * Each decision record's title by its number, as its `# ADR-00N: Title` heading reads.
@@ -1484,9 +1593,14 @@ function adrLabel(number) {
 // about its run beyond the stage's headline.
 
 /**
+ * The free-play form's fields, as typed.
+ * @typedef {{ query: string, service_filter: string, force_refresh: boolean }} FreePlayFields
+ */
+
+/**
  * The POST /triage/stream body from the free-play form's fields: the question trimmed, an
  * empty service filter left out.
- * @param {{ query: string, service_filter: string, force_refresh: boolean }} fields
+ * @param {FreePlayFields} fields
  * @returns {import("./sse.mjs").TriageRequest}
  */
 export function freePlayRequest({ query, service_filter, force_refresh }) {
@@ -1501,45 +1615,8 @@ export function freePlayRequest({ query, service_filter, force_refresh }) {
  * @returns {string | null}
  */
 export function answeringModel(trace) {
-  for (let i = trace.events.length - 1; i >= 0; i--) {
-    const e = trace.events[i];
-    if (e.kind === "model_call" && e.outcome === "completion") return e.model;
-  }
-  return null;
-}
-
-/**
- * Why a run was shed and when to ask again, from its refused run_slot; null when it wasn't
- * shed. Only a budget shed carries a retry-after (triage/gateway.py Shed).
- * @typedef {{ reason: string, retryAfterS: number | null, line: string }} ShedNotice
- * @param {TraceView} trace
- * @returns {ShedNotice | null}
- */
-export function shedNotice(trace) {
-  const slot = trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
-  if (!slot) return null;
-  const reason = slot.reason ?? "capacity";
-  const retryAfterS = slot.retry_after_s ?? null;
-  const head =
-    reason === "budget"
-      ? "The free-play budget is spent for this minute."
-      : "Every run slot is busy right now.";
-  const when = retryAfterS === null ? "in a moment" : `in ${retryAfterS} s`;
-  return { reason, retryAfterS, line: `${head} Try again ${when}.` };
-}
-
-// --- #153: keyless simulation ---
-
-/**
- * The waterfall tag on a model call: scenario runs are scripted, keyless free play is the
- * simulation, and a real provider's reply has no tag.
- * @param {TraceView} trace
- * @returns {string | null}
- */
-export function modelReplyTag(trace) {
-  if (trace.scripted) return "scripted reply";
-  if (trace.simulated) return "simulated reply";
-  return null;
+  const answered = modelCallEvents(trace).findLast((call) => call.outcome === "completion");
+  return answered?.model ?? null;
 }
 
 /**
@@ -1550,12 +1627,41 @@ export function modelReplyTag(trace) {
 export function modelLine(trace) {
   const model = answeringModel(trace);
   if (model === null) return null;
-  return trace.simulated
+  return replyKind(trace) === "simulated"
     ? "Model: the keyless simulation (no model API key is set)"
     : `Model: ${model}`;
 }
 
-// --- #155: free play shows its report ---
+/** A budget shed's notice, before saying when to try again. */
+const BUDGET_SPENT = "The free-play budget is spent for this minute.";
+
+/**
+ * The run_slot event that refused the run, if one did.
+ * @param {TraceView} trace
+ * @returns {TraceEvent | undefined}
+ */
+function refusedSlot(trace) {
+  return trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+}
+
+/**
+ * Why a run was shed and when to ask again, from its refused run_slot; null when it wasn't
+ * shed. Only a budget shed carries a retry-after (triage/gateway.py Shed).
+ * @typedef {{ reason: string, retryAfterS: number | null, line: string }} ShedNotice
+ * @param {TraceView} trace
+ * @returns {ShedNotice | null}
+ */
+export function shedNotice(trace) {
+  const slot = refusedSlot(trace);
+  if (!slot) return null;
+  const reason = slot.reason ?? "capacity";
+  const retryAfterS = slot.retry_after_s ?? null;
+  const head = reason === "budget" ? BUDGET_SPENT : "Every run slot is busy right now.";
+  const when = retryAfterS === null ? "in a moment" : `in ${retryAfterS} s`;
+  return { reason, retryAfterS, line: `${head} Try again ${when}.` };
+}
+
+// --- Free play shows its report ---
 
 /**
  * What the free-play panel draws beside its stage: the model line, a shed run's notice, and
@@ -1574,16 +1680,25 @@ export function freePlayView(run, now) {
   const report = reportView(run.trace);
   return {
     model: modelLine(run.trace),
-    shed: shedNotice(run.trace),
     report: report?.kind === "report" ? report : null,
-    ...refusalView(run, now),
+    ...refusalView(run, now, shedNotice(run.trace), retryDeadline(run)),
   };
 }
 
-// --- #160: free play's input, double submits and refusals ---
+// --- Free play's input, double submits and refusals ---
 
 /** TriageRequest's shortest question (schemas/api.py), counted after trimming. */
 export const QUERY_MIN_LENGTH = 3;
+/**
+ * TriageRequest's limits (schemas/api.py), so the browser refuses a bad request first.
+ * tests/browser/test_free_play.py fails if the drawn form drifts from its JSON schema.
+ */
+export const REQUEST_LIMITS = Object.freeze({
+  queryMinLength: QUERY_MIN_LENGTH,
+  queryMaxLength: 2000,
+  serviceMaxLength: 100,
+  servicePattern: String.raw`[A-Za-z0-9_\s\-]+`,
+});
 /** What the form says about a question too short to send. */
 const QUERY_TOO_SHORT = `Describe the incident in at least ${QUERY_MIN_LENGTH} characters.`;
 
@@ -1592,7 +1707,7 @@ const QUERY_TOO_SHORT = `Describe the incident in at least ${QUERY_MIN_LENGTH} c
  * than the minimum once trimmed gets a plain message (not the server's validation error); a
  * press while the panel's run streams, or before a budget shed's retry time (a double click),
  * sends nothing and says nothing.
- * @param {{ query: string, service_filter: string, force_refresh: boolean }} fields
+ * @param {FreePlayFields} fields
  * @param {RunView} run the panel's run as it is now
  * @param {number} now wall-clock ms on the run's clock
  * @returns {{ error: string | null, request: import("./sse.mjs").TriageRequest | null }}
@@ -1611,7 +1726,7 @@ export function freePlaySubmit(fields, run, now) {
  * @returns {number | null}
  */
 function retryDeadline(run) {
-  const slot = run.trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+  const slot = refusedSlot(run.trace);
   if (!slot || slot.retry_after_s == null || run.startedAt === null) return null;
   return run.startedAt + slot.t_ms + slot.retry_after_s * 1000;
 }
@@ -1621,10 +1736,10 @@ function retryDeadline(run) {
  * retry time.
  * @param {RunView} run
  * @param {number | undefined} now
+ * @param {number | null} [retryAt] the run's retryDeadline(), if already known
  */
-function canTriage(run, now) {
+function canTriage(run, now, retryAt = retryDeadline(run)) {
   if (run.status === "streaming") return false;
-  const retryAt = retryDeadline(run);
   return retryAt === null || now === undefined || now >= retryAt;
 }
 
@@ -1645,16 +1760,16 @@ export function freePlayTicks(run, now) {
  * budget shed's notice line counted down to `now`.
  * @param {RunView} run
  * @param {number | undefined} now
- * @returns {Pick<FreePlayView, "refused" | "retryAt" | "canTriage"> &
- *           { shed?: ShedNotice }}
+ * @param {ShedNotice | null} shed the run's shedNotice()
+ * @param {number | null} retryAt the run's retryDeadline()
+ * @returns {Pick<FreePlayView, "shed" | "refused" | "retryAt" | "canTriage">}
  */
-function refusalView(run, now) {
-  const shed = shedNotice(run.trace);
-  const retryAt = retryDeadline(run);
+function refusalView(run, now, shed, retryAt) {
   const parts = {
+    shed,
     refused: shed !== null || run.rejected,
     retryAt,
-    canTriage: canTriage(run, now),
+    canTriage: canTriage(run, now, retryAt),
   };
   if (!shed || retryAt === null || shed.retryAfterS === null || now === undefined) return parts;
   return { ...parts, shed: { ...shed, line: countdownLine(shed.retryAfterS, retryAt, now) } };
@@ -1670,5 +1785,5 @@ function refusalView(run, now) {
 function countdownLine(retryAfterS, retryAt, now) {
   const left = Math.min(retryAfterS, Math.ceil((retryAt - now) / 1000));
   if (left <= 0) return "The free-play budget was spent for that minute. Try again now.";
-  return `The free-play budget is spent for this minute. Try again in ${left} s.`;
+  return `${BUDGET_SPENT} Try again in ${left} s.`;
 }

@@ -4,7 +4,7 @@
 // `data-run-state` on the stage is the run's status; browser tests wait on it. Its one live
 // region says only how a run ended (runAnnouncement), not the headline's running tick.
 import { html } from "htm/preact";
-import { graphView, runAnnouncement, runHeadline } from "../trace-reducer.mjs";
+import { graphView, runAnnouncement, runHeadline, scenarioToggleId } from "../trace-reducer.mjs";
 import { Graph } from "./graph.mjs";
 import { Waterfall } from "./waterfall.mjs";
 
@@ -21,12 +21,27 @@ import { Waterfall } from "./waterfall.mjs";
  *   scenario?: import("../trace-reducer.mjs").StageScenario | null,
  *   onBack?: (id: string) => void,
  *   headOnly?: boolean,
+ *   normalBackend?: string | null,
  * }} props `now`: the page's ticking clock, for a streaming run's headline (#156).
  *   `scenario`: the scenario the stage draws (stageScenario(); free play passes none), and
  *   `onBack` takes the visitor back to its card (#158). `headOnly`: draw the headline but
- *   no graph or timeline, for a run refused before any graph ran (#160)
+ *   no graph or timeline, for a run refused before any graph ran (#160). Free play only: the
+ *   Shed request scenario keeps both, as its timeline shows the held slots and the wait its
+ *   setup note describes, and its idle graph that the request never reached it.
+ *   `normalBackend`: the cache backend normal for the run (normalCacheBackend()), for the
+ *   timeline's cache rows
  */
-export function Stage({ run, layout, onReplay, onSelectNode, now, scenario, onBack, headOnly }) {
+export function Stage({
+  run,
+  layout,
+  onReplay,
+  onSelectNode,
+  now,
+  scenario,
+  onBack,
+  headOnly,
+  normalBackend,
+}) {
   const headline = runHeadline(run, now);
   return html`
     <div class="run" data-run-state=${run.status} data-dimmed=${String(headline.dimmed)}>
@@ -50,13 +65,13 @@ export function Stage({ run, layout, onReplay, onSelectNode, now, scenario, onBa
           : layout === "failed"
             ? html`<p class="notice">The graph's layout didn't load. The timeline below still shows the run.</p>`
             : html`<${Graph} view=${graphView(layout, run.trace)} onSelectNode=${onSelectNode} />`}
-        <${Waterfall} trace=${run.trace} />
+        <${Waterfall} trace=${run.trace} normalBackend=${normalBackend} />
       </div>`}
     </div>
   `;
 }
 
-// --- #158: the stage names its scenario ---
+// --- The stage names its scenario ---
 
 /**
  * The scenario the stage draws, and once its run has finished, a link back to its card and
@@ -71,7 +86,7 @@ function StageScenarioLine({ scenario, onBack }) {
     ${scenario.offerBack &&
     html`<a
       class="run__back"
-      href=${`#scenario-${scenario.id}-toggle`}
+      href=${`#${scenarioToggleId(scenario.id)}`}
       data-stage-back
       onClick=${(/** @type {MouseEvent} */ event) => {
         if (!onBack) return;

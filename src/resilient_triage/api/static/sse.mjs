@@ -35,7 +35,7 @@ export class StreamHttpError extends Error {
   }
 }
 
-// --- #163: malformed streams ---
+// --- Malformed streams ---
 /** The stream arrived, but an event in it isn't valid JSON: not a connection failure. */
 export class StreamDataError extends Error {
   /** @param {string} message */

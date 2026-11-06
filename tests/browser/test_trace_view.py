@@ -277,8 +277,8 @@ def test_a_silent_stream_is_lost_after_30_seconds_and_pings_keep_it_alive(pages:
     page.clock.install()
     open_shell(page, wait_for_requests=False)
     page.wait_for_selector(GRAPH_READY, state="attached")
-    # From here the page's clock moves only when the test moves it.
-    page.clock.pause_at(page.evaluate("Date.now()") + 1_000)
+    # From here the page's clock moves only when the test moves it. pause_at takes seconds.
+    page.clock.pause_at((page.evaluate("Date.now()") + 1_000) / 1_000)
     page.evaluate(MANUAL_SOURCE)
     page.evaluate("(message) => window.feed(message)", STARTED)
     wait_for_run(page, "streaming")
@@ -552,6 +552,32 @@ def test_a_redis_down_run_says_its_cache_ran_in_memory(pages: GuardedPages, colo
     for i in range(cache.count()):
         parts = cache.nth(i).locator(".waterfall__part").all_inner_texts()
         assert parts[-1] == "in memory"
+
+
+CACHE_ROWS = (
+    '#stage-root .waterfall__row[data-kind="cache"], #stage-root .waterfall__row[data-kind="store"]'
+)
+# Every catalogued scenario but the one whose setup takes Redis down.
+REDIS_UP = [scenario.id for scenario in SCENARIOS if scenario.id != "everything-down"]
+
+
+@pytest.mark.parametrize("scenario_id", REDIS_UP)
+def test_a_scenario_with_redis_up_names_no_cache_backend(pages: GuardedPages, scenario_id: str):
+    """A scenario's private in-memory cache (ADR 0009) stands in for the normal one: its cache
+    rows name no backend unless its setup takes Redis down."""
+    (scenario,) = [scenario for scenario in SCENARIOS if scenario.id == scenario_id]
+    assert not any("Redis" in note for note in scenario.setup_notes)
+    page, _ = pages.open()
+    open_shell(page)
+
+    play(page, scenario=scenario_id)
+    wait_for_run(page)
+
+    cache = page.locator(CACHE_ROWS)
+    assert cache.count() >= 1
+    for i in range(cache.count()):
+        parts = cache.nth(i).locator(".waterfall__part").all_inner_texts()
+        assert "in memory" not in parts and "Redis" not in " ".join(parts), parts
 
 
 # --- #163: malformed streams ---

@@ -5,7 +5,7 @@
 // shows an expected path: only what the run's own trace says (#96).
 import { html } from "htm/preact";
 import { useState } from "preact/hooks";
-import { scenarioPanelView } from "../trace-reducer.mjs";
+import { scenarioPanelView, scenarioToggleId } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").ScenarioView} ScenarioView */
@@ -15,21 +15,22 @@ import { Report } from "./report.mjs";
  * @param {{
  *   scenario: ScenarioView,
  *   open: boolean,
+ *   now?: number,
  *   run: RunView | null,
  *   finishedOnce: boolean,
  *   onToggle: () => void,
  *   onPlay: () => void,
  *   onSkip: () => void,
- * }} props
+ * }} props `now`: the page's ticking clock, for a streaming run's line (#156)
  */
-export function Scenario({ scenario, open, run, finishedOnce, onToggle, onPlay, onSkip }) {
+export function Scenario({ scenario, open, now, run, finishedOnce, onToggle, onPlay, onSkip }) {
   const panelId = `scenario-${scenario.id}-panel`;
   return html`
     <article class="scenario" data-scenario=${scenario.id} data-open=${String(open)}>
       <h4 class="scenario__heading">
         <button
           class="scenario__toggle"
-          id=${`scenario-${scenario.id}-toggle`}
+          id=${scenarioToggleId(scenario.id)}
           type="button"
           aria-expanded=${String(open)}
           aria-controls=${panelId}
@@ -44,6 +45,7 @@ export function Scenario({ scenario, open, run, finishedOnce, onToggle, onPlay, 
         html`<${ScenarioPanel}
           scenario=${scenario}
           run=${run}
+          now=${now}
           finishedOnce=${finishedOnce}
           onPlay=${onPlay}
           onSkip=${onSkip}
@@ -57,12 +59,12 @@ export function Scenario({ scenario, open, run, finishedOnce, onToggle, onPlay, 
  * The opened scenario: setup notes, controls, then what this scenario's run showed.
  * Skip to end stays in place once there's nothing left to skip (aria-disabled, not
  * disabled), so a keyboard user's focus stays on it.
- * @param {{ scenario: ScenarioView, run: RunView | null, finishedOnce: boolean,
+ * @param {{ scenario: ScenarioView, run: RunView | null, finishedOnce: boolean, now?: number,
  *           onPlay: () => void, onSkip: () => void }} props
  */
-function ScenarioPanel({ scenario, run, finishedOnce, onPlay, onSkip }) {
+function ScenarioPanel({ scenario, run, finishedOnce, now, onPlay, onSkip }) {
   const [everything, setEverything] = useState(false);
-  const view = scenarioPanelView(run, finishedOnce);
+  const view = scenarioPanelView(run, finishedOnce, now);
   const eventsId = `scenario-${scenario.id}-events`;
   return html`
     ${scenario.setup_notes.length > 0 &&

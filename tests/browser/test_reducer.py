@@ -298,6 +298,60 @@ def test_cache_rows_say_when_the_cache_ran_in_memory(pages: GuardedPages):
     assert cache and all("in memory" not in row["detail"] for row in cache)
 
 
+# page.evaluate script: the details of a run's cache rows, measured against the backend the
+# page counts as normal for it (the scenario's setup, or free play's GET /health).
+CACHE_DETAILS = """async ([events, catalogue, health]) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const trace = reducer.foldTrace(events);
+  const normal = reducer.normalCacheBackend(trace, catalogue, health);
+  return reducer.waterfallView(trace, undefined, normal).rows
+    .filter((row) => row.kind === "cache" || row.kind === "store")
+    .map((row) => row.detailParts);
+}"""
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "named"), [("everything-down", True), ("healthy-run", False)]
+)
+def test_a_scenario_names_its_cache_backend_only_when_its_setup_takes_redis_down(
+    pages: GuardedPages, scenario_id: str, named: bool
+):
+    """Every scenario's cache is private and in memory; only Redis down makes that news."""
+    events = _wire(stream_scenario(pages.server, scenario_id))
+    catalogue = public_catalogue().model_dump(mode="json")
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+
+    details = page.evaluate(CACHE_DETAILS, [events, catalogue, "loading"])
+
+    assert details
+    assert all((parts[-1] == "in memory") is named for parts in details), details
+
+
+@pytest.mark.parametrize(
+    ("health", "named"),
+    [
+        ({"cache_driver": "in_memory"}, False),
+        ({"cache_driver": "redisearch"}, True),
+        ("failed", False),
+    ],
+    ids=["normal-in-memory", "normal-redis", "health-unknown"],
+)
+def test_free_play_names_its_cache_backend_only_when_it_isnt_the_deployments(
+    pages: GuardedPages, health: Any, named: bool
+):
+    """Free play's normal backend is the one GET /health reports; unknown, rows name none."""
+    events = _wire(stream_scenario(pages.server, "everything-down"))
+    events = [{**e, "scenario_id": None} if e["kind"] == "trace_started" else e for e in events]
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+
+    details = page.evaluate(CACHE_DETAILS, [events, "loading", health])
+
+    assert details
+    assert all((parts[-1] == "in memory") is named for parts in details), details
+
+
 # --- #156: the run's clock ---
 # page.evaluate script: the headline a run gets at a given wall-clock `now`, and whether the
 # shell's clock should tick for it. The run started at wall time `startedAt`; its events are

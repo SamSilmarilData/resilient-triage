@@ -222,6 +222,33 @@ def test_a_played_scenario_ends_with_its_trace_summary_and_report(
     assert watch.failed == []
 
 
+def test_an_open_scenarios_line_counts_with_the_stage_until_the_run_ends(pages: GuardedPages):
+    """Waiting on the run deadline, the open card's line ticks; at the end it is the summary."""
+    page, _ = pages.open()
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    page.locator("#scenario-run-deadline-toggle").click()
+    _scenario(page, "run-deadline", '[data-action="play"]').click()
+    # The scenario's slow Cluster Sentinel holds collect_telemetry ~3 s with no event: the wait.
+    page.wait_for_selector(
+        '#stage-root [data-node="collect_telemetry"][data-state="active"]', state="attached"
+    )
+    line = _scenario(page, "run-deadline", "[data-scenario-line]")
+    first = line.inner_text()
+    # Sampling a clock takes real time: the one fixed wait here is the interval sampled.
+    page.wait_for_timeout(1_000)
+    second = line.inner_text()
+    assert first.startswith("Running, "), first
+    assert second.startswith("Running, "), second
+    assert second != first, "the card's clock stood still"
+
+    wait_for_run(page)
+    final = line.inner_text()
+    assert final.startswith("Fallback report in "), final
+    assert final == page.locator("#stage-root [data-run-line]").inner_text()
+
+
 def test_skip_to_end_runs_the_scenario_and_shows_only_its_final_state(pages: GuardedPages):
     """Skip to end before Play: the stage holds still, then shows the final state; focus stays."""
     page, _ = pages.open()

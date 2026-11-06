@@ -13,6 +13,7 @@ import { Scenario } from "./scenario.mjs";
 /**
  * @typedef {{
  *   openId: string | null,
+ *   now?: number,
  *   runOf: (id: string) => RunView | null,
  *   finishedOnce: (id: string) => boolean,
  *   onToggle: (id: string) => void,
@@ -50,7 +51,7 @@ export function Chapters({ catalogue, onRetry, ...handlers }) {
  * One chapter: its number, title and intro, then its scenarios.
  * @param {{ chapter: Catalogue["chapters"][number], number: number } & ScenarioHandlers} props
  */
-function Chapter({ chapter, number, openId, runOf, finishedOnce, onToggle, onPlay, onSkip }) {
+function Chapter({ chapter, number, openId, now, runOf, finishedOnce, onToggle, onPlay, onSkip }) {
   const titleId = `chapter-${chapter.id}-title`;
   return html`
     <section class="chapter" data-chapter=${chapter.id} aria-labelledby=${titleId}>
@@ -65,6 +66,7 @@ function Chapter({ chapter, number, openId, runOf, finishedOnce, onToggle, onPla
             <${Scenario}
               scenario=${scenario}
               open=${openId === scenario.id}
+              now=${now}
               run=${runOf(scenario.id)}
               finishedOnce=${finishedOnce(scenario.id)}
               onToggle=${() => onToggle(scenario.id)}

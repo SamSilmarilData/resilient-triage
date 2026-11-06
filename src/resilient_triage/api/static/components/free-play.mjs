@@ -5,27 +5,16 @@
 // the panel's run controller lives in app.mjs. A finished run's report sits under its stage, in
 // the same card (#155). Errors and lost streams stay in this panel (#101).
 import { html } from "htm/preact";
-import { QUERY_MIN_LENGTH, freePlayView } from "../trace-reducer.mjs";
+import { REQUEST_LIMITS, freePlayView } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
 import { Stage } from "./stage.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
-/** @typedef {{ query: string, service_filter: string, force_refresh: boolean }} FreePlayFields */
+/** @typedef {import("../trace-reducer.mjs").FreePlayFields} FreePlayFields */
 
 /** The id of the form's message about a question too short to send (#160). */
 const INPUT_ERROR_ID = "free-play-query-error";
-
-/**
- * TriageRequest's limits (schemas/api.py), so the browser refuses a bad request first.
- * tests/browser/test_free_play.py fails if the drawn form drifts from its JSON schema.
- */
-const REQUEST_LIMITS = Object.freeze({
-  queryMinLength: QUERY_MIN_LENGTH,
-  queryMaxLength: 2000,
-  serviceMaxLength: 100,
-  servicePattern: String.raw`[A-Za-z0-9_\s\-]+`,
-});
 
 /**
  * @param {{
@@ -36,11 +25,22 @@ const REQUEST_LIMITS = Object.freeze({
  *   onSelectNode?: (name: string) => void,
  *   now?: number,
  *   inputError?: string | null,
+ *   normalBackend?: string | null,
  * }} props `now`: the page's ticking clock, for the run's headline (#156) and a budget
  *   shed's countdown (#160). `onSubmit` gets the form's fields; the shell asks the reducer
  *   whether they make a request (freePlaySubmit) and passes back `inputError` when not.
+ *   `normalBackend`: the cache backend normal for the run (normalCacheBackend())
  */
-export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now, inputError }) {
+export function FreePlay({
+  run,
+  layout,
+  onSubmit,
+  onReplay,
+  onSelectNode,
+  now,
+  inputError,
+  normalBackend,
+}) {
   /** @param {SubmitEvent} event */
   const submit = (event) => {
     event.preventDefault();
@@ -117,6 +117,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now, i
             onReplay=${onReplay}
             onSelectNode=${onSelectNode}
             headOnly=${refused}
+            normalBackend=${normalBackend}
           />
           ${report && html`<${Report} view=${report} />`}
         </div>
