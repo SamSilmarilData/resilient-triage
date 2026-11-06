@@ -13,7 +13,7 @@ import { Scenario } from "./scenario.mjs";
 /**
  * @typedef {{
  *   openId: string | null,
- *   now?: number,
+ *   now?: import("./stage.mjs").Clock,
  *   runOf: (id: string) => RunView | null,
  *   finishedOnce: (id: string) => boolean,
  *   onToggle: (id: string) => void,

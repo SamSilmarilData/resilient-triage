@@ -1,7 +1,15 @@
 """The page shell in Chromium (#117): loads clean, passes axe in both themes, fits 375 px."""
 
 import pytest
-from harness import PAGE_WIDTHS, GuardedPages, axe_violations, describe, open_shell
+from harness import (
+    PAGE_WIDTHS,
+    SHELL_READY,
+    GuardedPages,
+    axe_violations,
+    describe,
+    open_shell,
+)
+from playwright.sync_api import Route
 
 pytestmark = pytest.mark.browser
 
@@ -80,6 +88,11 @@ DEEP_LINKS = {"free-play": "#free-play-title", "how-its-built": "#built-title"}
 # How far below the viewport's top a landed heading may sit: the section's own top padding.
 NEAR_TOP_PX = 120
 HEADING_TOP = "(selector) => document.querySelector(selector).getBoundingClientRect().top"
+# Resolves true once the page's scroll position holds still across two animation frames.
+SCROLL_SETTLED = """() => new Promise((resolve) => {
+  const y = window.scrollY;
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.scrollY === y)));
+})"""
 HEADING_NEAR_TOP = f"""(selector) => {{
   const top = document.querySelector(selector).getBoundingClientRect().top;
   return top >= 0 && top <= {NEAR_TOP_PX};
@@ -118,3 +131,48 @@ def test_a_deep_link_scrolls_once_and_instantly_under_reduced_motion(
     assert page.evaluate("window.scrollY") == 0, "the page scrolled to the fragment again"
     violations = axe_violations(page)
     assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("fragment", ["%E0%A4%A", "%"])
+def test_a_malformed_deep_link_still_settles_without_a_page_error(
+    pages: GuardedPages, fragment: str
+):
+    """A fragment that doesn't decode scrolls nowhere, throws nothing, and still marks the
+    deep link done (the pages fixture fails the test on any page error)."""
+    page, watch = pages.open(viewport=DESKTOP)
+
+    open_shell(page, path=f"/#{fragment}")
+    page.wait_for_selector(DEEP_LINK_DONE, state="attached")
+
+    assert page.evaluate("window.scrollY") == 0
+    assert watch.page_errors == []
+
+
+def test_a_deep_link_leaves_a_visitor_who_scrolled_while_it_loaded_where_they_are(
+    pages: GuardedPages,
+):
+    """With the chapters slow to load, a visitor who scrolls meanwhile isn't yanked to the
+    fragment once they land: what they were looking at stays put."""
+    page, _ = pages.open(viewport=DESKTOP, reduced_motion="reduce")
+    held: list[Route] = []
+    page.route("**/scenarios", lambda route: held.append(route))
+
+    page.goto("/#how-its-built")
+    page.wait_for_selector(SHELL_READY, state="attached")
+    while not held:  # the catalogue's request reaches the route soon after the shell renders
+        page.wait_for_timeout(20)
+    page.wait_for_function(SCROLL_SETTLED)  # the browser's own jump to the fragment
+    page.mouse.move(400, 400)
+    page.mouse.wheel(0, -300)
+    page.wait_for_function("window.scrollY > 0")
+    page.wait_for_function(SCROLL_SETTLED)
+    before = page.evaluate(HEADING_TOP, "#built-title")
+    assert page.locator(DEEP_LINK_DONE).count() == 0, "the deep link waits for the chapters"
+
+    held[0].continue_()
+    page.wait_for_selector(DEEP_LINK_DONE, state="attached")
+    page.wait_for_function(SCROLL_SETTLED)
+
+    # The chapters grew above the view; scroll anchoring keeps the view where it was.
+    after = page.evaluate(HEADING_TOP, "#built-title")
+    assert abs(after - before) <= 2, f"heading moved from {before} px to {after} px"

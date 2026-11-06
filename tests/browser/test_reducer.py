@@ -571,6 +571,23 @@ def test_no_second_run_is_sent_while_one_streams(pages: GuardedPages):
     assert submit == {"error": None, "request": None}
 
 
+@pytest.mark.parametrize(
+    ("status", "events", "now"),
+    [("streaming", [], 10_005), ("finished", BUDGET_SHED, 13_500)],
+    ids=["streaming", "before-retry-time"],
+)
+def test_an_unavailable_triage_never_says_the_question_is_too_short(
+    pages: GuardedPages, status: str, events: list[dict[str, Any]], now: int
+):
+    """While Triage is unavailable a press sends nothing and says nothing, even for a question
+    too short to send: the availability check comes before the length check."""
+    submit = _free_play(
+        pages, FREE_PLAY_SUBMIT, {"query": " a ", "status": status, "events": events, "now": now}
+    )
+
+    assert submit == {"error": None, "request": None}
+
+
 def test_a_budget_shed_counts_down_to_its_retry_time(pages: GuardedPages):
     """The retry deadline is when the shed arrived plus its retry-after; the notice counts down
     in whole seconds to it, and Triage comes back when it passes."""
@@ -590,6 +607,38 @@ def test_a_budget_shed_counts_down_to_its_retry_time(pages: GuardedPages):
     assert [view["canTriage"] for view in views] == [False, False, False, False, True]
     assert [view["ticks"] for view in views] == [True, True, True, True, False]
     assert all(view["refused"] for view in views)
+
+
+# page.evaluate script: what free play's live region says about Triage at each `now`.
+TRIAGE_ANNOUNCEMENTS = """async ({status, events, nows}) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const run = {...reducer.idleRun(), status, startedAt: 10000, trace: reducer.foldTrace(events)};
+  return nows.map((now) => reducer.freePlayAnnouncement(run, now));
+}"""
+
+
+def test_triage_is_announced_back_only_once_a_budget_sheds_countdown_ends(pages: GuardedPages):
+    """The panel's live region says how the run ended while the countdown runs; at its retry
+    time, that Triage is available again. A capacity shed has no countdown: only its ending."""
+    capacity = [dict(event) for event in BUDGET_SHED]
+    capacity[1] = {**capacity[1], "reason": "capacity", "retry_after_s": None}
+    nows = [10_002, 22_001, 22_002, 30_000]
+
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+    budget = page.evaluate(
+        TRIAGE_ANNOUNCEMENTS, {"status": "finished", "events": BUDGET_SHED, "nows": nows}
+    )
+    other = page.evaluate(
+        TRIAGE_ANNOUNCEMENTS, {"status": "finished", "events": capacity, "nows": nows}
+    )
+
+    back = "Triage is available again."
+    assert budget[2:] == [back, back]
+    assert budget[0] == budget[1]
+    assert budget[0].startswith("Run finished: Shed after "), budget[0]
+    assert len(set(other)) == 1
+    assert other[0].startswith("Run finished: Shed after "), other[0]
 
 
 def test_a_capacity_shed_has_no_countdown(pages: GuardedPages):
@@ -620,3 +669,39 @@ def test_a_run_that_reached_the_graph_is_not_refused(
     )
 
     assert (view["canTriage"], view["refused"], view["ticks"]) == (can_triage, False, False)
+
+
+# --- #163: deep links ---
+# page.evaluate script: the element id each URL fragment (location.hash) names.
+FRAGMENT_IDS = """async (hashes) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  return hashes.map((hash) => reducer.fragmentId(hash));
+}"""
+
+
+def test_a_fragment_names_its_decoded_id_and_a_malformed_one_names_none(pages: GuardedPages):
+    """A percent-encoded fragment decodes; one that doesn't decode (a broken escape), or an
+    empty one, names no element rather than throwing."""
+    hashes = ["#free-play", "#caf%C3%A9", "", "#", "#%E0%A4%A", "#%"]
+
+    ids = _free_play(pages, FRAGMENT_IDS, hashes)
+
+    assert ids == ["free-play", "café", None, None, None, None]
+
+
+# page.evaluate script: where a deep link scrolls, given whether the visitor scrolled since load.
+DEEP_LINK_TARGETS = """async (cases) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  return cases.map(([hash, scrolled]) => reducer.deepLinkTarget(hash, scrolled));
+}"""
+
+
+def test_a_deep_link_scrolls_only_if_the_visitor_has_not_scrolled_since_load(
+    pages: GuardedPages,
+):
+    """The fragment's id while the visitor hasn't scrolled; none once they have."""
+    cases = [["#free-play", False], ["#free-play", True], ["#%", False]]
+
+    targets = _free_play(pages, DEEP_LINK_TARGETS, cases)
+
+    assert targets == ["free-play", None, None]

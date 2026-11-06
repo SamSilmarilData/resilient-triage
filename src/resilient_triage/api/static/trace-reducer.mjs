@@ -1703,19 +1703,19 @@ export const REQUEST_LIMITS = Object.freeze({
 const QUERY_TOO_SHORT = `Describe the incident in at least ${QUERY_MIN_LENGTH} characters.`;
 
 /**
- * What a Triage press does: the request to send, or why nothing is sent. A question shorter
- * than the minimum once trimmed gets a plain message (not the server's validation error); a
- * press while the panel's run streams, or before a budget shed's retry time (a double click),
- * sends nothing and says nothing.
+ * What a Triage press does: the request to send, or why nothing is sent. A press while the
+ * panel's run streams, or before a budget shed's retry time (a double click), sends nothing
+ * and says nothing, whatever the question; only then does a question shorter than the minimum
+ * once trimmed get a plain message (not the server's validation error).
  * @param {FreePlayFields} fields
  * @param {RunView} run the panel's run as it is now
  * @param {number} now wall-clock ms on the run's clock
  * @returns {{ error: string | null, request: import("./sse.mjs").TriageRequest | null }}
  */
 export function freePlaySubmit(fields, run, now) {
+  if (!canTriage(run, now)) return { error: null, request: null };
   const request = freePlayRequest(fields);
   if (request.query.length < QUERY_MIN_LENGTH) return { error: QUERY_TOO_SHORT, request: null };
-  if (!canTriage(run, now)) return { error: null, request: null };
   return { error: null, request };
 }
 
@@ -1786,4 +1786,69 @@ function countdownLine(retryAfterS, retryAt, now) {
   const left = Math.min(retryAfterS, Math.ceil((retryAt - now) / 1000));
   if (left <= 0) return "The free-play budget was spent for that minute. Try again now.";
   return `${BUDGET_SPENT} Try again in ${left} s.`;
+}
+
+// --- Triage coming back is announced ---
+
+/**
+ * That Triage is back: once a budget shed's countdown has reached its retry time; empty
+ * before, and for any other run.
+ * @param {RunView} run
+ * @param {number | undefined} now wall-clock ms on the run's clock
+ * @returns {string}
+ */
+export function triageAnnouncement(run, now) {
+  const retryAt = retryDeadline(run);
+  if (retryAt === null || now === undefined || now < retryAt) return "";
+  return "Triage is available again.";
+}
+
+/**
+ * What free play's one live region (its stage's, role=status) says: how the run ended
+ * (runAnnouncement()), until a budget shed's countdown reaches zero, then that Triage is
+ * back. It changes once, at zero (the clock stops there), so a screen reader hears it once,
+ * not each second of the countdown.
+ * @param {RunView} run
+ * @param {number | undefined} now wall-clock ms on the run's clock
+ * @returns {string}
+ */
+export function freePlayAnnouncement(run, now) {
+  return triageAnnouncement(run, now) || runAnnouncement(run);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Deep links (#163): the page scrolls to the URL's fragment once its regions have filled in.
+
+/**
+ * The element id a URL fragment (`location.hash`, with its "#") names, percent-decoded; null
+ * for an empty fragment or one that doesn't decode (a broken escape like `#%E0%A4%A`), so a
+ * bad link scrolls nowhere instead of throwing.
+ * @param {string} hash
+ * @returns {string | null}
+ */
+export function fragmentId(hash) {
+  try {
+    return decodeURIComponent(hash.slice(1)) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The window events that mean the visitor has scrolled (or is about to) since load. Not a
+ * scrollY comparison: the browser's own fragment jump and CSS scroll anchoring (keeping the
+ * view still as the chapters grow above it) both move scrollY with no visitor involved.
+ */
+export const VISITOR_SCROLL_EVENTS = Object.freeze(["wheel", "touchmove", "keydown", "pointerdown"]);
+
+/**
+ * Where a deep link scrolls once the page has filled in: the fragment's id, or null when it
+ * names none or the visitor has scrolled since load (one who scrolled while the fetches were
+ * slow stays where they are).
+ * @param {string} hash `location.hash`
+ * @param {boolean} visitorScrolled one of VISITOR_SCROLL_EVENTS fired since load
+ * @returns {string | null}
+ */
+export function deepLinkTarget(hash, visitorScrolled) {
+  return visitorScrolled ? null : fragmentId(hash);
 }

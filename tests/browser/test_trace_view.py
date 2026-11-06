@@ -22,6 +22,7 @@ from harness import (
     play,
     run_selector,
     stream_scenario,
+    unique_question,
     wait_for_run,
 )
 
@@ -663,3 +664,51 @@ def test_the_headline_clock_keeps_counting_until_the_run_ends(
     assert page.evaluate("() => window.__liveIntervals()") == 0, "the clock still ticks"
     violations = axe_violations(page)
     assert violations == [], describe(violations)
+
+
+# page.evaluate script: count every component render by the component's name, through Preact's
+# public `options.diffed` hook (chained, as @preact/signals hooks it too).
+COUNT_RENDERS = """async () => {
+  const {options} = await import("preact");
+  const renders = {};
+  const previous = options.diffed;
+  options.diffed = (vnode) => {
+    if (typeof vnode.type === "function") {
+      renders[vnode.type.name] = (renders[vnode.type.name] ?? 0) + 1;
+    }
+    previous?.(vnode);
+  };
+  window.__renders = () => ({...renders});
+}"""
+# Components that show no time: a clock tick must not render any of them again.
+TIMELESS = ("LiveStage", "Stage", "Graph", "Waterfall", "GuidedChapters", "Chapter", "FreePlay")
+
+
+def test_a_clock_tick_renders_only_the_line_that_shows_the_time(pages: GuardedPages):
+    """While a run's headline counts, each tick redraws its clocked line and nothing else: not
+    the stage's graph or timeline, not the chapters, not the finished free-play panel."""
+    page, _ = pages.open()
+    page.clock.install()
+    open_shell(page)
+    free_play = page.locator("#free-play-root")
+    free_play.get_by_label("Your incident").fill(unique_question())
+    free_play.get_by_role("button", name="Triage").click()
+    wait_for_run(page, root="#free-play-root")
+    page.locator('[data-scenario="run-deadline"] .scenario__toggle').click()
+
+    play(page, scenario="run-deadline")
+    # The slow Cluster Sentinel holds collect_telemetry ~3 s with no event: only ticks change.
+    page.wait_for_selector(
+        '#stage-root [data-node="collect_telemetry"][data-state="active"]', state="attached"
+    )
+    page.evaluate(COUNT_RENDERS)
+    first = page.evaluate(RUN_LINE)
+    page.clock.run_for(2_000)  # eight ticks of the page's clock, in no real time
+
+    renders = page.evaluate("() => window.__renders()")
+    assert page.evaluate(RUN_LINE) != first, "the clock didn't tick"
+    assert page.locator("#stage-root [data-run-state]").get_attribute("data-run-state") == (
+        "streaming"
+    )
+    assert renders.get("Clocked", 0) > 0, renders
+    assert {name: renders[name] for name in TIMELESS if name in renders} == {}
