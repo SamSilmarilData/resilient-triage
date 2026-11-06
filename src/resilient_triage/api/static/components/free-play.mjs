@@ -7,11 +7,12 @@
 import { html } from "htm/preact";
 import { REQUEST_LIMITS, freePlayView } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
-import { Stage } from "./stage.mjs";
+import { Clocked, Stage } from "./stage.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("../trace-reducer.mjs").FreePlayFields} FreePlayFields */
+/** @typedef {import("./stage.mjs").Clock} Clock */
 
 /** The id of the form's message about a question too short to send (#160). */
 const INPUT_ERROR_ID = "free-play-query-error";
@@ -23,11 +24,11 @@ const INPUT_ERROR_ID = "free-play-query-error";
  *   onSubmit: (fields: FreePlayFields) => void,
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
- *   now?: number,
+ *   now?: Clock,
  *   inputError?: string | null,
  *   normalBackend?: string | null,
- * }} props `now`: the page's ticking clock, for the run's headline (#156) and a budget
- *   shed's countdown (#160). `onSubmit` gets the form's fields; the shell asks the reducer
+ * }} props `now`: the page's ticking clock (a signal), read only by what counts: the run's
+ *   streaming headline (#156) and a budget shed's countdown and Triage button (#160). `onSubmit` gets the form's fields; the shell asks the reducer
  *   whether they make a request (freePlaySubmit) and passes back `inputError` when not.
  *   `normalBackend`: the cache backend normal for the run (normalCacheBackend())
  */
@@ -52,7 +53,9 @@ export function FreePlay({
       force_refresh: data.get("force_refresh") !== null,
     });
   };
-  const { model, shed, report, refused, canTriage } = freePlayView(run, now);
+  const { model, shed, report, refused, retryAt } = freePlayView(run);
+  // Only a budget shed's countdown changes with the clock; any other run reads none.
+  const countdown = retryAt === null ? undefined : now;
   return html`
     <div class="free-play__panel">
       <form class="ask" onSubmit=${submit}>
@@ -91,13 +94,7 @@ export function FreePlay({
           <label class="ask__check">
             <input type="checkbox" name="force_refresh" /> Skip the cache
           </label>
-          <button
-            class="button button--primary"
-            type="submit"
-            aria-disabled=${String(!canTriage)}
-          >
-            Triage
-          </button>
+          <${TriageButton} run=${run} now=${countdown} />
         </div>
       </form>
       ${run.status !== "idle" &&
@@ -107,7 +104,12 @@ export function FreePlay({
           class="notice"
           data-shed-reason=${shed.reason}
           data-retry-after=${shed.retryAfterS ?? ""}
-        >${shed.line}</p>`}
+        >${countdown
+          ? html`<${Clocked}
+              now=${countdown}
+              text=${(/** @type {number} */ t) => freePlayView(run, t).shed?.line ?? null}
+            />`
+          : shed.line}</p>`}
         ${model && html`<p class="free-play__model" data-model>${model}</p>`}
         <div class="free-play__run">
           <${Stage}
@@ -124,4 +126,19 @@ export function FreePlay({
       `}
     </div>
   `;
+}
+
+// --- Only the time redraws on a tick ---
+
+/**
+ * Triage: unavailable while the panel's run streams or before a budget shed's retry time
+ * (aria-disabled, so focus stays on it). Its own component, so a countdown's tick redraws
+ * the button and not the panel.
+ * @param {{ run: RunView, now?: Clock }} props `now`: given only while a countdown runs
+ */
+function TriageButton({ run, now }) {
+  const { canTriage } = freePlayView(run, now?.value);
+  return html`<button class="button button--primary" type="submit" aria-disabled=${String(!canTriage)}>
+    Triage
+  </button>`;
 }

@@ -45,8 +45,9 @@ const CLOCK_TICK_MS = 250;
 
 /**
  * A `now` signal (wall-clock ms) that ticks while `active` is true and holds still otherwise:
- * its one timer runs only then, so an idle page has none. Components read `now` and never
- * keep a timer of their own. Widen `active` for anything else that counts (#160's countdown).
+ * its one timer runs only then, so an idle page has none. Components never keep a timer of
+ * their own. They get the signal itself, not its value, and only the leaf that shows a time
+ * reads it (stage.mjs Clocked), so a tick redraws that text and not the panels around it. Widen `active` for anything else that counts (#160's countdown).
  * `active` is given the clock itself, so a countdown can stop the clock once it reaches zero.
  * @param {(now: number) => boolean} isActive
  * @param {number} [periodMs]
@@ -135,7 +136,7 @@ const freePlayInputError = signal(/** @type {string | null} */ (null));
 function LiveStage() {
   return html`<${Stage}
     run=${stageRun.run.value}
-    now=${now.value}
+    now=${now}
     layout=${layout.value}
     onReplay=${() => stage.replay()}
     onSelectNode=${inspect}
@@ -170,7 +171,7 @@ function GuidedChapters() {
     catalogue=${catalogue.value}
     onRetry=${loadCatalogue}
     openId=${openId.value}
-    now=${now.value}
+    now=${now}
     runOf=${(/** @type {string} */ id) => scenarios.runOf(run, id)}
     finishedOnce=${(/** @type {string} */ id) => scenarios.finishedOnce(id)}
     onToggle=${(/** @type {string} */ id) => {
@@ -211,7 +212,7 @@ function loadCatalogue() {
 function LiveFreePlay() {
   return html`<${FreePlay}
     run=${freePlayRun.run.value}
-    now=${now.value}
+    now=${now}
     layout=${layout.value}
     inputError=${freePlayInputError.value}
     normalBackend=${normalCacheBackend(freePlayRun.run.value.trace, catalogue.value, health.value)}

@@ -4,12 +4,31 @@
 // `data-run-state` on the stage is the run's status; browser tests wait on it. Its one live
 // region says only how a run ended (runAnnouncement), not the headline's running tick.
 import { html } from "htm/preact";
-import { graphView, runAnnouncement, runHeadline, scenarioToggleId } from "../trace-reducer.mjs";
+import {
+  graphView,
+  runAnnouncement,
+  runHeadline,
+  runTicks,
+  scenarioToggleId,
+} from "../trace-reducer.mjs";
 import { Graph } from "./graph.mjs";
 import { Waterfall } from "./waterfall.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
 /** @typedef {import("../trace-reducer.mjs").GraphLayout} GraphLayout */
+/** @typedef {import("@preact/signals").ReadonlySignal<number>} Clock */
+
+// --- Only the time redraws on a tick ---
+
+/**
+ * Text that shows a time: the one component that reads the page's ticking clock, so a tick
+ * redraws this text and nothing around it (no graph, timeline or panel). Render it only for
+ * text that counts; `text` derives the words from the clock's wall-clock ms (a reducer view).
+ * @param {{ now: Clock, text: (now: number) => string | null }} props
+ */
+export function Clocked({ now, text }) {
+  return text(now.value);
+}
 
 /**
  * @param {{
@@ -17,12 +36,13 @@ import { Waterfall } from "./waterfall.mjs";
  *   layout: import("../trace-reducer.mjs").Loadable<GraphLayout>,
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
- *   now?: number,
+ *   now?: Clock,
  *   scenario?: import("../trace-reducer.mjs").StageScenario | null,
  *   onBack?: (id: string) => void,
  *   headOnly?: boolean,
  *   normalBackend?: string | null,
- * }} props `now`: the page's ticking clock, for a streaming run's headline (#156).
+ * }} props `now`: the page's ticking clock (a signal), read only by a streaming run's
+ *   headline (#156).
  *   `scenario`: the scenario the stage draws (stageScenario(); free play passes none), and
  *   `onBack` takes the visitor back to its card (#158). `headOnly`: draw the headline but
  *   no graph or timeline, for a run refused before any graph ran (#160). Free play only: the
@@ -42,14 +62,18 @@ export function Stage({
   headOnly,
   normalBackend,
 }) {
-  const headline = runHeadline(run, now);
+  const headline = runHeadline(run);
   return html`
     <div class="run" data-run-state=${run.status} data-dimmed=${String(headline.dimmed)}>
       <p class="visually-hidden" role="status" data-run-announcement>${runAnnouncement(run)}</p>
       ${scenario && html`<${StageScenarioLine} scenario=${scenario} onBack=${onBack} />`}
       <div class="run__head">
         ${headline.line
-          ? html`<p class="run__line" data-run-line>${headline.line}</p>`
+          ? html`<p class="run__line" data-run-line>
+              ${now && runTicks(run)
+                ? html`<${Clocked} now=${now} text=${(/** @type {number} */ t) => runHeadline(run, t).line} />`
+                : headline.line}
+            </p>`
           : html`<p class="run__line run__line--idle">
               Pick a scenario and its path through the triage graph lights up here, node by node.
             </p>`}
