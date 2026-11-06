@@ -1289,7 +1289,7 @@
   @media (min-width: 60rem) {
     .stage .waterfall__row,
     .stage .waterfall__axis {
-      grid-template-columns: 12rem minmax(0, 1fr);
+      grid-template-columns: 10.5rem minmax(0, 1fr);
     }
   }
 }
