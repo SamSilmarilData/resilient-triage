@@ -135,8 +135,10 @@ def _budget_of(runs: int) -> Settings:
 
 @pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
 def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: GuardedPages):
-    """Over the budget the run is shed with its retry-after; the same page answers the next."""
+    """Over the budget the run is shed with its retry-after; the same page answers the next
+    once the retry time has passed (Triage waits for it, #160)."""
     page, _ = pages.open()
+    page.clock.install()
     open_shell(page)
     page.evaluate("() => { window.notReloaded = true; }")
     panel = _panel(page)
@@ -160,6 +162,9 @@ def test_a_budget_shed_shows_its_reason_and_retry_after_then_recovers(pages: Gua
     assert len(pages.server.llm.calls) == 1, "a shed run never reaches the model"
 
     # A cache hit doesn't count against the budget: the same page, unreloaded, answers it.
+    # Triage comes back only once the retry time has passed (#160), so skip the page ahead.
+    page.clock.fast_forward(retry_after * 1_000)
+    expect(panel.get_by_role("button", name="Triage")).to_be_enabled()
     _ask(page, question)
     page.wait_for_selector(f"{PANEL} [data-shed-reason]", state="detached")
     wait_for_run(page, root=PANEL)
@@ -622,19 +627,21 @@ def test_a_budget_shed_counts_down_and_triage_comes_back_at_zero(pages: GuardedP
     open_shell(page)
 
     _shed_on_budget(page)
-    page.clock.pause_at(page.evaluate("Date.now()") + 100)
     notice = _panel(page).locator("[data-shed-reason]")
     match = COUNTDOWN.fullmatch(notice.inner_text())
     assert match is not None, notice.inner_text()
     left = int(match.group(1))
-    assert 1 <= left <= int(notice.get_attribute("data-retry-after") or "0")
+    # One budgeted run a minute, just spent: the full minute is left to wait.
+    assert left == int(notice.get_attribute("data-retry-after") or "0") > 10
     expect(_triage(page)).to_be_disabled()
 
-    page.clock.run_for(1_000)
-    if left > 1:
-        expect(notice).to_have_text(f"{BUDGET_HEAD} Try again in {left - 1} s.")
-        expect(_triage(page)).to_be_disabled()
-    page.clock.run_for(left * 1_000)
+    # The page's clock keeps flowing, so 5 s on it reads 5 s less, or 6 at a second's edge.
+    page.clock.fast_forward(5_000)
+    expect(notice).to_have_text(
+        re.compile(rf"{re.escape(BUDGET_HEAD)} Try again in ({left - 5}|{left - 6}) s\.")
+    )
+    expect(_triage(page)).to_be_disabled()
+    page.clock.fast_forward(left * 1_000)
 
     expect(notice).to_have_text("The free-play budget was spent for that minute. Try again now.")
     expect(_triage(page)).to_be_enabled()

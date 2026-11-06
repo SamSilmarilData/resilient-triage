@@ -819,10 +819,13 @@ const STREAM_WATCHDOG_MS = 30_000;
  * without reporting them until the run ends, so the stage holds still and then shows the
  * final state at once. `startedAt`: the wall-clock ms (the controller's clock) the run
  * started at, null before any run; the streaming headline counts from it (#156).
+ * `rejected`: the server refused the request before any stream (an HTTP error status), so
+ * no graph ran (#160).
  * @typedef {"idle" | "streaming" | "finished" | "lost" | "error"} RunStatus
  * @typedef {{ status: RunStatus, trace: TraceView, error: string | null,
  *             skipping: boolean,
- *             startedAt: number | null }} RunView
+ *             startedAt: number | null,
+ *             rejected: boolean }} RunView
  * @typedef {import("./sse.mjs").StreamSource} StreamSource
  */
 
@@ -912,7 +915,14 @@ export function needsReveal(rect, viewportHeight) {
 
 /** @returns {RunView} */
 export function idleRun() {
-  return { status: "idle", trace: initialTrace(), error: null, skipping: false, startedAt: null };
+  return {
+    status: "idle",
+    trace: initialTrace(),
+    error: null,
+    skipping: false,
+    startedAt: null,
+    rejected: false,
+  };
 }
 
 // --- #156: the run's clock ---
@@ -995,22 +1005,30 @@ export function createRunController({
      * End this run in a terminal state; a no-op once it has ended or been superseded.
      * @param {RunStatus} status
      * @param {string | null} [error]
+     * @param {boolean} [rejected] the server refused the request before any stream (#160)
      */
-    const end = (status, error = null) => {
+    const end = (status, error = null, rejected = false) => {
       clearTimeout(timer);
       if (!live()) return;
       runId++; // anything the old stream still yields is ignored from here
       current = null;
       // A finished stream closes itself once trace_finished is sent; only cut a stalled one.
       if (status !== "finished") abort.abort();
-      set({ ...view, status, error, skipping: false });
+      set({ ...view, status, error, skipping: false, rejected });
     };
     const arm = () => {
       clearTimeout(timer);
       timer = setTimeout(() => end("lost"), watchdogMs);
     };
 
-    set({ status: "streaming", trace: initialTrace(), error: null, skipping, startedAt: clock() });
+    set({
+      status: "streaming",
+      trace: initialTrace(),
+      error: null,
+      skipping,
+      startedAt: clock(),
+      rejected: false,
+    });
     arm();
     try {
       for await (const message of source(abort.signal)) {
@@ -1026,7 +1044,7 @@ export function createRunController({
       }
       end("lost"); // closed before trace_finished
     } catch (error) {
-      if (error instanceof StreamHttpError) end("error", error.message);
+      if (error instanceof StreamHttpError) end("error", error.message, true);
       else if (error instanceof StreamDataError) end("error", MALFORMED);
       else if (view.trace.events.length) end("lost");
       else end("error", UNREACHABLE);
@@ -1542,17 +1560,115 @@ export function modelLine(trace) {
 /**
  * What the free-play panel draws beside its stage: the model line, a shed run's notice, and
  * the finished run's report as a scenario panel reads it (a cache hit's is the cached one).
- * A shed run has no report: its notice already says why.
+ * A shed run has no report: its notice already says why. With a wall-clock `now`, a budget
+ * shed's notice counts down to its retry time, and the view says whether the panel was
+ * refused and whether Triage may ask again (#160).
  * @typedef {{ model: string | null, shed: ShedNotice | null,
- *             report: ReportView | null }} FreePlayView
+ *             report: ReportView | null, refused: boolean, retryAt: number | null,
+ *             canTriage: boolean }} FreePlayView
  * @param {RunView} run
+ * @param {number} [now] wall-clock ms on the run's clock
  * @returns {FreePlayView}
  */
-export function freePlayView(run) {
+export function freePlayView(run, now) {
   const report = reportView(run.trace);
   return {
     model: modelLine(run.trace),
     shed: shedNotice(run.trace),
     report: report?.kind === "report" ? report : null,
+    ...refusalView(run, now),
   };
+}
+
+// --- #160: free play's input, double submits and refusals ---
+
+/** TriageRequest's shortest question (schemas/api.py), counted after trimming. */
+export const QUERY_MIN_LENGTH = 3;
+/** What the form says about a question too short to send. */
+const QUERY_TOO_SHORT = `Describe the incident in at least ${QUERY_MIN_LENGTH} characters.`;
+
+/**
+ * What a Triage press does: the request to send, or why nothing is sent. A question shorter
+ * than the minimum once trimmed gets a plain message (not the server's validation error); a
+ * press while the panel's run streams, or before a budget shed's retry time (a double click),
+ * sends nothing and says nothing.
+ * @param {{ query: string, service_filter: string, force_refresh: boolean }} fields
+ * @param {RunView} run the panel's run as it is now
+ * @param {number} now wall-clock ms on the run's clock
+ * @returns {{ error: string | null, request: import("./sse.mjs").TriageRequest | null }}
+ */
+export function freePlaySubmit(fields, run, now) {
+  const request = freePlayRequest(fields);
+  if (request.query.length < QUERY_MIN_LENGTH) return { error: QUERY_TOO_SHORT, request: null };
+  if (!canTriage(run, now)) return { error: null, request: null };
+  return { error: null, request };
+}
+
+/**
+ * When a budget-shed run may ask again: when its refused run_slot arrived (the run's start
+ * plus the event's t_ms) plus its retry-after. Null for any other run.
+ * @param {RunView} run
+ * @returns {number | null}
+ */
+function retryDeadline(run) {
+  const slot = run.trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+  if (!slot || slot.retry_after_s == null || run.startedAt === null) return null;
+  return run.startedAt + slot.t_ms + slot.retry_after_s * 1000;
+}
+
+/**
+ * Whether Triage may send a new run: not while one streams, nor before a budget shed's
+ * retry time.
+ * @param {RunView} run
+ * @param {number | undefined} now
+ */
+function canTriage(run, now) {
+  if (run.status === "streaming") return false;
+  const retryAt = retryDeadline(run);
+  return retryAt === null || now === undefined || now >= retryAt;
+}
+
+/**
+ * Whether the page's clock should tick for the free-play panel: while a budget shed's
+ * countdown runs.
+ * @param {RunView} run
+ * @param {number} now
+ */
+export function freePlayTicks(run, now) {
+  const retryAt = retryDeadline(run);
+  return retryAt !== null && now < retryAt;
+}
+
+/**
+ * The refusal parts of the free-play view: whether the run was refused before any graph ran
+ * (shed, or rejected by the server), its retry deadline, whether Triage may ask again, and a
+ * budget shed's notice line counted down to `now`.
+ * @param {RunView} run
+ * @param {number | undefined} now
+ * @returns {Pick<FreePlayView, "refused" | "retryAt" | "canTriage"> &
+ *           { shed?: ShedNotice }}
+ */
+function refusalView(run, now) {
+  const shed = shedNotice(run.trace);
+  const retryAt = retryDeadline(run);
+  const parts = {
+    refused: shed !== null || run.rejected,
+    retryAt,
+    canTriage: canTriage(run, now),
+  };
+  if (!shed || retryAt === null || shed.retryAfterS === null || now === undefined) return parts;
+  return { ...parts, shed: { ...shed, line: countdownLine(shed.retryAfterS, retryAt, now) } };
+}
+
+/**
+ * A budget shed's notice line at `now`: whole seconds left to its retry time (never more than
+ * the retry-after it was given), then "try again now" once it has passed.
+ * @param {number} retryAfterS
+ * @param {number} retryAt
+ * @param {number} now
+ */
+function countdownLine(retryAfterS, retryAt, now) {
+  const left = Math.min(retryAfterS, Math.ceil((retryAt - now) / 1000));
+  if (left <= 0) return "The free-play budget was spent for that minute. Try again now.";
+  return `The free-play budget is spent for this minute. Try again in ${left} s.`;
 }
