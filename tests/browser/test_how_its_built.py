@@ -58,7 +58,7 @@ def test_keyboard_opens_the_inspector_and_escape_returns_focus_to_the_node(pages
     assert shown == {
         "open": True,
         "name": "generate_report",
-        "purpose": "Invokes LLM to produce candidate report JSON.",
+        "purpose": "Asks the model for a draft report as JSON.",
         "file": REPO_BLOB + "src/resilient_triage/graph/nodes/generate_report.py",
         "fields": [
             "groq_model",

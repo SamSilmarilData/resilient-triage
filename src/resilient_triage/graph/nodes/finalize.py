@@ -1,4 +1,4 @@
-"""Node: finalize_report - Reconciles the report's system facts with the run's evidence."""
+"""Node: finalize_report - Checks the report's system facts against what the run actually saw."""
 
 from typing import Any
 

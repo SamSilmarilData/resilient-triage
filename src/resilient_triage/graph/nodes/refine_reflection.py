@@ -1,4 +1,4 @@
-"""Node: refine_reflection - Prompts LLM for confidence-driven reflection when confidence is low."""
+"""Node: refine_reflection - Asks the model to rethink the root cause when its confidence is low."""
 
 from typing import Any
 
