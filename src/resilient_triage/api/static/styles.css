@@ -276,6 +276,21 @@
       top: 1rem;
     }
 
+    /* #157: pinned stage fits the window. Capped at the viewport less its offset above and
+       below, it scrolls inside itself; focus and Play scroll it, smoothly unless motion is
+       reduced (the base reduced-motion rule forces scroll-behavior: auto). */
+    .stage {
+      max-height: calc(100dvh - 2rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .stage {
+        scroll-behavior: smooth;
+      }
+    }
+
     .chapters {
       grid-area: chapters;
     }
