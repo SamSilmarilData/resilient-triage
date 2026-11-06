@@ -1835,18 +1835,32 @@ export function fragmentId(hash) {
 }
 
 /**
- * The window events that mean the visitor has scrolled (or is about to) since load. Not a
- * scrollY comparison: the browser's own fragment jump and CSS scroll anchoring (keeping the
- * view still as the chapters grow above it) both move scrollY with no visitor involved.
+ * The window events that may mean the visitor scrolled since load; visitorScrolls() decides.
+ * Not a scrollY comparison: the browser's own fragment jump and CSS scroll anchoring (keeping
+ * the view still as the chapters grow above it) both move scrollY with no visitor involved.
  */
-export const VISITOR_SCROLL_EVENTS = Object.freeze(["wheel", "touchmove", "keydown", "pointerdown"]);
+export const VISITOR_SCROLL_EVENTS = Object.freeze(["wheel", "touchmove", "keydown"]);
+
+/** The keys that scroll the page. Tab or any other key is not a scroll. */
+const SCROLL_KEYS = new Set([" ", "PageDown", "PageUp", "ArrowDown", "ArrowUp", "Home", "End"]);
+
+/**
+ * Whether a window event means the visitor scrolled: the wheel, a touch scroll, or a key that
+ * scrolls the page. A click or Tab while the page loads leaves the deep link to land.
+ * @param {string} type the event's type
+ * @param {string | null} [key] a keydown's `key`
+ */
+export function visitorScrolls(type, key = null) {
+  if (type === "wheel" || type === "touchmove") return true;
+  return type === "keydown" && key !== null && SCROLL_KEYS.has(key);
+}
 
 /**
  * Where a deep link scrolls once the page has filled in: the fragment's id, or null when it
  * names none or the visitor has scrolled since load (one who scrolled while the fetches were
  * slow stays where they are).
  * @param {string} hash `location.hash`
- * @param {boolean} visitorScrolled one of VISITOR_SCROLL_EVENTS fired since load
+ * @param {boolean} visitorScrolled an event visitorScrolls() counts fired since load
  * @returns {string | null}
  */
 export function deepLinkTarget(hash, visitorScrolled) {

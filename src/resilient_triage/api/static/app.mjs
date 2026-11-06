@@ -30,6 +30,7 @@ import {
   stageScenario,
   toggledOpen,
   VISITOR_SCROLL_EVENTS,
+  visitorScrolls,
 } from "./trace-reducer.mjs";
 
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
@@ -47,7 +48,8 @@ const CLOCK_TICK_MS = 250;
  * A `now` signal (wall-clock ms) that ticks while `active` is true and holds still otherwise:
  * its one timer runs only then, so an idle page has none. Components never keep a timer of
  * their own. They get the signal itself, not its value, and only the leaf that shows a time
- * reads it (stage.mjs Clocked), so a tick redraws that text and not the panels around it. Widen `active` for anything else that counts (#160's countdown).
+ * reads it (stage.mjs Clocked), so a tick redraws that text and not the panels around it.
+ * Widen `active` for anything else that counts (#160's countdown).
  * `active` is given the clock itself, so a countdown can stop the clock once it reaches zero.
  * @param {(now: number) => boolean} isActive
  * @param {number} [periodMs]
@@ -287,11 +289,13 @@ function loadLayout() {
  */
 async function landOnFragment(loads) {
   let visitorScrolled = false;
-  const scrolled = () => {
-    visitorScrolled = true;
+  /** @param {Event} event */
+  const scrolled = (event) => {
+    const key = event instanceof KeyboardEvent ? event.key : null;
+    if (visitorScrolls(event.type, key)) visitorScrolled = true;
   };
   for (const type of VISITOR_SCROLL_EVENTS) {
-    window.addEventListener(type, scrolled, { once: true, passive: true });
+    window.addEventListener(type, scrolled, { passive: true });
   }
   await Promise.allSettled([...loads, document.fonts.ready]);
   // Signal changes re-render on the next tick; wait for that render to be laid out.

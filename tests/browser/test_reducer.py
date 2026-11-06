@@ -705,3 +705,28 @@ def test_a_deep_link_scrolls_only_if_the_visitor_has_not_scrolled_since_load(
     targets = _free_play(pages, DEEP_LINK_TARGETS, cases)
 
     assert targets == ["free-play", None, None]
+
+
+# page.evaluate script: whether each window event (type, key) means the visitor scrolled.
+VISITOR_SCROLLS = """async (cases) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  return cases.map(([type, key]) => reducer.visitorScrolls(type, key));
+}"""
+
+
+def test_only_a_wheel_a_touch_scroll_or_a_scroll_key_counts_as_the_visitor_scrolling(
+    pages: GuardedPages,
+):
+    """A click or Tab while the page loads isn't a scroll, so the deep link still lands; the
+    wheel, a touch scroll and the keys that scroll the page are."""
+    scrolls = [
+        ["wheel", None],
+        ["touchmove", None],
+        *[["keydown", key] for key in [" ", "PageDown", "PageUp", "ArrowDown", "ArrowUp"]],
+        *[["keydown", key] for key in ["Home", "End"]],
+    ]
+    not_scrolls = [["pointerdown", None], ["keydown", "Tab"], ["keydown", "a"], ["click", None]]
+
+    results = _free_play(pages, VISITOR_SCROLLS, scrolls + not_scrolls)
+
+    assert results == [True] * len(scrolls) + [False] * len(not_scrolls)
