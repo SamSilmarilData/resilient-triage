@@ -228,12 +228,17 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
     wait_for_run(page)
     page.locator(f'[data-scenario="{scenario}"] [data-action="show-everything"]').click()
     _fits(page, "after a scenario run")
+    back = page.locator("#stage-root [data-stage-back]")
+    assert back.is_visible(), "a finished run links back to its scenario (#158)"
+    back.click()
+    _fits(page, "back at the scenario from the stage")
 
     page.get_by_label("Your incident").fill(unique_question("Payments API returning 502s"))
     page.locator("#free-play-root").get_by_role("button", name="Triage").click()
     wait_for_run(page, root="#free-play-root")
     report = page.locator('#free-play-root [data-report="report"]')
     assert report.count() == 1, "the free-play run shows its report"
+    assert page.locator("#free-play-root [data-stage-scenario]").count() == 0, "no scenario"
     report.scroll_into_view_if_needed()
     _fits(page, "after a free-play run, with its report")
 
@@ -416,3 +421,90 @@ def test_below_the_wide_breakpoint_the_stage_is_not_pinned_or_capped(
     assert box["position"] == "static", box
     assert box["overflowY"] == "visible" and box["maxHeight"] == "none", box
     assert box["scrollHeight"] <= box["clientHeight"], box
+
+
+# --- #158: the stage names its scenario; a way back on phones ----------------------------------
+
+STAGE_TITLE = "#stage-root [data-stage-scenario]"
+STAGE_BACK = "#stage-root [data-stage-back]"
+# page.evaluate script: the id of the focused element, or null.
+FOCUSED_ID = "() => document.activeElement?.id || null"
+
+
+def _play_from_card(page: "Page", scenario: str) -> None:
+    """Open a scenario (unless it is open) and press its Play; wait for the run to finish."""
+    toggle = page.locator(f"#scenario-{scenario}-toggle")
+    if toggle.get_attribute("aria-expanded") != "true":
+        toggle.click()
+    page.locator(f'[data-scenario="{scenario}"] [data-action="play"]').click()
+    page.wait_for_function(
+        """([selector, id]) => document.querySelector(selector)?.dataset.stageScenario === id""",
+        arg=[STAGE_TITLE, scenario],
+    )
+    wait_for_run(page)
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_live_trace_names_the_scenario_it_shows(pages: GuardedPages, scheme: str):
+    """The stage shows the catalogue title of the scenario it draws, and follows the next one
+    played. On a wide window there is no way-back link: the scenario sits beside the stage."""
+    first, second = public_catalogue().chapters[0].scenarios[:2]
+    page = _open_wide(pages, viewport=DESKTOP, color_scheme=scheme)
+    assert page.locator(STAGE_TITLE).count() == 0, "an idle stage names no scenario"
+
+    _play_from_card(page, first.id)
+    assert page.locator(STAGE_TITLE).inner_text() == first.title
+    assert not page.locator(STAGE_BACK).is_visible()
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    _play_from_card(page, second.id)
+    assert page.locator(STAGE_TITLE).inner_text() == second.title
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("theme", PHONE_THEMES)
+def test_at_phone_width_a_finished_run_links_back_to_its_scenario(pages: GuardedPages, theme: str):
+    """At 375 px Play moves the visitor down to the stage; once the run finishes, a link takes
+    them back to the scenario's card, opened on its report, with focus on its toggle."""
+    scenario = public_catalogue().chapters[0].scenarios[0]
+    page = _open_wide(pages, viewport=PHONE, **PHONE_THEMES[theme])
+    _play_from_card(page, scenario.id)
+    back = page.locator(STAGE_BACK)
+    assert back.is_visible()
+    assert page.locator(STAGE_TITLE).inner_text() == scenario.title
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    # Closed meanwhile, the card opens again on the way back, so its report shows.
+    page.locator(f"#scenario-{scenario.id}-toggle").click()
+    back.click()
+
+    card = f'[data-scenario="{scenario.id}"]'
+    page.wait_for_function(TOP_IN_VIEW, arg=card)
+    assert page.locator(f"#scenario-{scenario.id}-toggle").get_attribute("aria-expanded") == "true"
+    assert page.locator(f'{card} [data-report="report"]').is_visible()
+    assert page.evaluate(FOCUSED_ID) == f"scenario-{scenario.id}-toggle"
+    _fits(page, "back at the scenario")
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_scenario_title_keeps_the_pinned_stage_in_a_laptop_window(
+    pages: GuardedPages, scheme: str
+):
+    """At 1280x720 the title sits in the pinned stage with the run, the stage still ends inside
+    the window, and its timeline is still reached by scrolling the stage."""
+    page = _open_wide(pages, viewport=LAPTOP, color_scheme=scheme)
+
+    box = _pinned_after_a_run(page, "self-repair")
+
+    assert box["bottom"] <= box["viewport"], f"the pinned stage runs off the window: {box}"
+    assert page.evaluate(SHOWN_IN_STAGE, [STAGE_TITLE, True])
+    assert not page.locator(STAGE_BACK).is_visible()
+    page.evaluate(SCROLL_STAGE_TO_END)
+    assert page.evaluate(SHOWN_IN_STAGE, ["#stage-root .waterfall__axis", True])
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)

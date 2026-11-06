@@ -18,13 +18,18 @@ import { Waterfall } from "./waterfall.mjs";
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
  *   now?: number,
- * }} props `now`: the page's ticking clock, for a streaming run's headline (#156)
+ *   scenario?: import("../trace-reducer.mjs").StageScenario | null,
+ *   onBack?: (id: string) => void,
+ * }} props `now`: the page's ticking clock, for a streaming run's headline (#156).
+ *   `scenario`: the scenario the stage draws (stageScenario(); free play passes none), and
+ *   `onBack` takes the visitor back to its card (#158)
  */
-export function Stage({ run, layout, onReplay, onSelectNode, now }) {
+export function Stage({ run, layout, onReplay, onSelectNode, now, scenario, onBack }) {
   const headline = runHeadline(run, now);
   return html`
     <div class="run" data-run-state=${run.status} data-dimmed=${String(headline.dimmed)}>
       <p class="visually-hidden" role="status" data-run-announcement>${runAnnouncement(run)}</p>
+      ${scenario && html`<${StageScenarioLine} scenario=${scenario} onBack=${onBack} />`}
       <div class="run__head">
         ${headline.line
           ? html`<p class="run__line" data-run-line>${headline.line}</p>`
@@ -46,4 +51,31 @@ export function Stage({ run, layout, onReplay, onSelectNode, now }) {
       </div>
     </div>
   `;
+}
+
+// --- #158: the stage names its scenario ---
+
+/**
+ * The scenario the stage draws, and once its run has finished, a link back to its card and
+ * report (CSS shows it only below the wide breakpoint, where the card sits far above). The
+ * link's href is the card's toggle, so it works as a plain fragment link too.
+ * @param {{ scenario: import("../trace-reducer.mjs").StageScenario,
+ *           onBack?: (id: string) => void }} props
+ */
+function StageScenarioLine({ scenario, onBack }) {
+  return html`<div class="run__scenario">
+    <p class="run__scenario-title" data-stage-scenario=${scenario.id}>${scenario.title}</p>
+    ${scenario.offerBack &&
+    html`<a
+      class="run__back"
+      href=${`#scenario-${scenario.id}-toggle`}
+      data-stage-back
+      onClick=${(/** @type {MouseEvent} */ event) => {
+        if (!onBack) return;
+        event.preventDefault();
+        onBack(scenario.id);
+      }}
+      ><span aria-hidden="true">↑ </span>Back to the scenario's report</a
+    >`}
+  </div>`;
 }

@@ -1302,3 +1302,35 @@
     gap: 1rem;
   }
 }
+
+/* #158: the stage names the scenario it draws; at narrow widths, where the scenario's card sits
+   far above the stage, a finished run links back to it. Pinned beside the chapters (wide), the
+   card is in view already, so the link is not drawn. */
+@layer components {
+  .run__scenario {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.25rem 0.75rem;
+  }
+
+  .run__scenario-title {
+    font-weight: 600;
+  }
+
+  .run__back {
+    font-size: 0.875rem;
+  }
+
+  /* The way back lands with a little room above the card, not flush with the window's edge. */
+  .scenario {
+    scroll-margin-top: 1rem;
+  }
+
+  @media (min-width: 60rem) {
+    .run__back {
+      display: none;
+    }
+  }
+}

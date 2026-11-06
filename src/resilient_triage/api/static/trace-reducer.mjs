@@ -1351,6 +1351,29 @@ export function eventLog(trace) {
   });
 }
 
+// --- #158: the stage names its scenario ---
+
+/**
+ * The scenario the stage is drawing, as the stage names it: its id and catalogue title, once
+ * the run's trace has started and names a catalogued scenario; null otherwise (an idle stage,
+ * a free-play run, or the catalogue not loaded). `offerBack`: the run has finished, so the
+ * stage offers a way back to the scenario's card and report (shown only at narrow widths,
+ * where the card sits far above the stage).
+ * @typedef {{ id: string, title: string, offerBack: boolean }} StageScenario
+ * @param {Loadable<Catalogue>} catalogue
+ * @param {RunView} run
+ * @returns {StageScenario | null}
+ */
+export function stageScenario(catalogue, run) {
+  const id = run.trace.scenarioId;
+  if (id === null || typeof catalogue !== "object") return null;
+  const scenario = catalogue.chapters
+    .flatMap((chapter) => chapter.scenarios)
+    .find((candidate) => candidate.id === id);
+  if (!scenario) return null;
+  return { id, title: scenario.title, offerBack: run.status === "finished" };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Node inspector (#121): GET /graph/nodes, projected for the inspector and the node list.
 // Paths on the wire are repository-relative; links open them on GitHub.

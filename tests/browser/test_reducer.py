@@ -15,7 +15,7 @@ import pytest
 from harness import STREAM_AND_FOLD, GuardedPages, open_shell, stream_scenario, unique_question
 
 from resilient_triage.graph.builder import NODE_FUNCTIONS
-from resilient_triage.scenarios.catalogue import SCENARIOS
+from resilient_triage.scenarios.catalogue import SCENARIOS, public_catalogue
 from resilient_triage.telemetry.chaos import ClusterSentinelSource
 from resilient_triage.telemetry.statuspage import StatuspageSource
 from resilient_triage.trace import summary as summary_module
@@ -379,3 +379,59 @@ def test_an_ended_run_ignores_the_wall_clock_and_stops_ticking(pages: GuardedPag
     assert "3.0 s" in finished["line"]
     assert finished["ticks"] is False
     assert idle["ticks"] is False
+
+
+# --- #158: the stage names its scenario ---
+# page.evaluate script: what the stage says about the scenario of each run (a status and the
+# events folded so far), given the catalogue (or "loading"/"failed").
+STAGE_SCENARIO = """async ({catalogue, runs}) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  return runs.map(({status, events}) => reducer.stageScenario(
+    catalogue, {...reducer.idleRun(), status, trace: reducer.foldTrace(events)}));
+}"""
+
+
+def test_the_stage_names_its_runs_scenario_and_offers_a_way_back_once_finished(
+    pages: GuardedPages,
+):
+    """The title comes from the catalogue by the trace's scenario id; the way back to the
+    scenario's card and report is offered only once the run has finished."""
+    catalogue = public_catalogue()
+    last = catalogue.chapters[-1].scenarios[-1]
+    started = {**STARTED_EVENT, "scenario_id": last.id}
+    free_play = {**STARTED_EVENT, "scenario_id": None}
+    uncatalogued = {**STARTED_EVENT, "scenario_id": "not-catalogued"}
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+
+    seen = page.evaluate(
+        STAGE_SCENARIO,
+        {
+            "catalogue": catalogue.model_dump(mode="json"),
+            "runs": [
+                {"status": "idle", "events": []},
+                {"status": "streaming", "events": []},
+                {"status": "streaming", "events": [started, NODE_EVENT]},
+                {"status": "finished", "events": [started, NODE_EVENT]},
+                {"status": "lost", "events": [started]},
+                {"status": "finished", "events": [free_play]},
+                {"status": "finished", "events": [uncatalogued]},
+            ],
+        },
+    )
+    loading = page.evaluate(
+        STAGE_SCENARIO,
+        {"catalogue": "loading", "runs": [{"status": "finished", "events": [started]}]},
+    )
+
+    shown = {"id": last.id, "title": last.title}
+    assert seen == [
+        None,
+        None,
+        {**shown, "offerBack": False},
+        {**shown, "offerBack": True},
+        {**shown, "offerBack": False},
+        None,
+        None,
+    ]
+    assert loading == [None]
