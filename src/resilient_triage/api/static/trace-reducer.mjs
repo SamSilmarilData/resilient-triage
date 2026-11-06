@@ -1805,3 +1805,22 @@ export function fragmentId(hash) {
     return null;
   }
 }
+
+/**
+ * The window events that mean the visitor has scrolled (or is about to) since load. Not a
+ * scrollY comparison: the browser's own fragment jump and CSS scroll anchoring (keeping the
+ * view still as the chapters grow above it) both move scrollY with no visitor involved.
+ */
+export const VISITOR_SCROLL_EVENTS = Object.freeze(["wheel", "touchmove", "keydown", "pointerdown"]);
+
+/**
+ * Where a deep link scrolls once the page has filled in: the fragment's id, or null when it
+ * names none or the visitor has scrolled since load (one who scrolled while the fetches were
+ * slow stays where they are).
+ * @param {string} hash `location.hash`
+ * @param {boolean} visitorScrolled one of VISITOR_SCROLL_EVENTS fired since load
+ * @returns {string | null}
+ */
+export function deepLinkTarget(hash, visitorScrolled) {
+  return visitorScrolled ? null : fragmentId(hash);
+}

@@ -17,7 +17,7 @@ import { freePlaySource, loadInto, scenarioSource } from "./sse.mjs";
 import {
   createRunController,
   createScenarioStage,
-  fragmentId,
+  deepLinkTarget,
   freePlaySubmit,
   freePlayTicks,
   idleRun,
@@ -29,6 +29,7 @@ import {
   stageRevealTop,
   stageScenario,
   toggledOpen,
+  VISITOR_SCROLL_EVENTS,
 } from "./trace-reducer.mjs";
 
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
@@ -278,14 +279,24 @@ function loadLayout() {
  * Scroll to the URL's fragment (a link like `/#free-play`) once, after the regions above it
  * have filled in: the browser's own jump lands before the chapters grow, so it ends up a
  * chapter short. The scroll follows html's scroll-behavior, so it is instant under reduced
- * motion. Sets `data-deep-link="done"` on <html> after, for browser tests to wait on.
+ * motion. Skipped when the visitor has scrolled since this was called (deepLinkTarget()): one
+ * who scrolled while the fetches were slow stays where they are. Sets `data-deep-link="done"`
+ * on <html> after, for browser tests to wait on.
  * @param {Promise<unknown>[]} loads the fetches that change the page's height
  */
 async function landOnFragment(loads) {
+  let visitorScrolled = false;
+  const scrolled = () => {
+    visitorScrolled = true;
+  };
+  for (const type of VISITOR_SCROLL_EVENTS) {
+    window.addEventListener(type, scrolled, { once: true, passive: true });
+  }
   await Promise.allSettled([...loads, document.fonts.ready]);
   // Signal changes re-render on the next tick; wait for that render to be laid out.
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  const id = fragmentId(location.hash);
+  for (const type of VISITOR_SCROLL_EVENTS) window.removeEventListener(type, scrolled);
+  const id = deepLinkTarget(location.hash, visitorScrolled);
   if (id !== null) document.getElementById(id)?.scrollIntoView({ block: "start" });
   document.documentElement.dataset.deepLink = "done";
 }

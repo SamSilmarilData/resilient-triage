@@ -655,3 +655,21 @@ def test_a_fragment_names_its_decoded_id_and_a_malformed_one_names_none(pages: G
     ids = _free_play(pages, FRAGMENT_IDS, hashes)
 
     assert ids == ["free-play", "café", None, None, None, None]
+
+
+# page.evaluate script: where a deep link scrolls, given whether the visitor scrolled since load.
+DEEP_LINK_TARGETS = """async (cases) => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  return cases.map(([hash, scrolled]) => reducer.deepLinkTarget(hash, scrolled));
+}"""
+
+
+def test_a_deep_link_scrolls_only_if_the_visitor_has_not_scrolled_since_load(
+    pages: GuardedPages,
+):
+    """The fragment's id while the visitor hasn't scrolled; none once they have."""
+    cases = [["#free-play", False], ["#free-play", True], ["#%", False]]
+
+    targets = _free_play(pages, DEEP_LINK_TARGETS, cases)
+
+    assert targets == ["free-play", None, None]
