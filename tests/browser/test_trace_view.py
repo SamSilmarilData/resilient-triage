@@ -418,3 +418,54 @@ def test_a_finished_run_fits_phone_width(pages: GuardedPages):
     assert graph is not None and waterfall is not None
     assert graph["y"] + graph["height"] <= waterfall["y"]
     assert graph["width"] >= 340
+
+
+# --- #156: the run's clock ---
+# Init script: counts the page's live setInterval timers, so a test can see the clock stop.
+COUNT_INTERVALS = """(() => {
+  const live = new Set();
+  const set = window.setInterval.bind(window);
+  const clear = window.clearInterval.bind(window);
+  window.setInterval = (...args) => { const id = set(...args); live.add(id); return id; };
+  window.clearInterval = (id) => { live.delete(id); clear(id); };
+  window.__liveIntervals = () => live.size;
+})()"""
+RUN_LINE = '() => document.querySelector("#stage-root [data-run-line]")?.textContent ?? null'
+# page.evaluate script: the summary line of the events the stage folded.
+STAGE_SUMMARY_LINE = """async () => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const {stage} = await import("/static/app.mjs");
+  return reducer.summaryLine(reducer.summarize(stage.view.trace.events));
+}"""
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_the_headline_clock_keeps_counting_until_the_run_ends(
+    pages: GuardedPages, color_scheme: str
+):
+    """Waiting on the run deadline, the headline counts up; at the end it is the summary's."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    page.add_init_script(COUNT_INTERVALS)
+    open_shell(page)
+    assert page.evaluate("() => window.__liveIntervals()") == 0
+
+    play(page, scenario="run-deadline")
+    # The scenario's slow Cluster Sentinel holds collect_telemetry ~3 s with no event: the wait.
+    page.wait_for_selector(
+        '#stage-root [data-node="collect_telemetry"][data-state="active"]', state="attached"
+    )
+    first = page.evaluate(RUN_LINE)
+    # Sampling a clock takes real time: the one fixed wait here is the interval sampled.
+    page.wait_for_timeout(1_000)
+    second = page.evaluate(RUN_LINE)
+    assert first is not None and first.startswith("Running, "), first
+    assert second is not None and second.startswith("Running, "), second
+    assert second != first, "the headline's clock stood still"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    wait_for_run(page)
+    assert page.evaluate(RUN_LINE) == page.evaluate(STAGE_SUMMARY_LINE)
+    assert page.evaluate("() => window.__liveIntervals()") == 0, "the clock still ticks"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
