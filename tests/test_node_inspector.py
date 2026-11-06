@@ -87,7 +87,7 @@ async def test_get_graph_nodes_serves_purpose_file_config_and_adrs(
     assert list(nodes) == NODE_ORDER
     assert nodes["analyze_query"] == {
         "name": "analyze_query",
-        "purpose": "Normalizes the query and scope and picks the run's Targeted sources.",
+        "purpose": "Cleans up the question and picks which telemetry sources to read.",
         "file": "src/resilient_triage/graph/nodes/analyze_query.py",
         "config_fields": [],
         "adrs": ["docs/decisions/0001-langgraph-cyclic-state-machine.md"],
@@ -97,7 +97,7 @@ async def test_get_graph_nodes_serves_purpose_file_config_and_adrs(
     assert nodes["finalize_report"]["file"] == "src/resilient_triage/graph/nodes/finalize.py"
     assert nodes["generate_report"]["config_fields"][0] == {
         "name": "groq_model",
-        "description": "Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
+        "description": "Groq model asked first (for example qwen/qwen3.8-27b)",
     }
 
 
@@ -110,3 +110,43 @@ async def test_every_served_file_and_adr_exists_and_every_purpose_is_a_sentence(
         purpose = node["purpose"]
         assert purpose[0].isupper() and purpose.endswith("."), (node["name"], purpose)
         assert not purpose.startswith("Node:"), purpose
+
+
+# Copy the page shows visitors (#165): sentence case, "the model" rather than "LLM", and no code
+# jargon. Proper nouns are the only capitalised words after the first, which also catches
+# breaker state names (OPEN, HALF_OPEN) and class names.
+PROPER_NOUNS = {"Groq", "Statuspage", "JSON"}
+JARGON = {"llm", "tenacity", "pydantic", "max", "min", "e.g."}
+
+
+def copy_problems(text: str) -> list[str]:
+    """Every way a visitor-facing sentence breaks the page's voice."""
+    words = text.rstrip(".").replace("(", " ").replace(")", " ").replace(",", " ").split()
+    problems = [] if text[0].isupper() else ["not capitalised"]
+    problems += [f"capitalised: {w}" for w in words[1:] if w[0].isupper() and w not in PROPER_NOUNS]
+    problems += [f"jargon: {w}" for w in words if w.lower() in JARGON]
+    return problems
+
+
+@pytest.mark.parametrize(
+    ("text", "problems"),
+    [
+        ("Asks the model for a draft report as JSON.", []),
+        ("Uses Groq (e.g. qwen/qwen3.8-27b)", ["jargon: e.g."]),
+        ("Invokes LLM to produce candidate report JSON.", ["capitalised: LLM", "jargon: LLM"]),
+        ("Picks the run's Targeted sources.", ["capitalised: Targeted"]),
+        ("tenacity min wait", ["not capitalised", "jargon: tenacity", "jargon: min"]),
+    ],
+)
+def test_the_voice_check_names_each_problem(text: str, problems: list[str]) -> None:
+    assert copy_problems(text) == problems
+
+
+async def test_purposes_and_config_descriptions_are_in_the_pages_voice(
+    anonymous_client: httpx.AsyncClient,
+) -> None:
+    nodes = (await anonymous_client.get("/graph/nodes")).json()["nodes"]
+    texts = {n["purpose"] for n in nodes}
+    texts |= {f["description"] for n in nodes for f in n["config_fields"]}
+
+    assert {text: copy_problems(text) for text in texts if copy_problems(text)} == {}

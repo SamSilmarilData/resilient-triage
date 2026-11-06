@@ -1,4 +1,4 @@
-"""Node: degraded_fallback - Handles tripped circuit breakers and marks degradation."""
+"""Node: degraded_fallback - Marks the sources that are down, so the report says what it missed."""
 
 from typing import Any
 

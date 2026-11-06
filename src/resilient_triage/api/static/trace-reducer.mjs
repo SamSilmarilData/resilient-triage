@@ -1289,9 +1289,39 @@ export function inspectorView(nodes, name) {
     configFields: node.config_fields,
     adrs: node.adrs.map((path) => {
       const file = path.slice(path.lastIndexOf("/") + 1);
-      return { label: `ADR ${file.slice(0, 4)}`, file, url: repoUrl(path) };
+      return { label: adrLabel(file.slice(0, 4)), file, url: repoUrl(path) };
     }),
   };
+}
+
+// --- #165: ADR links name their record ---
+
+/**
+ * Each decision record's title by its number, as its `# ADR-00N: Title` heading reads.
+ * GET /graph/nodes serves only paths and docs/ isn't in the wheel, so the page keeps this copy;
+ * tests/browser/test_how_its_built.py checks it against docs/decisions/.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const ADR_TITLES = Object.freeze({
+  "0001": "LangGraph Cyclic State Machine for Incident Triage",
+  "0002": "Dual-Engine Semantic Caching (Redis 8 RediSearch HNSW with NumPy Fallback)",
+  "0003": "Pybreaker and Tenacity for Fault-Tolerant Upstream Telemetry",
+  "0004": "Strict Pydantic Contracts and Automated Self-Repair Loop",
+  "0005": "Free-Tier Groq Quota Monitoring and Multi-Model Failover",
+  "0006": "LLM Access Through a Project-Owned Gateway That Returns Failures as Values",
+  "0007": "No Checkpointing on the Request Path",
+  "0008": "Execution Trace from a Per-Request Recorder, Streamed over SSE",
+  "0009": "Scenario Runs Are Fully Isolated from the Shared Runtime",
+  "0010": "Build-Free, Vendored Frontend",
+});
+
+/**
+ * An ADR link's label: its number and, when known, its title.
+ * @param {string} number four digits, e.g. "0006"
+ */
+function adrLabel(number) {
+  const title = ADR_TITLES[number];
+  return title ? `ADR ${number}: ${title}` : `ADR ${number}`;
 }
 
 // ---------------------------------------------------------------------------------------------

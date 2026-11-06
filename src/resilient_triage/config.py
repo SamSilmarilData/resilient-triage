@@ -52,30 +52,36 @@ class Settings(BaseSettings):
     # Telemetry Sources
     statuspage_url: str = Field(
         default="https://www.githubstatus.com/api/v2/summary.json",
-        description="Atlassian Statuspage summary endpoint",
+        description="Where the Statuspage summary is read from",
     )
 
     # Resilience & Circuit Breaker
     circuit_breaker_fail_max: int = Field(
         default=3,
         ge=1,
-        description="Consecutive failures before tripping breaker open",
+        description="Failures in a row before a source's circuit breaker trips",
     )
     circuit_breaker_reset_timeout: int = Field(
         default=30,
         ge=1,
-        description="Seconds to stay OPEN before HALF_OPEN probe",
+        description="Seconds a tripped breaker waits before letting one trial call through",
     )
-    retry_max_attempts: int = Field(default=3, ge=1, description="Max tenacity retry attempts")
-    retry_min_wait_seconds: float = Field(default=0.1, ge=0.0, description="Tenacity min wait")
-    retry_max_wait_seconds: float = Field(default=1.0, ge=0.0, description="Tenacity max wait")
+    retry_max_attempts: int = Field(
+        default=3, ge=1, description="Times a failing source read is tried before giving up"
+    )
+    retry_min_wait_seconds: float = Field(
+        default=0.1, ge=0.0, description="Shortest wait in seconds between retries"
+    )
+    retry_max_wait_seconds: float = Field(
+        default=1.0, ge=0.0, description="Longest wait in seconds between retries"
+    )
     telemetry_source_deadline_s: float = Field(
         default=5.0,
         ge=0.5,
         le=30,
         description=(
-            "Source deadline: seconds one Telemetry source read may take, retries included, "
-            "before it is cut off, counted as a breaker failure and the source is unavailable"
+            "Seconds one telemetry source may take to answer, retries included, before it's cut "
+            "off, counted as a breaker failure and marked unavailable"
         ),
     )
 
@@ -84,7 +90,7 @@ class Settings(BaseSettings):
         default=2,
         ge=0,
         le=5,
-        description="Max retries allowed for Pydantic LLM self-repair loop",
+        description="Times the model may fix its JSON after it fails the report schema",
     )
 
     # Triage gateway: run slots and load shedding
@@ -134,25 +140,25 @@ class Settings(BaseSettings):
     )
     groq_model: str = Field(
         default="qwen/qwen3.8-27b",
-        description="Default Groq model (e.g. qwen/qwen3.8-27b or openai/gpt-oss-120b)",
+        description="Groq model asked first (for example qwen/qwen3.8-27b)",
     )
     llm_request_timeout_s: float = Field(
         default=20.0,
         gt=0,
         le=120,
-        description="Timeout in seconds for one HTTP call to the LLM provider",
+        description="Seconds one call to the model may take before it's abandoned",
     )
     llm_temperature: float = Field(
         default=0.0,
         ge=0,
         le=2,
-        description="Sampling temperature sent with every LLM call (0 is deterministic)",
+        description="How freely the model words a reply (0 is the most repeatable)",
     )
     llm_max_tokens: int = Field(
         default=2500,
         ge=1,
         le=32768,
-        description="Max completion tokens the LLM may return for one triage report",
+        description="Longest reply, in tokens, the model may write for one report",
     )
     llm_max_keepalive_connections: int = Field(
         default=20,
@@ -169,19 +175,19 @@ class Settings(BaseSettings):
     groq_fallback_model: str = Field(
         default="llama-3.1-8b-instant",
         min_length=1,
-        description="Groq model the gateway fails over to when the primary model fails",
+        description="Groq model asked when the first model fails",
     )
     llm_default_cooldown_s: float = Field(
         default=30.0,
         ge=1,
         le=3600,
-        description="Seconds a rate-limited model cools down when no usable reset is known",
+        description="Seconds a rate-limited model rests when Groq doesn't say how long",
     )
     llm_max_cooldown_s: float = Field(
         default=3600.0,
         ge=1,
         le=86400,
-        description="Upper bound in seconds on any rate-limit cooldown of one model",
+        description="Longest rest in seconds any rate-limited model is given",
     )
 
     # Security & Administration

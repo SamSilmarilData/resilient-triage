@@ -58,7 +58,7 @@ def test_keyboard_opens_the_inspector_and_escape_returns_focus_to_the_node(pages
     assert shown == {
         "open": True,
         "name": "generate_report",
-        "purpose": "Invokes LLM to produce candidate report JSON.",
+        "purpose": "Asks the model for a draft report as JSON.",
         "file": REPO_BLOB + "src/resilient_triage/graph/nodes/generate_report.py",
         "fields": [
             "groq_model",
@@ -188,6 +188,47 @@ def test_open_inspector_fits_phone_width_and_passes_axe(pages: GuardedPages, sch
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
     box = page.locator(INSPECTOR).bounding_box()
     assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= 375
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+# --- #165: ADR links name their record ---
+ADR_LABELS = "() => [...document.querySelectorAll('dialog.inspector a[data-adr-link]')]"
+ADR_LABELS += ".map((a) => a.textContent)"
+
+
+def _adr_titles_in_docs() -> dict[str, str]:
+    """Each ADR's number and title, from its file's `# ADR-00N: Title` heading."""
+    titles = {}
+    for path in sorted((REPO_ROOT / "docs" / "decisions").glob("[0-9][0-9][0-9][0-9]-*.md")):
+        heading = path.read_text().splitlines()[0]
+        titles[path.name[:4]] = heading.split(": ", 1)[1]
+    return titles
+
+
+def test_the_pages_adr_titles_match_the_decision_records(pages: GuardedPages):
+    page, _ = pages.open()
+    open_shell(page, wait_for_requests=False)
+
+    titles = page.evaluate("async () => (await import('/static/trace-reducer.mjs')).ADR_TITLES")
+
+    assert titles == _adr_titles_in_docs()
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_adr_links_carry_the_records_title_and_pass_axe(pages: GuardedPages, scheme: str):
+    page = open_page(pages, color_scheme=scheme)
+
+    page.click('[data-node="generate_report"]')
+    page.wait_for_selector(f"{INSPECTOR}[open]")
+
+    assert page.evaluate(ADR_LABELS) == [
+        "ADR 0005: Free-Tier Groq Quota Monitoring and Multi-Model Failover",
+        "ADR 0006: LLM Access Through a Project-Owned Gateway That Returns Failures as Values",
+    ]
+    assert page.locator("[data-inspector-purpose]").text_content() == (
+        "Asks the model for a draft report as JSON."
+    )
     violations = axe_violations(page)
     assert violations == [], describe(violations)
 

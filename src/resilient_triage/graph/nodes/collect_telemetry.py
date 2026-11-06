@@ -1,4 +1,4 @@
-"""Node: collect_telemetry - Reads the targeted Telemetry sources through the guarded probe."""
+"""Node: collect_telemetry - Reads the chosen telemetry sources behind breakers and retries."""
 
 from collections.abc import Iterable, Set
 from typing import Any
