@@ -1703,19 +1703,19 @@ export const REQUEST_LIMITS = Object.freeze({
 const QUERY_TOO_SHORT = `Describe the incident in at least ${QUERY_MIN_LENGTH} characters.`;
 
 /**
- * What a Triage press does: the request to send, or why nothing is sent. A question shorter
- * than the minimum once trimmed gets a plain message (not the server's validation error); a
- * press while the panel's run streams, or before a budget shed's retry time (a double click),
- * sends nothing and says nothing.
+ * What a Triage press does: the request to send, or why nothing is sent. A press while the
+ * panel's run streams, or before a budget shed's retry time (a double click), sends nothing
+ * and says nothing, whatever the question; only then does a question shorter than the minimum
+ * once trimmed get a plain message (not the server's validation error).
  * @param {FreePlayFields} fields
  * @param {RunView} run the panel's run as it is now
  * @param {number} now wall-clock ms on the run's clock
  * @returns {{ error: string | null, request: import("./sse.mjs").TriageRequest | null }}
  */
 export function freePlaySubmit(fields, run, now) {
+  if (!canTriage(run, now)) return { error: null, request: null };
   const request = freePlayRequest(fields);
   if (request.query.length < QUERY_MIN_LENGTH) return { error: QUERY_TOO_SHORT, request: null };
-  if (!canTriage(run, now)) return { error: null, request: null };
   return { error: null, request };
 }
 

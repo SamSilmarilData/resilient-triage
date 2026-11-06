@@ -571,6 +571,23 @@ def test_no_second_run_is_sent_while_one_streams(pages: GuardedPages):
     assert submit == {"error": None, "request": None}
 
 
+@pytest.mark.parametrize(
+    ("status", "events", "now"),
+    [("streaming", [], 10_005), ("finished", BUDGET_SHED, 13_500)],
+    ids=["streaming", "before-retry-time"],
+)
+def test_an_unavailable_triage_never_says_the_question_is_too_short(
+    pages: GuardedPages, status: str, events: list[dict[str, Any]], now: int
+):
+    """While Triage is unavailable a press sends nothing and says nothing, even for a question
+    too short to send: the availability check comes before the length check."""
+    submit = _free_play(
+        pages, FREE_PLAY_SUBMIT, {"query": " a ", "status": status, "events": events, "now": now}
+    )
+
+    assert submit == {"error": None, "request": None}
+
+
 def test_a_budget_shed_counts_down_to_its_retry_time(pages: GuardedPages):
     """The retry deadline is when the shed arrived plus its retry-after; the notice counts down
     in whole seconds to it, and Triage comes back when it passes."""
