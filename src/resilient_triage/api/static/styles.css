@@ -471,6 +471,31 @@
     font-weight: 400;
   }
 
+  /* The stage names the scenario it draws; at narrow widths, where the scenario's card sits
+     far above the stage, a finished run links back to it. Pinned beside the chapters (wide),
+     the card is in view already, so the link is not drawn. */
+  .run__scenario {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.25rem 0.75rem;
+  }
+
+  .run__scenario-title {
+    font-weight: 600;
+  }
+
+  .run__back {
+    font-size: 0.875rem;
+  }
+
+  @media (min-width: 60rem) {
+    .run__back {
+      display: none;
+    }
+  }
+
   .run__panels {
     display: grid;
     gap: 1rem;
@@ -706,6 +731,21 @@
     left: auto;
   }
 
+  /* Readable timeline. A detail value ("under 1 ms") moves to the next line whole rather
+     than break inside, unless it is wider than the column on its own; in the pinned side panel
+     the label column is wide enough that node and model names never break mid-word. */
+  .waterfall__part {
+    display: inline-block;
+    max-width: 100%;
+  }
+
+  @media (min-width: 60rem) {
+    .stage .waterfall__row,
+    .stage .waterfall__axis {
+      grid-template-columns: 10.5rem minmax(0, 1fr);
+    }
+  }
+
   /* Motion is CSS only and opt-in: nothing moves under reduced motion. */
   @media (prefers-reduced-motion: no-preference) {
     /* Colour only: bar geometry is the run's real timing, never tweened. */
@@ -872,6 +912,34 @@
     font-size: 0.875rem;
   }
 
+  /* Inspector head pinned, body scrolls. The dialog drops its padding so its frame fills
+     it (a click on the dialog itself is then a backdrop click). The frame takes the dialog's
+     height cap less its 1px borders, and only the body scrolls, so Close never leaves the screen. */
+  .inspector {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .inspector__frame {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 2 * var(--gutter) - 2px);
+  }
+
+  .inspector .inspector__head {
+    flex: none;
+    margin: 0;
+    padding: 1.25rem 1.25rem 0.75rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .inspector__body {
+    min-height: 0;
+    padding: 0.75rem 1.25rem 1.25rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
   /* Free play (#120): the question form, then the panel's own run, drawn like the stage. */
   .free-play__panel {
     display: grid;
@@ -919,6 +987,16 @@
     resize: vertical;
   }
 
+  /* Free play's plain message about a question it won't send. */
+  .ask__error {
+    color: var(--bad);
+    font-size: 0.875rem;
+  }
+
+  .ask__input[aria-invalid="true"] {
+    border-color: var(--bad);
+  }
+
   .ask__check {
     display: flex;
     align-items: center;
@@ -944,6 +1022,8 @@
 
   .free-play__run {
     min-width: 0;
+    display: grid;
+    gap: 1rem;
     padding: 1rem;
     border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -1014,6 +1094,9 @@
     border: 1px solid var(--line);
     border-radius: var(--radius);
     background: var(--surface);
+    /* The stage's way back lands with a little room above the card, not flush with the
+       window's edge. */
+    scroll-margin-top: 1rem;
 
     &[data-open="true"] {
       border-color: var(--line-strong);
@@ -1091,6 +1174,18 @@
 
   .button--quiet {
     border-color: var(--line);
+  }
+
+  /* Unavailable, as a quiet button's disabled state: a Skip to end with nothing left to skip,
+     and Triage while it can't ask (a run streaming, or a budget shed's countdown). After every
+     button rule, hover included; aria-disabled (not disabled) keeps a keyboard user's focus. */
+  .button--quiet[aria-disabled="true"],
+  .button--primary[aria-disabled="true"] {
+    border-style: dashed;
+    border-color: var(--line);
+    background: var(--sunken);
+    color: var(--faint);
+    cursor: not-allowed;
   }
 
   .badge {
@@ -1235,124 +1330,5 @@
     flex-wrap: wrap;
     gap: 0 0.5rem;
     grid-column: 2;
-  }
-
-  /* Inspector head pinned, body scrolls. The dialog drops its padding so its frame fills
-     it (a click on the dialog itself is then a backdrop click). The frame takes the dialog's
-     height cap less its 1px borders, and only the body scrolls, so Close never leaves the screen. */
-  .inspector {
-    padding: 0;
-    overflow: hidden;
-  }
-
-  .inspector__frame {
-    display: flex;
-    flex-direction: column;
-    max-height: calc(100dvh - 2 * var(--gutter) - 2px);
-  }
-
-  .inspector .inspector__head {
-    flex: none;
-    margin: 0;
-    padding: 1.25rem 1.25rem 0.75rem;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .inspector__body {
-    min-height: 0;
-    padding: 0.75rem 1.25rem 1.25rem;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
-}
-
-/* A Skip to end with nothing left to skip looks unavailable, as a quiet button's
-   disabled state; aria-disabled (not disabled) keeps it focusable. */
-@layer components {
-  .button--quiet[aria-disabled="true"] {
-    border-style: dashed;
-    border-color: var(--line);
-    background: var(--sunken);
-    color: var(--faint);
-    cursor: not-allowed;
-  }
-}
-
-/* Readable timeline. A detail value ("under 1 ms") moves to the next line whole rather
-   than break inside, unless it is wider than the column on its own; in the pinned side panel
-   the label column is wide enough that node and model names never break mid-word. */
-@layer components {
-  .waterfall__part {
-    display: inline-block;
-    max-width: 100%;
-  }
-
-  @media (min-width: 60rem) {
-    .stage .waterfall__row,
-    .stage .waterfall__axis {
-      grid-template-columns: 10.5rem minmax(0, 1fr);
-    }
-  }
-}
-
-/* Free play's finished run shows its report under the stage, inside the run's card. */
-@layer components {
-  .free-play__run {
-    display: grid;
-    gap: 1rem;
-  }
-}
-
-/* The stage names the scenario it draws; at narrow widths, where the scenario's card sits
-   far above the stage, a finished run links back to it. Pinned beside the chapters (wide), the
-   card is in view already, so the link is not drawn. */
-@layer components {
-  .run__scenario {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.25rem 0.75rem;
-  }
-
-  .run__scenario-title {
-    font-weight: 600;
-  }
-
-  .run__back {
-    font-size: 0.875rem;
-  }
-
-  /* The way back lands with a little room above the card, not flush with the window's edge. */
-  .scenario {
-    scroll-margin-top: 1rem;
-  }
-
-  @media (min-width: 60rem) {
-    .run__back {
-      display: none;
-    }
-  }
-}
-
-/* Free play's plain message about a question it won't send, and Triage while it can't
-   ask (a run streaming, or a budget shed's countdown): unavailable as the quiet button's
-   disabled state, but aria-disabled (not disabled) keeps a keyboard user's focus on it. */
-@layer components {
-  .ask__error {
-    color: var(--bad);
-    font-size: 0.875rem;
-  }
-
-  .ask__input[aria-invalid="true"] {
-    border-color: var(--bad);
-  }
-
-  .button--primary[aria-disabled="true"] {
-    border-style: dashed;
-    border-color: var(--line);
-    background: var(--sunken);
-    color: var(--faint);
-    cursor: not-allowed;
   }
 }
