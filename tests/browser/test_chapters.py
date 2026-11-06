@@ -190,7 +190,11 @@ def test_a_played_scenario_ends_with_its_trace_summary_and_report(
     graph = graph_state(page)
     assert graph.visited == set(path)
     assert graph.taken_pairs == path_edges(path)
-    assert page.locator("[data-run-badge]").inner_text() == "Model replies scripted"
+    badge = page.locator("[data-run-badge]")
+    if summary.model_calls:
+        assert badge.inner_text() == "Model replies scripted"
+    else:  # #161: a run that never called a model claims no scripted reply
+        assert badge.count() == 0
     line = _scenario(page, scenario_id, "[data-scenario-line]").inner_text()
     assert line and line == page.locator("[data-run-line]").inner_text()
 
@@ -290,3 +294,180 @@ def test_skip_to_end_is_offered_on_every_scenario_including_the_last(pages: Guar
     skip = _scenario(page, last, '[data-action="skip"]')
     assert skip.inner_text() == "Skip to end"
     assert skip.get_attribute("aria-disabled") == "false"
+
+
+# --- #161: scenario panels keep their results and label honestly ---
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+@pytest.mark.parametrize("scenario_id", ["cache-hit", "shed-request", "healthy-run"])
+def test_the_scripted_badge_shows_only_on_runs_that_called_a_model(
+    pages: GuardedPages, scenario_id: str, scheme: str
+):
+    """A cache hit or a shed request never calls a model, so it never claims scripted replies."""
+    called_a_model = bool(summarize(stream_scenario(pages.server, scenario_id)).model_calls)
+    assert called_a_model == (scenario_id == "healthy-run")
+    page, _ = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    page.locator(f"#scenario-{scenario_id}-toggle").click()
+    _scenario(page, scenario_id, '[data-action="play"]').click()
+    wait_for_run(page)
+
+    badge = page.locator("#stage-root [data-run-badge]")
+    if called_a_model:
+        assert badge.inner_text() == "Model replies scripted"
+    else:
+        assert badge.count() == 0
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+def _panel_result(page: "Page", scenario_id: str) -> dict[str, str]:
+    """What an open scenario's panel shows of its last run: its line and its report."""
+    return {
+        "line": _scenario(page, scenario_id, "[data-scenario-line]").inner_text(),
+        "report": _scenario(page, scenario_id, "[data-report]").inner_text(),
+    }
+
+
+def _play_to_report(page: "Page", scenario_id: str) -> None:
+    """Open a scenario, press Play and wait for its report in its own panel."""
+    page.locator(f"#scenario-{scenario_id}-toggle").click()
+    _scenario(page, scenario_id, '[data-action="play"]').click()
+    page.wait_for_selector(_scenario_selector(scenario_id, "[data-report]"), state="attached")
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_each_scenario_keeps_its_last_result_after_another_plays(pages: GuardedPages, scheme: str):
+    """Play A, then B: reopened, A still shows A's own summary and report, and B keeps B's."""
+    page, _ = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+
+    _play_to_report(page, "healthy-run")
+    first = _panel_result(page, "healthy-run")
+    _play_to_report(page, "shed-request")
+    second = _panel_result(page, "shed-request")
+    assert first != second
+
+    page.locator("#scenario-healthy-run-toggle").click()
+    assert _panel_result(page, "healthy-run") == first
+    assert _scenario(page, "healthy-run", '[data-action="play"]').inner_text() == "Play again"
+    skip = _scenario(page, "healthy-run", '[data-action="skip"]')
+    assert skip.get_attribute("aria-disabled") == "true", "a kept result has nothing to skip"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    page.locator("#scenario-shed-request-toggle").click()
+    assert _panel_result(page, "shed-request") == second
+
+
+@pytest.mark.real_scripted_delays
+def test_play_reads_play_until_the_scenarios_first_run_has_finished(pages: GuardedPages):
+    """During its first run a scenario's button still says Play; once a run finished, Play again."""
+    page, _ = pages.open()
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator("#scenario-self-repair-toggle").click()
+    play = _scenario(page, "self-repair", '[data-action="play"]')
+    assert play.inner_text() == "Play"
+
+    play.click()
+    # The first model reply takes its real scripted delay: the run is mid-stream here.
+    mid_run = '#stage-root [data-node="generate_report"][data-state="active"]'
+    page.wait_for_selector(mid_run, state="attached")
+    assert play.inner_text() == "Play", "the first run hasn't finished yet"
+    page.wait_for_selector(_scenario_selector("self-repair", "[data-report]"), state="attached")
+    assert play.inner_text() == "Play again"
+
+    play.click()
+    page.wait_for_selector(mid_run, state="attached")
+    assert play.inner_text() == "Play again", "a run of this scenario has finished before"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+# How a button looks: what tells a visitor whether it will do anything.
+BUTTON_LOOK = """(button) => {
+  const style = getComputedStyle(button);
+  return {color: style.color, background: style.backgroundColor,
+          border: style.borderTopStyle, cursor: style.cursor};
+}"""
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_skip_to_end_with_nothing_to_skip_looks_unavailable_and_keeps_focus(
+    pages: GuardedPages, scheme: str
+):
+    """Disabled, Skip to end changes its text, fill, border and cursor, yet keeps focus."""
+    page, _ = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator("#scenario-healthy-run-toggle").click()
+    skip = _scenario(page, "healthy-run", '[data-action="skip"]')
+    assert skip.get_attribute("aria-disabled") == "false"
+    enabled = skip.evaluate(BUTTON_LOOK)
+
+    skip.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector(_scenario_selector("healthy-run", "[data-report]"), state="attached")
+    page.mouse.move(0, 0)  # no hover colours on the button being measured
+
+    assert skip.get_attribute("aria-disabled") == "true"
+    assert page.evaluate("document.activeElement.dataset.action") == "skip"
+    disabled = skip.evaluate(BUTTON_LOOK)
+    assert disabled["cursor"] == "not-allowed"
+    for part in ("color", "background", "border"):
+        assert disabled[part] != enabled[part], f"a disabled Skip to end keeps its {part}"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+# --- #154: hidden elements stay hidden ---
+# The "Show everything" list as the visitor sees it: its computed display and its box
+# (null when it renders none).
+EVENTS_LIST = """(selector) => {
+  const list = document.querySelector(selector);
+  const box = list.getBoundingClientRect();
+  return {
+    display: getComputedStyle(list).display,
+    box: box.width > 0 || box.height > 0 ? {width: box.width, height: box.height} : null,
+  };
+}"""
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_a_collapsed_event_list_draws_no_box_and_is_absent_from_the_a11y_tree(
+    pages: GuardedPages, scheme: str
+):
+    """No empty box above a report: the collapsed list renders nothing, and expands in full."""
+    scenario_id = "healthy-run"
+    events = stream_scenario(pages.server, scenario_id)
+    page, watch = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator(f"#scenario-{scenario_id}-toggle").click()
+    _scenario(page, scenario_id, '[data-action="play"]').click()
+    wait_for_run(page)
+    page.wait_for_selector(_scenario_selector(scenario_id, "[data-report]"), state="attached")
+
+    events_list = _scenario_selector(scenario_id, ".events")
+    assert page.locator(events_list).get_attribute("hidden") is not None
+    assert page.evaluate(EVENTS_LIST, events_list) == {"display": "none", "box": None}
+    assert not page.locator(events_list).is_visible()
+    panel = _scenario(page, scenario_id)
+    assert panel.get_by_role("list", name="Every trace event").count() == 0
+    assert "Every trace event" not in panel.aria_snapshot()
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    _scenario(page, scenario_id, '[data-action="show-everything"]').click()
+    shown = panel.get_by_role("list", name="Every trace event")
+    assert shown.is_visible()
+    assert shown.locator("li").count() == len(events)
+    assert page.evaluate(EVENTS_LIST, events_list)["box"] is not None
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+    assert watch.console_errors == []
