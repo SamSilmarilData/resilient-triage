@@ -41,7 +41,7 @@ export function Clocked({ now, text }) {
  *   onBack?: (id: string) => void,
  *   headOnly?: boolean,
  *   normalBackend?: string | null,
- *   announcement?: any,
+ *   announcement?: import("preact").ComponentChild,
  * }} props `now`: the page's ticking clock (a signal), read only by a streaming run's
  *   headline (#156). `announcement`: what the live region says instead of how the run ended
  *   (runAnnouncement()), e.g. free play's Clocked freePlayAnnouncement() during a countdown;
