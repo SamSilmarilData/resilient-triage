@@ -2,7 +2,7 @@
 // The trace-to-view reducer (ADR 0008, #118): the page's one logic module. Everything the page
 // shows about a run is derived here from the run's trace events; components only draw what
 // these functions return (CODING_STANDARDS.md, Frontend).
-import { StreamHttpError } from "./sse.mjs";
+import { StreamDataError, StreamHttpError } from "./sse.mjs";
 
 /**
  * One trace event as it arrives on the wire (trace/events.py); `kind` discriminates.
@@ -701,7 +701,8 @@ const STREAM_WATCHDOG_MS = 30_000;
 /**
  * idle: nothing played yet. streaming: events arriving. finished: trace_finished arrived
  * (a cache hit, an analyzed run or a shed alike). lost: the stream went silent or closed
- * early; the partial trace stays. error: the stream was refused or never connected.
+ * early; the partial trace stays. error: the stream was refused, never connected, or sent data
+ * that didn't parse (#163; any partial trace stays).
  * `skipping`: Skip to end was pressed during this stream; the controller folds its events
  * without reporting them until the run ends, so the stage holds still and then shows the
  * final state at once.
@@ -795,6 +796,9 @@ export function idleRun() {
 }
 
 const UNREACHABLE = "Couldn't reach the server. Check your connection and try again.";
+// --- #163: malformed streams ---
+/** The stream arrived but didn't parse: a different failure from an unreachable server. */
+const MALFORMED = "Couldn't read the run's data: the server's stream didn't parse. Try again.";
 
 /**
  * Plays stream sources into RunViews, reporting each new view to `onChange`. One run at a
@@ -872,6 +876,7 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
       end("lost"); // closed before trace_finished
     } catch (error) {
       if (error instanceof StreamHttpError) end("error", error.message);
+      else if (error instanceof StreamDataError) end("error", MALFORMED);
       else if (view.trace.events.length) end("lost");
       else end("error", UNREACHABLE);
     }
@@ -896,6 +901,19 @@ export function createRunController({ onChange, watchdogMs = STREAM_WATCHDOG_MS 
       return view;
     },
   };
+}
+
+// --- #157: pinned stage reveal ---
+
+/**
+ * Where to scroll the stage itself for a run that just started, so its graph shows: back to
+ * its top when the pinned stage scrolls inside itself (#157) and has been scrolled down, else
+ * null (below the wide breakpoint the stage does not scroll; needsReveal() moves the page).
+ * @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} stage
+ * @returns {number | null}
+ */
+export function stageRevealTop(stage) {
+  return stage.scrollHeight > stage.clientHeight && stage.scrollTop > 0 ? 0 : null;
 }
 
 // ---------------------------------------------------------------------------------------------

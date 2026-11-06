@@ -423,3 +423,51 @@ def test_skip_to_end_with_nothing_to_skip_looks_unavailable_and_keeps_focus(
         assert disabled[part] != enabled[part], f"a disabled Skip to end keeps its {part}"
     violations = axe_violations(page)
     assert violations == [], describe(violations)
+
+
+# --- #154: hidden elements stay hidden ---
+# The "Show everything" list as the visitor sees it: its computed display and its box
+# (null when it renders none).
+EVENTS_LIST = """(selector) => {
+  const list = document.querySelector(selector);
+  const box = list.getBoundingClientRect();
+  return {
+    display: getComputedStyle(list).display,
+    box: box.width > 0 || box.height > 0 ? {width: box.width, height: box.height} : null,
+  };
+}"""
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_a_collapsed_event_list_draws_no_box_and_is_absent_from_the_a11y_tree(
+    pages: GuardedPages, scheme: str
+):
+    """No empty box above a report: the collapsed list renders nothing, and expands in full."""
+    scenario_id = "healthy-run"
+    events = stream_scenario(pages.server, scenario_id)
+    page, watch = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator(f"#scenario-{scenario_id}-toggle").click()
+    _scenario(page, scenario_id, '[data-action="play"]').click()
+    wait_for_run(page)
+    page.wait_for_selector(_scenario_selector(scenario_id, "[data-report]"), state="attached")
+
+    events_list = _scenario_selector(scenario_id, ".events")
+    assert page.locator(events_list).get_attribute("hidden") is not None
+    assert page.evaluate(EVENTS_LIST, events_list) == {"display": "none", "box": None}
+    assert not page.locator(events_list).is_visible()
+    panel = _scenario(page, scenario_id)
+    assert panel.get_by_role("list", name="Every trace event").count() == 0
+    assert "Every trace event" not in panel.aria_snapshot()
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    _scenario(page, scenario_id, '[data-action="show-everything"]').click()
+    shown = panel.get_by_role("list", name="Every trace event")
+    assert shown.is_visible()
+    assert shown.locator("li").count() == len(events)
+    assert page.evaluate(EVENTS_LIST, events_list)["box"] is not None
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+    assert watch.console_errors == []

@@ -35,6 +35,29 @@ export class StreamHttpError extends Error {
   }
 }
 
+// --- #163: malformed streams ---
+/** The stream arrived, but an event in it isn't valid JSON: not a connection failure. */
+export class StreamDataError extends Error {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "StreamDataError";
+  }
+}
+
+/**
+ * An event's data parsed as JSON, or a StreamDataError when it isn't.
+ * @param {string} data
+ * @returns {any}
+ */
+function parseEventData(data) {
+  try {
+    return JSON.parse(data);
+  } catch (error) {
+    throw new StreamDataError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 /** An incremental SSE parser: push decoded text in any chunking, get whole messages back. */
 function createSseParser() {
   let buffer = "";
@@ -72,7 +95,7 @@ function parseBlock(block) {
     if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
     else if (line.startsWith(":")) comment = true;
   }
-  if (data.length) return { kind: "event", event: JSON.parse(data.join("\n")) };
+  if (data.length) return { kind: "event", event: parseEventData(data.join("\n")) };
   return comment ? { kind: "ping" } : null;
 }
 

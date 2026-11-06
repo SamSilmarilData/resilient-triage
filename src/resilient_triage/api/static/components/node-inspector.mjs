@@ -2,7 +2,8 @@
 // The node inspector (#121): a modal <dialog> with one graph node's purpose, file, config
 // fields and ADRs, drawn from trace-reducer.mjs `inspectorView()`. The native dialog gives
 // focus containment and Escape; on close, focus goes back to whatever opened it (a graph node
-// or a button in the node list).
+// or a button in the node list). Its head (title and Close) stays put while the body scrolls,
+// and a click on the backdrop closes it like Close (#164).
 import { html } from "htm/preact";
 import { useEffect, useRef } from "preact/hooks";
 
@@ -72,6 +73,23 @@ export function NodeInspector({ view, onClose }) {
     }
   }, [open]);
 
+  // --- #164: backdrop close ---
+  // The dialog has no padding and its frame fills it, so a press whose target is the dialog
+  // itself landed on the backdrop. Both ends of the click must: a text selection dragged out
+  // of the panel is not a backdrop click.
+  const pressedBackdrop = useRef(false);
+  /** @param {PointerEvent} event */
+  const pressed = (event) => {
+    pressedBackdrop.current = event.target === event.currentTarget;
+  };
+  /** @param {MouseEvent} event */
+  const clicked = (event) => {
+    if (pressedBackdrop.current && event.target === event.currentTarget) {
+      dialog.current?.close();
+    }
+    pressedBackdrop.current = false;
+  };
+
   const closed = () => {
     const back = opener.current;
     opener.current = null;
@@ -88,9 +106,12 @@ export function NodeInspector({ view, onClose }) {
       aria-labelledby="inspector-title"
       data-inspected=${view?.name}
       onClose=${closed}
+      onPointerDown=${pressed}
+      onClick=${clicked}
     >
       ${view &&
       html`
+        <div class="inspector__frame">
         <div class="inspector__head">
           <div>
             <p class="eyebrow">Graph node</p>
@@ -100,6 +121,7 @@ export function NodeInspector({ view, onClose }) {
             Close
           </button>
         </div>
+        <div class="inspector__body">
         ${view.status === "ready"
           ? html`<${Facts} view=${view} />`
           : view.status === "loading"
@@ -107,6 +129,8 @@ export function NodeInspector({ view, onClose }) {
             : html`<p class="notice">
                 This node's details didn't load. The list under How it's built can try again.
               </p>`}
+        </div>
+        </div>
       `}
     </dialog>
   `;
