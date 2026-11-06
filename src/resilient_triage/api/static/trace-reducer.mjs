@@ -1319,11 +1319,7 @@ function provenance(trace, response) {
     trace.visits.some((visit) => visit.node === "fallback_report") ||
     trace.events.some((event) => event.kind === "deadline_exceeded");
   if (fellBack) return "Built by fallback_report from what the run saw: no model text.";
-  const model = trace.scripted
-    ? "the scripted model reply"
-    : trace.simulated
-      ? "the keyless simulation's reply"
-      : "the model's reply";
+  const model = REPLY_SOURCES[replyKind(trace)];
   return `Summary, analysis and actions are ${model}. Status, breakers and approvals are set by reconcile.`;
 }
 
@@ -1580,15 +1576,39 @@ export function shedNotice(trace) {
 // --- #153: keyless simulation ---
 
 /**
+ * Where a run's model replies come from: scripted (a scenario run, ADR 0009), the keyless
+ * simulation (free play with no model API key, #153), or a real provider.
+ * @typedef {"scripted" | "simulated" | "real"} ReplyKind
+ * @param {TraceView} trace
+ * @returns {ReplyKind}
+ */
+function replyKind(trace) {
+  if (trace.scripted) return "scripted";
+  return trace.simulated ? "simulated" : "real";
+}
+
+/** The report's provenance names its model text by where the replies came from. */
+const REPLY_SOURCES = /** @type {Record<ReplyKind, string>} */ ({
+  scripted: "the scripted model reply",
+  simulated: "the keyless simulation's reply",
+  real: "the model's reply",
+});
+
+/** The waterfall's tag on a model call; a real provider's reply has none. */
+const REPLY_TAGS = /** @type {Record<ReplyKind, string | null>} */ ({
+  scripted: "scripted reply",
+  simulated: "simulated reply",
+  real: null,
+});
+
+/**
  * The waterfall tag on a model call: scenario runs are scripted, keyless free play is the
  * simulation, and a real provider's reply has no tag.
  * @param {TraceView} trace
  * @returns {string | null}
  */
 export function modelReplyTag(trace) {
-  if (trace.scripted) return "scripted reply";
-  if (trace.simulated) return "simulated reply";
-  return null;
+  return REPLY_TAGS[replyKind(trace)];
 }
 
 /**
@@ -1599,7 +1619,7 @@ export function modelReplyTag(trace) {
 export function modelLine(trace) {
   const model = answeringModel(trace);
   if (model === null) return null;
-  return trace.simulated
+  return replyKind(trace) === "simulated"
     ? "Model: the keyless simulation (no model API key is set)"
     : `Model: ${model}`;
 }
