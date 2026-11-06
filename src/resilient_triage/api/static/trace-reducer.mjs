@@ -1563,6 +1563,18 @@ export function answeringModel(trace) {
   return answered?.model ?? null;
 }
 
+/** A budget shed's notice, before saying when to try again. */
+const BUDGET_SPENT = "The free-play budget is spent for this minute.";
+
+/**
+ * The run_slot event that refused the run, if one did.
+ * @param {TraceView} trace
+ * @returns {TraceEvent | undefined}
+ */
+function refusedSlot(trace) {
+  return trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+}
+
 /**
  * Why a run was shed and when to ask again, from its refused run_slot; null when it wasn't
  * shed. Only a budget shed carries a retry-after (triage/gateway.py Shed).
@@ -1571,14 +1583,11 @@ export function answeringModel(trace) {
  * @returns {ShedNotice | null}
  */
 export function shedNotice(trace) {
-  const slot = trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+  const slot = refusedSlot(trace);
   if (!slot) return null;
   const reason = slot.reason ?? "capacity";
   const retryAfterS = slot.retry_after_s ?? null;
-  const head =
-    reason === "budget"
-      ? "The free-play budget is spent for this minute."
-      : "Every run slot is busy right now.";
+  const head = reason === "budget" ? BUDGET_SPENT : "Every run slot is busy right now.";
   const when = retryAfterS === null ? "in a moment" : `in ${retryAfterS} s`;
   return { reason, retryAfterS, line: `${head} Try again ${when}.` };
 }
@@ -1653,9 +1662,8 @@ export function freePlayView(run, now) {
   const report = reportView(run.trace);
   return {
     model: modelLine(run.trace),
-    shed: shedNotice(run.trace),
     report: report?.kind === "report" ? report : null,
-    ...refusalView(run, now),
+    ...refusalView(run, now, shedNotice(run.trace), retryDeadline(run)),
   };
 }
 
@@ -1690,7 +1698,7 @@ export function freePlaySubmit(fields, run, now) {
  * @returns {number | null}
  */
 function retryDeadline(run) {
-  const slot = run.trace.events.find((e) => e.kind === "run_slot" && !e.acquired);
+  const slot = refusedSlot(run.trace);
   if (!slot || slot.retry_after_s == null || run.startedAt === null) return null;
   return run.startedAt + slot.t_ms + slot.retry_after_s * 1000;
 }
@@ -1700,10 +1708,10 @@ function retryDeadline(run) {
  * retry time.
  * @param {RunView} run
  * @param {number | undefined} now
+ * @param {number | null} [retryAt] the run's retryDeadline(), if already known
  */
-function canTriage(run, now) {
+function canTriage(run, now, retryAt = retryDeadline(run)) {
   if (run.status === "streaming") return false;
-  const retryAt = retryDeadline(run);
   return retryAt === null || now === undefined || now >= retryAt;
 }
 
@@ -1724,16 +1732,16 @@ export function freePlayTicks(run, now) {
  * budget shed's notice line counted down to `now`.
  * @param {RunView} run
  * @param {number | undefined} now
- * @returns {Pick<FreePlayView, "refused" | "retryAt" | "canTriage"> &
- *           { shed?: ShedNotice }}
+ * @param {ShedNotice | null} shed the run's shedNotice()
+ * @param {number | null} retryAt the run's retryDeadline()
+ * @returns {Pick<FreePlayView, "shed" | "refused" | "retryAt" | "canTriage">}
  */
-function refusalView(run, now) {
-  const shed = shedNotice(run.trace);
-  const retryAt = retryDeadline(run);
+function refusalView(run, now, shed, retryAt) {
   const parts = {
+    shed,
     refused: shed !== null || run.rejected,
     retryAt,
-    canTriage: canTriage(run, now),
+    canTriage: canTriage(run, now, retryAt),
   };
   if (!shed || retryAt === null || shed.retryAfterS === null || now === undefined) return parts;
   return { ...parts, shed: { ...shed, line: countdownLine(shed.retryAfterS, retryAt, now) } };
@@ -1749,5 +1757,5 @@ function refusalView(run, now) {
 function countdownLine(retryAfterS, retryAt, now) {
   const left = Math.min(retryAfterS, Math.ceil((retryAt - now) / 1000));
   if (left <= 0) return "The free-play budget was spent for that minute. Try again now.";
-  return `The free-play budget is spent for this minute. Try again in ${left} s.`;
+  return `${BUDGET_SPENT} Try again in ${left} s.`;
 }
