@@ -362,3 +362,28 @@ def test_each_scenario_keeps_its_last_result_after_another_plays(pages: GuardedP
 
     page.locator("#scenario-shed-request-toggle").click()
     assert _panel_result(page, "shed-request") == second
+
+
+@pytest.mark.real_scripted_delays
+def test_play_reads_play_until_the_scenarios_first_run_has_finished(pages: GuardedPages):
+    """During its first run a scenario's button still says Play; once a run finished, Play again."""
+    page, _ = pages.open()
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator("#scenario-self-repair-toggle").click()
+    play = _scenario(page, "self-repair", '[data-action="play"]')
+    assert play.inner_text() == "Play"
+
+    play.click()
+    # The first model reply takes its real scripted delay: the run is mid-stream here.
+    mid_run = '#stage-root [data-node="generate_report"][data-state="active"]'
+    page.wait_for_selector(mid_run, state="attached")
+    assert play.inner_text() == "Play", "the first run hasn't finished yet"
+    page.wait_for_selector(_scenario_selector("self-repair", "[data-report]"), state="attached")
+    assert play.inner_text() == "Play again"
+
+    play.click()
+    page.wait_for_selector(mid_run, state="attached")
+    assert play.inner_text() == "Play again", "a run of this scenario has finished before"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
