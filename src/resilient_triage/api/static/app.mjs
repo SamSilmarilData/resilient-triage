@@ -34,7 +34,7 @@ import {
 /** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("./trace-reducer.mjs").GraphNode} GraphNode */
 
-// --- #156: the page's clock ---
+// --- The page's clock ---
 
 /** The wall clock: run controllers stamp `startedAt` with it and the ticking `now` reads it. */
 const wallClock = () => Date.now();
@@ -143,7 +143,7 @@ function LiveStage() {
   />`;
 }
 
-// --- #158: back from the stage to its scenario ---
+// --- Back from the stage to its scenario ---
 /**
  * Take the visitor from the stage back to a scenario's card (the stage's way-back link, at
  * phone width): open the card if it was closed, so its report shows, then once it has drawn
@@ -272,7 +272,7 @@ function loadLayout() {
   return loadInto(layout, "/static/graph-layout.json");
 }
 
-// --- #163: deep links ---
+// --- Deep links ---
 /**
  * Scroll to the URL's fragment (a link like `/#free-play`) once, after the regions above it
  * have filled in: the browser's own jump lands before the chapters grow, so it ends up a

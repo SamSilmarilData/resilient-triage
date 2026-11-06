@@ -349,6 +349,44 @@ function readTone(outcome) {
   return outcome === "read" ? "ok" : outcome === "tripped" ? "bad" : "warn";
 }
 
+// --- Model replies: scripted, simulated or real ---
+
+/**
+ * Where a run's model replies come from: scripted (a scenario run, ADR 0009), the keyless
+ * simulation (free play with no model API key, #153), or a real provider.
+ * @typedef {"scripted" | "simulated" | "real"} ReplyKind
+ * @param {TraceView} trace
+ * @returns {ReplyKind}
+ */
+function replyKind(trace) {
+  if (trace.scripted) return "scripted";
+  return trace.simulated ? "simulated" : "real";
+}
+
+/** The report's provenance names its model text by where the replies came from. */
+const REPLY_SOURCES = /** @type {Record<ReplyKind, string>} */ ({
+  scripted: "the scripted model reply",
+  simulated: "the keyless simulation's reply",
+  real: "the model's reply",
+});
+
+/** The waterfall's tag on a model call; a real provider's reply has none. */
+const REPLY_TAGS = /** @type {Record<ReplyKind, string | null>} */ ({
+  scripted: "scripted reply",
+  simulated: "simulated reply",
+  real: null,
+});
+
+/**
+ * The waterfall tag on a model call: scenario runs are scripted, keyless free play is the
+ * simulation, and a real provider's reply has no tag.
+ * @param {TraceView} trace
+ * @returns {string | null}
+ */
+export function modelReplyTag(trace) {
+  return REPLY_TAGS[replyKind(trace)];
+}
+
 /**
  * The run as waterfall rows, each placed on one axis from the start of setup to the run's end;
  * null before the run's first event, when there is nothing to draw.
@@ -509,7 +547,7 @@ export function waterfallView(
   };
 }
 
-// --- #159: readable timeline ---
+// --- Readable timeline: compressed setup, ordered rows, apart labels ---
 // Setup draws on a scale of its own, compressed to at most MAX_SETUP_SHARE of the axis, so a
 // long setup never squeezes the run; shorter, it keeps the run's clock. Setup steps list before
 // the reads they made. The zero tick's label hides rather than meet the end label.
@@ -895,7 +933,7 @@ export function runHeadline(run, now) {
   return { ...runLine(run, now), scripted: run.trace.scripted && calledAModel(run.trace) };
 }
 
-// --- #161: scripted badge only on runs that called a model ---
+// --- Scripted badge: only on runs that called a model ---
 
 /**
  * Whether a trace records at least one model call: a cache hit or a shed request never
@@ -962,17 +1000,6 @@ export function runAnnouncement(run) {
   }
 }
 
-/**
- * Whether the stage needs scrolling into view for a run that just started: its top is above
- * the viewport or below its bottom. At phone width it sits below the chapters (#122); pinned
- * on desktop, it never needs it.
- * @param {{ top: number }} rect the stage's bounding rectangle
- * @param {number} viewportHeight
- */
-export function needsReveal(rect, viewportHeight) {
-  return rect.top < 0 || rect.top >= viewportHeight;
-}
-
 /** @returns {RunView} */
 export function idleRun() {
   return {
@@ -985,7 +1012,31 @@ export function idleRun() {
   };
 }
 
-// --- #156: the run's clock ---
+// --- Revealing the stage for a run that just started ---
+
+/**
+ * Whether the stage needs scrolling into view for a run that just started: its top is above
+ * the viewport or below its bottom. At phone width it sits below the chapters (#122); pinned
+ * on desktop, it never needs it.
+ * @param {{ top: number }} rect the stage's bounding rectangle
+ * @param {number} viewportHeight
+ */
+export function needsReveal(rect, viewportHeight) {
+  return rect.top < 0 || rect.top >= viewportHeight;
+}
+
+/**
+ * Where to scroll the stage itself for a run that just started, so its graph shows: back to
+ * its top when the pinned stage scrolls inside itself (#157) and has been scrolled down, else
+ * null (below the wide breakpoint the stage does not scroll; needsReveal() moves the page).
+ * @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} stage
+ * @returns {number | null}
+ */
+export function stageRevealTop(stage) {
+  return stage.scrollHeight > stage.clientHeight && stage.scrollTop > 0 ? 0 : null;
+}
+
+// --- The run's clock ---
 
 /**
  * How long a streaming run has been going: wall time since it started, never less than its
@@ -1010,7 +1061,7 @@ export function runTicks(run) {
 }
 
 const UNREACHABLE = "Couldn't reach the server. Check your connection and try again.";
-// --- #163: malformed streams ---
+// --- Malformed streams ---
 /** The stream arrived but didn't parse: a different failure from an unreachable server. */
 const MALFORMED = "Couldn't read the run's data: the server's stream didn't parse. Try again.";
 
@@ -1129,19 +1180,6 @@ export function createRunController({
       return view;
     },
   };
-}
-
-// --- #157: pinned stage reveal ---
-
-/**
- * Where to scroll the stage itself for a run that just started, so its graph shows: back to
- * its top when the pinned stage scrolls inside itself (#157) and has been scrolled down, else
- * null (below the wide breakpoint the stage does not scroll; needsReveal() moves the page).
- * @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} stage
- * @returns {number | null}
- */
-export function stageRevealTop(stage) {
-  return stage.scrollHeight > stage.clientHeight && stage.scrollTop > 0 ? 0 : null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1270,7 +1308,7 @@ export function createScenarioStage(controller, sourceOf) {
   };
 }
 
-// --- #161: scenario panels keep their results ---
+// --- Scenario panels keep their results ---
 
 /**
  * Keep a scenario's run as its last result once it has finished. A run another play
@@ -1431,7 +1469,7 @@ export function eventLog(trace) {
   });
 }
 
-// --- #158: the stage names its scenario ---
+// --- The stage names its scenario ---
 
 /**
  * The scenario the stage is drawing, as the stage names it: its id and catalogue title, once
@@ -1520,7 +1558,7 @@ export function inspectorView(nodes, name) {
   };
 }
 
-// --- #165: ADR links name their record ---
+// --- ADR links name their record ---
 
 /**
  * Each decision record's title by its number, as its `# ADR-00N: Title` heading reads.
@@ -1581,6 +1619,19 @@ export function answeringModel(trace) {
   return answered?.model ?? null;
 }
 
+/**
+ * Free play's model line: who wrote the run's report, or null when no model answered.
+ * @param {TraceView} trace
+ * @returns {string | null}
+ */
+export function modelLine(trace) {
+  const model = answeringModel(trace);
+  if (model === null) return null;
+  return replyKind(trace) === "simulated"
+    ? "Model: the keyless simulation (no model API key is set)"
+    : `Model: ${model}`;
+}
+
 /** A budget shed's notice, before saying when to try again. */
 const BUDGET_SPENT = "The free-play budget is spent for this minute.";
 
@@ -1610,58 +1661,7 @@ export function shedNotice(trace) {
   return { reason, retryAfterS, line: `${head} Try again ${when}.` };
 }
 
-// --- #153: keyless simulation ---
-
-/**
- * Where a run's model replies come from: scripted (a scenario run, ADR 0009), the keyless
- * simulation (free play with no model API key, #153), or a real provider.
- * @typedef {"scripted" | "simulated" | "real"} ReplyKind
- * @param {TraceView} trace
- * @returns {ReplyKind}
- */
-function replyKind(trace) {
-  if (trace.scripted) return "scripted";
-  return trace.simulated ? "simulated" : "real";
-}
-
-/** The report's provenance names its model text by where the replies came from. */
-const REPLY_SOURCES = /** @type {Record<ReplyKind, string>} */ ({
-  scripted: "the scripted model reply",
-  simulated: "the keyless simulation's reply",
-  real: "the model's reply",
-});
-
-/** The waterfall's tag on a model call; a real provider's reply has none. */
-const REPLY_TAGS = /** @type {Record<ReplyKind, string | null>} */ ({
-  scripted: "scripted reply",
-  simulated: "simulated reply",
-  real: null,
-});
-
-/**
- * The waterfall tag on a model call: scenario runs are scripted, keyless free play is the
- * simulation, and a real provider's reply has no tag.
- * @param {TraceView} trace
- * @returns {string | null}
- */
-export function modelReplyTag(trace) {
-  return REPLY_TAGS[replyKind(trace)];
-}
-
-/**
- * Free play's model line: who wrote the run's report, or null when no model answered.
- * @param {TraceView} trace
- * @returns {string | null}
- */
-export function modelLine(trace) {
-  const model = answeringModel(trace);
-  if (model === null) return null;
-  return replyKind(trace) === "simulated"
-    ? "Model: the keyless simulation (no model API key is set)"
-    : `Model: ${model}`;
-}
-
-// --- #155: free play shows its report ---
+// --- Free play shows its report ---
 
 /**
  * What the free-play panel draws beside its stage: the model line, a shed run's notice, and
@@ -1685,7 +1685,7 @@ export function freePlayView(run, now) {
   };
 }
 
-// --- #160: free play's input, double submits and refusals ---
+// --- Free play's input, double submits and refusals ---
 
 /** TriageRequest's shortest question (schemas/api.py), counted after trimming. */
 export const QUERY_MIN_LENGTH = 3;

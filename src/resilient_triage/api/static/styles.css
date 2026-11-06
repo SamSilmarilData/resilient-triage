@@ -155,7 +155,7 @@
     outline: none;
   }
 
-  /* #154: hidden always wins. A component's display (.events is a grid) beats the UA's
+  /* Hidden always wins. A component's display (.events is a grid) beats the UA's
      [hidden] rule; an !important declaration in this earliest layer beats every later one. */
   [hidden] {
     display: none !important;
@@ -282,7 +282,7 @@
       top: 1rem;
     }
 
-    /* #157: pinned stage fits the window. Capped at the viewport less its offset above and
+    /* Pinned stage fits the window. Capped at the viewport less its offset above and
        below, it scrolls inside itself; focus and Play scroll it, smoothly unless motion is
        reduced (the base reduced-motion rule forces scroll-behavior: auto). */
     .stage {
@@ -949,7 +949,7 @@
     border-radius: var(--radius);
     background: var(--surface);
 
-    /* #155: at phone width the card keeps its surface, top and bottom rules and padding but
+    /* At phone width the card keeps its surface, top and bottom rules and padding but
        runs edge to edge, so its graph still gets the 343 px graph-layout.json is sized for. */
     @media (max-width: 30rem) {
       margin-inline: calc(-1 * var(--gutter));
@@ -1237,7 +1237,7 @@
     grid-column: 2;
   }
 
-  /* #164: inspector head pinned, body scrolls. The dialog drops its padding so its frame fills
+  /* Inspector head pinned, body scrolls. The dialog drops its padding so its frame fills
      it (a click on the dialog itself is then a backdrop click). The frame takes the dialog's
      height cap less its 1px borders, and only the body scrolls, so Close never leaves the screen. */
   .inspector {
@@ -1266,7 +1266,7 @@
   }
 }
 
-/* #161: a Skip to end with nothing left to skip looks unavailable, as a quiet button's
+/* A Skip to end with nothing left to skip looks unavailable, as a quiet button's
    disabled state; aria-disabled (not disabled) keeps it focusable. */
 @layer components {
   .button--quiet[aria-disabled="true"] {
@@ -1278,7 +1278,7 @@
   }
 }
 
-/* #159: readable timeline. A detail value ("under 1 ms") moves to the next line whole rather
+/* Readable timeline. A detail value ("under 1 ms") moves to the next line whole rather
    than break inside, unless it is wider than the column on its own; in the pinned side panel
    the label column is wide enough that node and model names never break mid-word. */
 @layer components {
@@ -1295,7 +1295,7 @@
   }
 }
 
-/* #155: free play's finished run shows its report under the stage, inside the run's card. */
+/* Free play's finished run shows its report under the stage, inside the run's card. */
 @layer components {
   .free-play__run {
     display: grid;
@@ -1303,7 +1303,7 @@
   }
 }
 
-/* #158: the stage names the scenario it draws; at narrow widths, where the scenario's card sits
+/* The stage names the scenario it draws; at narrow widths, where the scenario's card sits
    far above the stage, a finished run links back to it. Pinned beside the chapters (wide), the
    card is in view already, so the link is not drawn. */
 @layer components {
@@ -1335,7 +1335,7 @@
   }
 }
 
-/* #160: free play's plain message about a question it won't send, and Triage while it can't
+/* Free play's plain message about a question it won't send, and Triage while it can't
    ask (a run streaming, or a budget shed's countdown): unavailable as the quiet button's
    disabled state, but aria-disabled (not disabled) keeps a keyboard user's focus on it. */
 @layer components {

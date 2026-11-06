@@ -71,7 +71,7 @@ export function Stage({
   `;
 }
 
-// --- #158: the stage names its scenario ---
+// --- The stage names its scenario ---
 
 /**
  * The scenario the stage draws, and once its run has finished, a link back to its card and
