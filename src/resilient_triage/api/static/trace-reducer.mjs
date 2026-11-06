@@ -56,12 +56,14 @@ import { StreamHttpError } from "./sse.mjs";
  *   events: TraceEvent[],
  *   scenarioId: string | null,
  *   scripted: boolean,
+ *   simulated: boolean,
  *   visits: NodeVisitView[],
  *   activeNode: string | null,
  *   walked: string[],
  *   finished: boolean,
  * }} TraceView
- * `scripted`: a scenario run, whose model replies are scripted (ADR 0009). `walked`: graph
+ * `scripted`: a scenario run, whose model replies are scripted (ADR 0009). `simulated`: a
+ * free-play run the keyless simulation answered (no model API key, #153). `walked`: graph
  * edges the run has taken, as edgeKey()s, each once, in the order first taken.
  */
 
@@ -84,6 +86,7 @@ function initialTrace() {
     events: [],
     scenarioId: null,
     scripted: false,
+    simulated: false,
     visits: [],
     activeNode: null,
     walked: [],
@@ -111,6 +114,7 @@ export function reduceTrace(trace, event) {
     case "trace_started":
       next.scenarioId = event.scenario_id;
       next.scripted = event.scenario_id !== null;
+      next.simulated = event.simulated === true; // absent in traces older than #153
       break;
     case "node_started": {
       const previous = trace.visits.length ? trace.visits[trace.visits.length - 1].node : START;
@@ -420,7 +424,7 @@ export function waterfallView(trace) {
           kind: "model",
           name: e.model,
           detail: `${e.role} · ${completed ? "reply" : words(e.outcome)}`,
-          tag: trace.scripted ? "scripted reply" : null,
+          tag: modelReplyTag(trace),
           tone: completed ? "ok" : "warn",
           ...endedAt(e, e.duration_ms),
         });
@@ -1035,7 +1039,11 @@ function provenance(trace, response) {
     trace.visits.some((visit) => visit.node === "fallback_report") ||
     trace.events.some((event) => event.kind === "deadline_exceeded");
   if (fellBack) return "Built by fallback_report from what the run saw: no model text.";
-  const model = trace.scripted ? "the scripted model reply" : "the model's reply";
+  const model = trace.scripted
+    ? "the scripted model reply"
+    : trace.simulated
+      ? "the keyless simulation's reply"
+      : "the model's reply";
   return `Summary, analysis and actions are ${model}. Status, breakers and approvals are set by reconcile.`;
 }
 
@@ -1225,4 +1233,31 @@ export function shedNotice(trace) {
       : "Every run slot is busy right now.";
   const when = retryAfterS === null ? "in a moment" : `in ${retryAfterS} s`;
   return { reason, retryAfterS, line: `${head} Try again ${when}.` };
+}
+
+// --- #153: keyless simulation ---
+
+/**
+ * The waterfall tag on a model call: scenario runs are scripted, keyless free play is the
+ * simulation, and a real provider's reply has no tag.
+ * @param {TraceView} trace
+ * @returns {string | null}
+ */
+export function modelReplyTag(trace) {
+  if (trace.scripted) return "scripted reply";
+  if (trace.simulated) return "simulated reply";
+  return null;
+}
+
+/**
+ * Free play's model line: who wrote the run's report, or null when no model answered.
+ * @param {TraceView} trace
+ * @returns {string | null}
+ */
+export function modelLine(trace) {
+  const model = answeringModel(trace);
+  if (model === null) return null;
+  return trace.simulated
+    ? "Model: the keyless simulation (no model API key is set)"
+    : `Model: ${model}`;
 }

@@ -4,7 +4,7 @@
 // design: the request, the model line and the shed notice come from trace-reducer.mjs; the panel's run
 // controller lives in app.mjs. Errors and lost streams stay in this panel (#101).
 import { html } from "htm/preact";
-import { answeringModel, freePlayRequest, shedNotice } from "../trace-reducer.mjs";
+import { freePlayRequest, modelLine, shedNotice } from "../trace-reducer.mjs";
 import { Stage } from "./stage.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
@@ -45,7 +45,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode }) {
       }),
     );
   };
-  const model = answeringModel(run.trace);
+  const model = modelLine(run.trace);
   const shed = shedNotice(run.trace);
   return html`
     <div class="free-play__panel">
@@ -90,7 +90,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode }) {
           data-shed-reason=${shed.reason}
           data-retry-after=${shed.retryAfterS ?? ""}
         >${shed.line}</p>`}
-        ${model && html`<p class="free-play__model" data-model>Model: ${model}</p>`}
+        ${model && html`<p class="free-play__model" data-model>${model}</p>`}
         <div class="free-play__run">
           <${Stage}
             run=${run}
