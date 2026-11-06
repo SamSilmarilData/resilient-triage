@@ -7,6 +7,7 @@ Tests drive the form the way a visitor does and wait on the panel's `data-run-st
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING
 
@@ -289,6 +290,52 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     assert graph is not None and graph["width"] >= 340
 
 
+# page.evaluate script (#155): the free-play run's card chrome, whether its graph and report
+# sit inside the card's box, and the card's edges against the viewport.
+RUN_CARD = """() => {
+  const card = document.querySelector("#free-play-root .free-play__run");
+  const style = getComputedStyle(card);
+  const box = card.getBoundingClientRect();
+  const within = (selector) => {
+    const inner = card.querySelector(selector)?.getBoundingClientRect();
+    return !!inner && inner.left >= box.left && inner.right <= box.right
+      && inner.top >= box.top && inner.bottom <= box.bottom;
+  };
+  return {
+    background: style.backgroundColor,
+    borderTop: style.borderTopWidth,
+    padding: style.paddingLeft,
+    graphWithin: within(".graph"),
+    reportWithin: within('[data-report="report"]'),
+    left: box.left,
+    right: box.right,
+    viewport: document.documentElement.clientWidth,
+  };
+}"""
+# The card's chrome on desktop, which phone width keeps.
+CARD_CHROME = {"borderTop": "1px", "padding": "16px"}
+
+
+@pytest.mark.parametrize(
+    "viewport", [{"width": 1280, "height": 900}, {"width": 375, "height": 812}]
+)
+def test_a_free_play_run_keeps_its_card_at_every_width(
+    pages: GuardedPages, viewport: dict[str, int]
+):
+    """The run, graph and report, sits in one surfaced, padded card on desktop and phone."""
+    page, _ = pages.open(viewport=viewport)
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+
+    card = page.evaluate(RUN_CARD)
+    assert card["background"] not in ("", "rgba(0, 0, 0, 0)"), card
+    assert {key: card[key] for key in CARD_CHROME} == CARD_CHROME, card
+    assert card["graphWithin"] and card["reportWithin"], card
+    assert card["left"] >= 0 and card["right"] <= card["viewport"], card
+
+
 def test_a_free_play_graph_node_opens_the_inspector(pages: GuardedPages):
     """Free play's graph opens the node inspector too, by keyboard; Escape returns focus."""
     page, _ = pages.open()
@@ -362,6 +409,94 @@ def test_a_keyless_free_play_run_has_no_serious_axe_violations(
     _ask(page, unique_question())
     wait_for_run(page, root=PANEL)
     assert _panel(page).locator("[data-model]").inner_text() == SIMULATED_MODEL_LINE
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+# --- #155: free play shows its report ---
+
+MODEL_REPORT = json.loads(DEFAULT_REPORT_JSON)
+REPORT = '[data-report="report"]'
+CACHED = re.compile(r"Served from the semantic cache, similarity \d\.\d\d: no run, no model call\.")
+
+
+def _report(page: Page) -> Locator:
+    """The free-play panel's report, once its run has finished."""
+    return _panel(page).locator(REPORT)
+
+
+def test_a_finished_free_play_run_shows_its_report(pages: GuardedPages):
+    """The answer reads like a scenario's report: severity to actions, from the model's reply."""
+    page, _ = pages.open()
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+
+    report = _report(page)
+    assert report.count() == 1
+    assert report.locator("[data-severity]").inner_text() == MODEL_REPORT["severity"]
+    assert report.locator("[data-degradation]").inner_text() == "HEALTHY"
+    assert re.fullmatch(r"Confidence \d\.\d\d", report.locator(".report__confidence").inner_text())
+    assert report.locator(".report__summary").inner_text() == MODEL_REPORT["summary"]
+    assert report.locator(".report__provenance").inner_text() == (
+        "Summary, analysis and actions are the model's reply. "
+        "Status, breakers and approvals are set by reconcile."
+    )
+    facts = report.locator(".report__facts dd").all_inner_texts()
+    assert facts[0] == MODEL_REPORT["root_cause_analysis"]
+    actions = report.locator(".report__what").all_inner_texts()
+    assert len(actions) == len(MODEL_REPORT["recommended_actions"])
+    assert actions[0].startswith(MODEL_REPORT["recommended_actions"][0]["action"])
+
+
+def test_a_free_play_cache_hit_shows_the_cached_report(pages: GuardedPages):
+    """Asking the same question again is answered from the cache, and shows that report."""
+    page, _ = pages.open()
+    open_shell(page)
+    question = unique_question()
+
+    _ask(page, question)
+    wait_for_run(page, root=PANEL)
+    first = _report(page).locator(".report__summary").inner_text()
+
+    _ask(page, question)
+    page.wait_for_selector(f"{PANEL} .report__provenance >> text=Served from the semantic cache")
+    wait_for_run(page, root=PANEL)
+
+    report = _report(page)
+    assert CACHED.fullmatch(report.locator(".report__provenance").inner_text())
+    assert report.locator(".report__summary").inner_text() == first == MODEL_REPORT["summary"]
+    assert len(pages.server.llm.calls) == 1, "the second answer made no model call"
+
+
+@pytest.mark.parametrize("live_settings", [_budget_of(1)], indirect=True)
+def test_a_shed_free_play_run_shows_its_notice_not_a_report(pages: GuardedPages):
+    """A shed run has no report to show: its notice says why, once, with no report card."""
+    page, _ = pages.open()
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+    assert _report(page).count() == 1
+    _ask(page, unique_question())
+    page.wait_for_selector(f"{PANEL} [data-shed-reason]")
+    wait_for_run(page, root=PANEL)
+
+    assert _panel(page).locator("[data-shed-reason]").count() == 1
+    assert _panel(page).locator("[data-report]").count() == 0
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_free_play_report_has_no_serious_axe_violations(pages: GuardedPages, color_scheme: str):
+    """The free-play report state passes axe-core in both themes."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+    assert _report(page).count() == 1
 
     violations = axe_violations(page)
     assert violations == [], describe(violations)

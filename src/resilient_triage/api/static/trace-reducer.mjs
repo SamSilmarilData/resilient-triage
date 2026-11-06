@@ -1513,3 +1513,23 @@ export function modelLine(trace) {
     ? "Model: the keyless simulation (no model API key is set)"
     : `Model: ${model}`;
 }
+
+// --- #155: free play shows its report ---
+
+/**
+ * What the free-play panel draws beside its stage: the model line, a shed run's notice, and
+ * the finished run's report as a scenario panel reads it (a cache hit's is the cached one).
+ * A shed run has no report: its notice already says why.
+ * @typedef {{ model: string | null, shed: ShedNotice | null,
+ *             report: ReportView | null }} FreePlayView
+ * @param {RunView} run
+ * @returns {FreePlayView}
+ */
+export function freePlayView(run) {
+  const report = reportView(run.trace);
+  return {
+    model: modelLine(run.trace),
+    shed: shedNotice(run.trace),
+    report: report?.kind === "report" ? report : null,
+  };
+}

@@ -232,7 +232,10 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
     page.get_by_label("Your incident").fill(unique_question("Payments API returning 502s"))
     page.locator("#free-play-root").get_by_role("button", name="Triage").click()
     wait_for_run(page, root="#free-play-root")
-    _fits(page, "after a free-play run")
+    report = page.locator('#free-play-root [data-report="report"]')
+    assert report.count() == 1, "the free-play run shows its report"
+    report.scroll_into_view_if_needed()
+    _fits(page, "after a free-play run, with its report")
 
     page.locator('#stage-root [data-node="generate_report"]').click()
     page.wait_for_selector("dialog.inspector[open]")

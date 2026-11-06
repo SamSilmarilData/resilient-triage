@@ -1,10 +1,12 @@
 // @ts-check
 // The free-play panel (#120): a visitor's own question, posted to POST /triage/stream, and its
 // run drawn by its own Stage (the same graph and waterfall as the guided scenarios). Dumb by
-// design: the request, the model line and the shed notice come from trace-reducer.mjs; the panel's run
-// controller lives in app.mjs. Errors and lost streams stay in this panel (#101).
+// design: the request, the model line, the shed notice and the report come from trace-reducer.mjs;
+// the panel's run controller lives in app.mjs. A finished run's report sits under its stage, in
+// the same card (#155). Errors and lost streams stay in this panel (#101).
 import { html } from "htm/preact";
-import { freePlayRequest, modelLine, shedNotice } from "../trace-reducer.mjs";
+import { freePlayRequest, freePlayView } from "../trace-reducer.mjs";
+import { Report } from "./report.mjs";
 import { Stage } from "./stage.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
@@ -46,8 +48,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now })
       }),
     );
   };
-  const model = modelLine(run.trace);
-  const shed = shedNotice(run.trace);
+  const { model, shed, report } = freePlayView(run);
   return html`
     <div class="free-play__panel">
       <form class="ask" onSubmit=${submit}>
@@ -100,6 +101,7 @@ export function FreePlay({ run, layout, onSubmit, onReplay, onSelectNode, now })
             onReplay=${onReplay}
             onSelectNode=${onSelectNode}
           />
+          ${report && html`<${Report} view=${report} />`}
         </div>
       `}
     </div>
