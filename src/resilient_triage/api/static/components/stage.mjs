@@ -17,10 +17,11 @@ import { Waterfall } from "./waterfall.mjs";
  *   layout: import("../trace-reducer.mjs").Loadable<GraphLayout>,
  *   onReplay: () => void,
  *   onSelectNode?: (name: string) => void,
- * }} props
+ *   now?: number,
+ * }} props `now`: the page's ticking clock, for a streaming run's headline (#156)
  */
-export function Stage({ run, layout, onReplay, onSelectNode }) {
-  const headline = runHeadline(run);
+export function Stage({ run, layout, onReplay, onSelectNode, now }) {
+  const headline = runHeadline(run, now);
   return html`
     <div class="run" data-run-state=${run.status} data-dimmed=${String(headline.dimmed)}>
       <p class="visually-hidden" role="status" data-run-announcement>${runAnnouncement(run)}</p>
