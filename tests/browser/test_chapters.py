@@ -387,3 +387,39 @@ def test_play_reads_play_until_the_scenarios_first_run_has_finished(pages: Guard
     assert play.inner_text() == "Play again", "a run of this scenario has finished before"
     violations = axe_violations(page)
     assert violations == [], describe(violations)
+
+
+# How a button looks: what tells a visitor whether it will do anything.
+BUTTON_LOOK = """(button) => {
+  const style = getComputedStyle(button);
+  return {color: style.color, background: style.backgroundColor,
+          border: style.borderTopStyle, cursor: style.cursor};
+}"""
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_skip_to_end_with_nothing_to_skip_looks_unavailable_and_keeps_focus(
+    pages: GuardedPages, scheme: str
+):
+    """Disabled, Skip to end changes its text, fill, border and cursor, yet keeps focus."""
+    page, _ = pages.open(color_scheme=scheme)
+    _open_chapters(page)
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    page.locator("#scenario-healthy-run-toggle").click()
+    skip = _scenario(page, "healthy-run", '[data-action="skip"]')
+    assert skip.get_attribute("aria-disabled") == "false"
+    enabled = skip.evaluate(BUTTON_LOOK)
+
+    skip.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector(_scenario_selector("healthy-run", "[data-report]"), state="attached")
+    page.mouse.move(0, 0)  # no hover colours on the button being measured
+
+    assert skip.get_attribute("aria-disabled") == "true"
+    assert page.evaluate("document.activeElement.dataset.action") == "skip"
+    disabled = skip.evaluate(BUTTON_LOOK)
+    assert disabled["cursor"] == "not-allowed"
+    for part in ("color", "background", "border"):
+        assert disabled[part] != enabled[part], f"a disabled Skip to end keeps its {part}"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
