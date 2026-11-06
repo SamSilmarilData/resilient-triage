@@ -302,6 +302,16 @@ SCROLL_STAGE_TO_END = """() => {
   stage.scrollTo({top: stage.scrollHeight, behavior: "instant"});
   return stage.scrollTop;
 }"""
+# page.evaluate script: resolves once the stage's own scroll has stood still for 3 frames.
+STAGE_SETTLED = """async () => {
+  const stage = document.querySelector(".stage");
+  const frame = () => new Promise((done) => requestAnimationFrame(done));
+  for (let still = 0, y = stage.scrollTop, n = 0; still < 3 && n < 120; n++) {
+    await frame();
+    still = stage.scrollTop === y ? still + 1 : 0;
+    y = stage.scrollTop;
+  }
+}"""
 # page.evaluate script: whether the stage is pinned, i.e. stuck at its offset.
 PINNED = """(offset) => {
   return Math.abs(document.querySelector(".stage").getBoundingClientRect().top - offset) < 1;
@@ -371,6 +381,8 @@ def test_tab_keeps_every_graph_node_of_the_pinned_stage_in_view(pages: GuardedPa
             _tab_to(page, selector)
         else:
             page.keyboard.press("Tab")
+            # Focus scrolls the stage smoothly: check the node once that scroll stops.
+            page.evaluate(STAGE_SETTLED)
             _focused(page, selector)
         page.wait_for_function(SHOWN_IN_STAGE, arg=[f"{selector} .graph__box", True])
 
