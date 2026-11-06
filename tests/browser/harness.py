@@ -251,9 +251,10 @@ class GuardedPages:
             context.close()
 
 
-def open_shell(page: Page, wait_for_requests: bool = True) -> None:
-    """Load `/` and wait until every region of the page shell has rendered."""
-    page.goto("/")
+def open_shell(page: Page, wait_for_requests: bool = True, path: str = "/") -> None:
+    """Load `path` (`/`, or a deep link like `/#free-play`) and wait until every region of the
+    page shell has rendered."""
+    page.goto(path)
     page.wait_for_selector(SHELL_READY, state="attached")
     if wait_for_requests:
         # Fonts and other subresources settle after the shell renders: wait on them, not a timer.
