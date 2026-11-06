@@ -714,14 +714,25 @@ const STREAM_WATCHDOG_MS = 30_000;
 /**
  * What the stage says about a run: its one line, whether to dim the partial trace, the
  * action its button offers (Replay after a lost stream, Retry after a refusal), and whether
- * its model replies are scripted (a scenario run, ADR 0009).
+ * its model replies are scripted (a scenario run that called a model, ADR 0009; #161).
  * @typedef {{ status: RunStatus, line: string | null, dimmed: boolean,
  *             action: "Replay" | "Retry" | null, scripted: boolean }} RunHeadline
  * @param {RunView} run
  * @returns {RunHeadline}
  */
 export function runHeadline(run) {
-  return { ...runLine(run), scripted: run.trace.scripted };
+  return { ...runLine(run), scripted: run.trace.scripted && calledAModel(run.trace) };
+}
+
+// --- #161: scripted badge only on runs that called a model ---
+
+/**
+ * Whether a trace records at least one model call: a cache hit or a shed request never
+ * calls one, so it has no reply to call scripted.
+ * @param {TraceView} trace
+ */
+function calledAModel(trace) {
+  return trace.events.some((event) => event.kind === "model_call");
 }
 
 /**
