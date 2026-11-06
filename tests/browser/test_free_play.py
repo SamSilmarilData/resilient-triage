@@ -290,6 +290,52 @@ def test_a_free_play_run_fits_phone_width(pages: GuardedPages):
     assert graph is not None and graph["width"] >= 340
 
 
+# page.evaluate script (#155): the free-play run's card chrome, whether its graph and report
+# sit inside the card's box, and the card's edges against the viewport.
+RUN_CARD = """() => {
+  const card = document.querySelector("#free-play-root .free-play__run");
+  const style = getComputedStyle(card);
+  const box = card.getBoundingClientRect();
+  const within = (selector) => {
+    const inner = card.querySelector(selector)?.getBoundingClientRect();
+    return !!inner && inner.left >= box.left && inner.right <= box.right
+      && inner.top >= box.top && inner.bottom <= box.bottom;
+  };
+  return {
+    background: style.backgroundColor,
+    borderTop: style.borderTopWidth,
+    padding: style.paddingLeft,
+    graphWithin: within(".graph"),
+    reportWithin: within('[data-report="report"]'),
+    left: box.left,
+    right: box.right,
+    viewport: document.documentElement.clientWidth,
+  };
+}"""
+# The card's chrome on desktop, which phone width keeps.
+CARD_CHROME = {"borderTop": "1px", "padding": "16px"}
+
+
+@pytest.mark.parametrize(
+    "viewport", [{"width": 1280, "height": 900}, {"width": 375, "height": 812}]
+)
+def test_a_free_play_run_keeps_its_card_at_every_width(
+    pages: GuardedPages, viewport: dict[str, int]
+):
+    """The run, graph and report, sits in one surfaced, padded card on desktop and phone."""
+    page, _ = pages.open(viewport=viewport)
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+
+    card = page.evaluate(RUN_CARD)
+    assert card["background"] not in ("", "rgba(0, 0, 0, 0)"), card
+    assert {key: card[key] for key in CARD_CHROME} == CARD_CHROME, card
+    assert card["graphWithin"] and card["reportWithin"], card
+    assert card["left"] >= 0 and card["right"] <= card["viewport"], card
+
+
 def test_a_free_play_graph_node_opens_the_inspector(pages: GuardedPages):
     """Free play's graph opens the node inspector too, by keyboard; Escape returns focus."""
     page, _ = pages.open()
