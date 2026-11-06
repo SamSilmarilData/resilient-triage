@@ -1215,3 +1215,20 @@
     grid-column: 2;
   }
 }
+
+/* #159: readable timeline. A detail value ("under 1 ms") moves to the next line whole rather
+   than break inside, unless it is wider than the column on its own; in the pinned side panel
+   the label column is wide enough that node and model names never break mid-word. */
+@layer components {
+  .waterfall__part {
+    display: inline-block;
+    max-width: 100%;
+  }
+
+  @media (min-width: 60rem) {
+    .stage .waterfall__row,
+    .stage .waterfall__axis {
+      grid-template-columns: 12rem minmax(0, 1fr);
+    }
+  }
+}
