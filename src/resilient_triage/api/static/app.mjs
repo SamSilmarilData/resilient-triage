@@ -20,6 +20,7 @@ import {
   idleRun,
   inspectorView,
   needsReveal,
+  stageRevealTop,
   toggledOpen,
 } from "./trace-reducer.mjs";
 
@@ -103,13 +104,16 @@ function GuidedChapters() {
 /**
  * Bring the stage into view for a run that just started, when needsReveal() says so. The
  * scroll follows html's scroll-behavior, so it is instant under reduced motion. Focus stays
- * on Play.
+ * on Play. A pinned stage scrolled down inside itself goes back to its graph (#157).
  */
 function revealStage() {
   const element = document.querySelector(".stage");
-  if (element && needsReveal(element.getBoundingClientRect(), window.innerHeight)) {
+  if (!element) return;
+  if (needsReveal(element.getBoundingClientRect(), window.innerHeight)) {
     element.scrollIntoView({ block: "start" });
   }
+  const top = stageRevealTop(element);
+  if (top !== null) element.scrollTo({ top });
 }
 
 /** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */
