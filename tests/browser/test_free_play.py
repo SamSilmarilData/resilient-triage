@@ -17,6 +17,7 @@ from harness import (
     axe_violations,
     describe,
     open_shell,
+    play,
     run_selector,
     unique_question,
     wait_for_run,
@@ -309,3 +310,58 @@ def test_a_free_play_graph_node_opens_the_inspector(pages: GuardedPages):
         "document.activeElement.closest('#free-play-root [data-node]')?.dataset.node"
     )
     assert focused == "validate_report"
+
+
+# --- #153: the keyless simulation says so ---
+
+KEYLESS = pytest.mark.parametrize("live_keyless", [True], indirect=True)
+SIMULATED_MODEL_LINE = "Model: the keyless simulation (no model API key is set)"
+
+
+@KEYLESS
+def test_keyless_free_play_says_the_simulation_answered(pages: GuardedPages):
+    """With no model API key, the model line and every model row name the simulation."""
+    page, _ = pages.open()
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+
+    panel = _panel(page)
+    assert panel.locator("[data-model]").inner_text() == SIMULATED_MODEL_LINE
+    assert settings.groq_model not in panel.locator("[data-model]").inner_text()
+    tags = panel.locator('.waterfall__row[data-kind="model"] .waterfall__tag').all_inner_texts()
+    assert tags == ["simulated reply"]
+    assert len(pages.server.llm.calls) == 1, "the keyless simulation answered"
+
+
+@KEYLESS
+def test_a_keyless_scenario_run_still_reads_scripted_reply(pages: GuardedPages):
+    """Scenario runs keep their own scripted model, so keyless doesn't relabel them."""
+    page, _ = pages.open()
+    open_shell(page)
+
+    play(page, scenario="healthy-run")
+    wait_for_run(page)
+
+    tags = page.locator(
+        '#stage-root .waterfall__row[data-kind="model"] .waterfall__tag'
+    ).all_inner_texts()
+    assert tags and all(tag == "scripted reply" for tag in tags)
+
+
+@KEYLESS
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_keyless_free_play_run_has_no_serious_axe_violations(
+    pages: GuardedPages, color_scheme: str
+):
+    """The simulation's model line and tags pass axe-core in both themes."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    _ask(page, unique_question())
+    wait_for_run(page, root=PANEL)
+    assert _panel(page).locator("[data-model]").inner_text() == SIMULATED_MODEL_LINE
+
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
