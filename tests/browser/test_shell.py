@@ -69,3 +69,52 @@ def test_no_horizontal_scroll_at_phone_width(pages: GuardedPages, options: dict[
 
     widths = page.evaluate(PAGE_WIDTHS)
     assert widths[0] <= widths[1], f"page is {widths[0]} px wide in a {widths[1]} px viewport"
+
+
+# --- #163: deep links ---
+DESKTOP = {"width": 1440, "height": 900}
+# Set on <html> once the page has scrolled to the URL's fragment, after every region filled in.
+DEEP_LINK_DONE = 'html[data-deep-link="done"]'
+# Each deep-linkable section and the heading a visitor should land on.
+DEEP_LINKS = {"free-play": "#free-play-title", "how-its-built": "#built-title"}
+# How far below the viewport's top a landed heading may sit: the section's own top padding.
+NEAR_TOP_PX = 120
+HEADING_TOP = "(selector) => document.querySelector(selector).getBoundingClientRect().top"
+HEADING_NEAR_TOP = f"""(selector) => {{
+  const top = document.querySelector(selector).getBoundingClientRect().top;
+  return top >= 0 && top <= {NEAR_TOP_PX};
+}}"""
+
+
+@pytest.mark.parametrize("section", DEEP_LINKS)
+def test_a_deep_link_lands_on_its_section(pages: GuardedPages, section: str):
+    """`/#free-play` puts Free play's heading near the top, though the chapters fill in late."""
+    page, _ = pages.open(viewport=DESKTOP)
+
+    open_shell(page, path=f"/#{section}")
+    page.wait_for_selector(DEEP_LINK_DONE, state="attached")
+
+    # Without reduced motion the scroll may be smooth: wait for it to settle, not a timer.
+    page.wait_for_function(HEADING_NEAR_TOP, arg=DEEP_LINKS[section], timeout=5000)
+    assert page.locator("[aria-busy]").count() == 0
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_deep_link_scrolls_once_and_instantly_under_reduced_motion(
+    pages: GuardedPages, color_scheme: str
+):
+    """Under reduced motion the jump is instant, and it happens once: the page then stays put."""
+    page, _ = pages.open(viewport=DESKTOP, color_scheme=color_scheme, reduced_motion="reduce")
+
+    open_shell(page, path="/#free-play")
+    page.wait_for_selector(DEEP_LINK_DONE, state="attached")
+
+    top = page.evaluate(HEADING_TOP, "#free-play-title")
+    assert 0 <= top <= NEAR_TOP_PX, f"heading at {top} px right after the deep-link scroll"
+
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_load_state("networkidle")
+    page.evaluate("document.fonts.ready.then(() => true)")
+    assert page.evaluate("window.scrollY") == 0, "the page scrolled to the fragment again"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
