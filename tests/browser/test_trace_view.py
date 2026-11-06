@@ -461,6 +461,7 @@ def test_the_headline_clock_keeps_counting_until_the_run_ends(
     assert first is not None and first.startswith("Running, "), first
     assert second is not None and second.startswith("Running, "), second
     assert second != first, "the headline's clock stood still"
+    assert page.evaluate("() => window.__liveIntervals()") == 1, "one clock ticks while it runs"
     violations = axe_violations(page)
     assert violations == [], describe(violations)
 
