@@ -1214,4 +1214,32 @@
     gap: 0 0.5rem;
     grid-column: 2;
   }
+
+  /* #164: inspector head pinned, body scrolls. The dialog drops its padding so its frame fills
+     it (a click on the dialog itself is then a backdrop click). The frame takes the dialog's
+     height cap less its 1px borders, and only the body scrolls, so Close never leaves the screen. */
+  .inspector {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .inspector__frame {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 2 * var(--gutter) - 2px);
+  }
+
+  .inspector .inspector__head {
+    flex: none;
+    margin: 0;
+    padding: 1.25rem 1.25rem 0.75rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .inspector__body {
+    min-height: 0;
+    padding: 0.75rem 1.25rem 1.25rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }

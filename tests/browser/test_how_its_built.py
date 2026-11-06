@@ -247,25 +247,32 @@ def test_a_click_on_the_backdrop_closes_the_inspector_and_returns_focus(
 
 
 def test_clicks_inside_the_inspector_do_not_close_it(pages: GuardedPages):
-    page = open_page(pages)
+    # Tall enough for generate_report to fit unscrolled, so its edges are padding, not links.
+    page = open_page(pages, viewport={"width": 1280, "height": 1000})
     page.click('[data-node="generate_report"]')
     page.wait_for_selector(f"{INSPECTOR}[open]")
     box = page.locator(INSPECTOR).bounding_box()
     assert box is not None
 
+    is_open = f"() => document.querySelector({INSPECTOR!r}).open"
     page.locator(f"{INSPECTOR} [data-inspector-purpose]").click()
     page.locator(f"{INSPECTOR} .inspector__title").click()
-    # Just inside two corners of the panel: its edge, not the backdrop.
+    assert page.evaluate(is_open), "a click on the inspector's text closed it"
+    # Just inside the panel's edges (mid-side, clear of the rounded corners): not the backdrop.
     for x, y in [
-        (box["x"] + 3, box["y"] + 3),
-        (box["x"] + box["width"] - 3, box["y"] + box["height"] - 3),
+        (box["x"] + 3, box["y"] + box["height"] / 2),
+        (box["x"] + box["width"] / 2, box["y"] + 3),
+        (box["x"] + box["width"] - 3, box["y"] + box["height"] / 2),
+        (box["x"] + box["width"] / 2, box["y"] + box["height"] - 3),
     ]:
         page.mouse.click(x, y)
+        assert page.evaluate(is_open), f"a click at the panel's edge ({x}, {y}) closed it"
     # Pressed inside, released over the backdrop: a text selection, not a backdrop click.
     page.mouse.move(box["x"] + 20, box["y"] + box["height"] / 2)
     page.mouse.down()
     page.mouse.move(4, 4)
     page.mouse.up()
+    assert page.evaluate(is_open), "a drag out of the panel closed it"
 
     shown = page.evaluate(INSPECTED)
     assert (shown["open"], shown["focusInside"]) == (True, True)
