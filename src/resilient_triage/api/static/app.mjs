@@ -179,17 +179,34 @@ function loadLayout() {
   return loadInto(layout, "/static/graph-layout.json");
 }
 
+// --- #163: deep links ---
+/**
+ * Scroll to the URL's fragment (a link like `/#free-play`) once, after the regions above it
+ * have filled in: the browser's own jump lands before the chapters grow, so it ends up a
+ * chapter short. The scroll follows html's scroll-behavior, so it is instant under reduced
+ * motion. Sets `data-deep-link="done"` on <html> after, for browser tests to wait on.
+ * @param {Promise<unknown>[]} loads the fetches that change the page's height
+ */
+async function landOnFragment(loads) {
+  await Promise.allSettled([...loads, document.fonts.ready]);
+  // Signal changes re-render on the next tick; wait for that render to be laid out.
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const id = decodeURIComponent(location.hash.slice(1));
+  if (id) document.getElementById(id)?.scrollIntoView({ block: "start" });
+  document.documentElement.dataset.deepLink = "done";
+}
+
 function main() {
-  loadLayout();
-  loadCatalogue();
+  const loads = [loadLayout(), loadCatalogue()];
   mount("stage-root", html`<${LiveStage} />`);
   mount("chapters-root", html`<${GuidedChapters} />`);
   mount("free-play-root", html`<${LiveFreePlay} />`);
-  loadGraphNodes();
+  loads.push(loadGraphNodes());
   mount("built-nodes-root", html`<${BuiltNodes} />`);
   mount("node-inspector-root", html`<${Inspector} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.
   document.documentElement.dataset.shell = "ready";
+  landOnFragment(loads);
 }
 
 main();
