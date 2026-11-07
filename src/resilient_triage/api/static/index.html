@@ -107,6 +107,7 @@
           <li><b>One model gateway</b> that owns failover and per-model cooldowns (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md">ADR 0005</a>, <a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0006-project-owned-llm-gateway.md">ADR 0006</a>).</li>
           <li><b>An execution trace</b>, streamed as server-sent events, that draws everything on this page (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0008-execution-trace.md">ADR 0008</a>, <a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0009-scenario-runs-are-isolated.md">ADR 0009</a>).</li>
           <li><b>A build-free page</b>: native modules, Preact and one stylesheet, all served from this origin (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0010-build-free-vendored-frontend.md">ADR 0010</a>).</li>
+          <li><b>One runtime per app</b> that owns every stateful piece, from the cache to the breakers; graph nodes see only the collaborators their run hands them (<a href="https://github.com/SamSilmarilData/resilient-triage/blob/main/docs/decisions/0011-one-per-app-runtime.md">ADR 0011</a>).</li>
         </ul>
         <h3 id="built-nodes-title">The graph's nodes</h3>
         <p>

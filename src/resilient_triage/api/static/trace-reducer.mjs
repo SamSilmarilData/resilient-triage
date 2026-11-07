@@ -1577,6 +1577,7 @@ export const ADR_TITLES = Object.freeze({
   "0008": "Execution Trace from a Per-Request Recorder, Streamed over SSE",
   "0009": "Scenario Runs Are Fully Isolated from the Shared Runtime",
   "0010": "Build-Free, Vendored Frontend",
+  "0011": "One Per-App Runtime, No Module-Level Singletons",
 });
 
 /**
