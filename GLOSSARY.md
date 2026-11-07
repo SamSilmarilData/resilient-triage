@@ -18,6 +18,10 @@ _Avoid_: health, agent mode
 A run whose report was built deterministically because the model could not produce a valid one (self-repair limit reached or provider failure).
 _Avoid_: fallback (unqualified), degraded fallback (that is the telemetry branch)
 
+**Refine round**:
+One extra attempt to improve a report that was valid but had low confidence. It can only replace that report with a better valid one. If the attempt fails for any reason, the run keeps the report it started from, and that outcome is not a synthesis fallback.
+_Avoid_: reflection, retry (that is self-repair)
+
 **Unavailable source**:
 A targeted telemetry source that could not be read during a run although its breaker had not tripped.
 _Avoid_: failed probe, error signal
