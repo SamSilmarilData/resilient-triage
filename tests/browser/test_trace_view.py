@@ -22,10 +22,12 @@ from harness import (
     play,
     run_selector,
     stream_scenario,
+    unique_question,
     wait_for_run,
 )
 
 from resilient_triage.config import settings
+from resilient_triage.scenarios.catalogue import SCENARIOS
 from resilient_triage.trace.events import (
     ModelCall,
     NodeFinished,
@@ -186,6 +188,25 @@ def test_every_outcome_reaches_the_finished_state(
     assert watch.failed == []
 
 
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_deadline_cut_run_says_its_fallback_came_from_outside_the_graph(
+    pages: GuardedPages, color_scheme: str
+):
+    """The deadline's fallback never lights fallback_report; the headline says where it's from."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    play(page, scenario="run-deadline")
+    wait_for_run(page)
+
+    line = page.locator("[data-run-line]").inner_text()
+    assert line.startswith("Fallback report in "), line
+    assert "run deadline hit, answered outside the graph" in line, line
+    assert "fallback_report" not in graph_state(page).visited
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
 def _sse(events: list[TraceEvent]) -> str:
     """Events framed as the server frames them."""
     return "".join(f"event: {e.kind}\ndata: {e.model_dump_json()}\n\n" for e in events)
@@ -257,8 +278,8 @@ def test_a_silent_stream_is_lost_after_30_seconds_and_pings_keep_it_alive(pages:
     page.clock.install()
     open_shell(page, wait_for_requests=False)
     page.wait_for_selector(GRAPH_READY, state="attached")
-    # From here the page's clock moves only when the test moves it.
-    page.clock.pause_at(page.evaluate("Date.now()") + 1_000)
+    # From here the page's clock moves only when the test moves it. pause_at takes seconds.
+    page.clock.pause_at((page.evaluate("Date.now()") + 1_000) / 1_000)
     page.evaluate(MANUAL_SOURCE)
     page.evaluate("(message) => window.feed(message)", STARTED)
     wait_for_run(page, "streaming")
@@ -418,3 +439,276 @@ def test_a_finished_run_fits_phone_width(pages: GuardedPages):
     assert graph is not None and waterfall is not None
     assert graph["y"] + graph["height"] <= waterfall["y"]
     assert graph["width"] >= 340
+
+
+# --- #159: readable timeline ---------------------------------------------------------------
+SIDE_PANEL = {"width": 1280, "height": 720}
+PHONE = {"width": 375, "height": 812}
+# The axis's zero label (null if hidden), end label, track and zero line, as client rects.
+AXIS_LABELS = """() => {
+  const box = (selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return null;
+    const {left, right, top, bottom} = el.getBoundingClientRect();
+    return {left, right, top, bottom};
+  };
+  return {zero: box(".waterfall__zero .waterfall__tick"), end: box(".waterfall__tick--end"),
+          track: box(".waterfall__track--axis"), zeroLine: box(".waterfall__zero")};
+}"""
+# Every word in a waterfall row's name or detail value that the browser broke across lines,
+# and every detail value drawn on more than one line.
+BROKEN_LABELS = """() => {
+  const broken = [];
+  for (const label of document.querySelectorAll(".waterfall__name, .waterfall__part")) {
+    const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (const word of node.data.matchAll(/\\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, word.index);
+        range.setEnd(node, word.index + word[0].length);
+        if (range.getClientRects().length > 1) broken.push(word[0]);
+      }
+    }
+  }
+  for (const part of document.querySelectorAll(".waterfall__part")) {
+    const line = parseFloat(getComputedStyle(part).lineHeight);
+    if (part.getBoundingClientRect().height > line * 1.5) broken.push(part.textContent);
+  }
+  return broken;
+}"""
+
+
+def _overlap(a: dict[str, float], b: dict[str, float]) -> bool:
+    """Whether two client rects intersect."""
+    across = a["left"] < b["right"] and b["left"] < a["right"]
+    return across and a["top"] < b["bottom"] and b["top"] < a["bottom"]
+
+
+@pytest.mark.parametrize("scenario_id", [scenario.id for scenario in SCENARIOS])
+def test_the_zero_and_end_labels_never_meet_and_the_run_keeps_the_axis(
+    pages: GuardedPages, scenario_id: str
+):
+    """In the side panel and at phone width the axis labels stay apart; setup takes <= 1/4."""
+    for viewport in (SIDE_PANEL, PHONE):
+        page, _ = pages.open(viewport=viewport)
+        open_shell(page)
+
+        play(page, scenario=scenario_id)
+        wait_for_run(page)
+
+        axis = page.evaluate(AXIS_LABELS)
+        assert axis["zero"] is not None, f"zero label hidden at {viewport}"
+        assert not _overlap(axis["zero"], axis["end"]), (viewport, axis)
+        track = axis["track"]
+        setup_share = (axis["zeroLine"]["left"] - track["left"]) / (track["right"] - track["left"])
+        assert setup_share <= 0.25 + 0.005, (viewport, setup_share)
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+@pytest.mark.parametrize("scenario_id", ["everything-down", "tripped-breaker"])
+def test_side_panel_labels_and_details_never_break_mid_phrase(
+    pages: GuardedPages, scenario_id: str, color_scheme: str
+):
+    """In the pinned side panel no name or value wraps inside a word or a value; axe passes."""
+    page, _ = pages.open(viewport=SIDE_PANEL, color_scheme=color_scheme)
+    open_shell(page)
+
+    play(page, scenario=scenario_id)
+    wait_for_run(page)
+
+    assert page.locator(".stage .waterfall__part").count() > 0
+    assert page.evaluate(BROKEN_LABELS) == []
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+def test_setup_steps_draw_above_the_reads_they_caused(pages: GuardedPages):
+    """A tripped breaker's setup step is the first setup row; its reads follow, indented."""
+    page, _ = pages.open()
+    open_shell(page)
+
+    play(page, scenario="tripped-breaker")
+    wait_for_run(page)
+
+    rows = page.locator('.waterfall__row[data-kind="setup"]')
+    assert rows.first.locator(".waterfall__name").inner_text().startswith("Fail Statuspage")
+    assert rows.first.get_attribute("data-depth") == "0"
+    assert rows.count() > 1
+    assert all(rows.nth(i).get_attribute("data-depth") == "1" for i in range(1, rows.count()))
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_a_redis_down_run_says_its_cache_ran_in_memory(pages: GuardedPages, color_scheme: str):
+    """Everything down: the cache rows say "in memory", as the scenario's setup note does."""
+    (scenario,) = [scenario for scenario in SCENARIOS if scenario.id == "everything-down"]
+    assert any("cache runs in memory" in note for note in scenario.setup_notes)
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+
+    play(page, scenario="everything-down")
+    wait_for_run(page)
+
+    cache = page.locator('.waterfall__row[data-kind="cache"], .waterfall__row[data-kind="store"]')
+    assert cache.count() == 2
+    for i in range(cache.count()):
+        parts = cache.nth(i).locator(".waterfall__part").all_inner_texts()
+        assert parts[-1] == "in memory"
+
+
+CACHE_ROWS = (
+    '#stage-root .waterfall__row[data-kind="cache"], #stage-root .waterfall__row[data-kind="store"]'
+)
+# Every catalogued scenario but the one whose setup takes Redis down.
+REDIS_UP = [scenario.id for scenario in SCENARIOS if scenario.id != "everything-down"]
+
+
+@pytest.mark.parametrize("scenario_id", REDIS_UP)
+def test_a_scenario_with_redis_up_names_no_cache_backend(pages: GuardedPages, scenario_id: str):
+    """A scenario's private in-memory cache (ADR 0009) stands in for the normal one: its cache
+    rows name no backend unless its setup takes Redis down."""
+    (scenario,) = [scenario for scenario in SCENARIOS if scenario.id == scenario_id]
+    assert not any("Redis" in note for note in scenario.setup_notes)
+    page, _ = pages.open()
+    open_shell(page)
+
+    play(page, scenario=scenario_id)
+    wait_for_run(page)
+
+    cache = page.locator(CACHE_ROWS)
+    assert cache.count() >= 1
+    for i in range(cache.count()):
+        parts = cache.nth(i).locator(".waterfall__part").all_inner_texts()
+        assert "in memory" not in parts and "Redis" not in " ".join(parts), parts
+
+
+# --- #163: malformed streams ---
+MALFORMED_BLOCK = "event: node_started\ndata: {not json\n\n"
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+@pytest.mark.parametrize("events_first", [0, 3], ids=["at-once", "mid-run"])
+def test_a_malformed_stream_says_the_runs_data_couldnt_be_read(
+    pages: GuardedPages, color_scheme: str, events_first: int
+):
+    """A stream the server sent but that doesn't parse is its own error, not "unreachable"."""
+    events = stream_scenario(pages.server, "healthy-run")
+    page, _ = pages.open(color_scheme=color_scheme)
+    open_shell(page)
+    page.route(
+        "**/scenarios/healthy-run/stream",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/event-stream",
+            body=_sse(events[:events_first]) + MALFORMED_BLOCK,
+        ),
+    )
+
+    play(page, scenario="healthy-run")
+    wait_for_run(page, "error")
+
+    line = page.locator("[data-run-line]").inner_text()
+    assert line.startswith("Couldn't read the run's data"), line
+    assert "reach the server" not in line
+    assert page.get_by_role("button", name="Retry").count() == 1
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+# --- #156: the run's clock ---
+# Init script: counts the page's live setInterval timers, so a test can see the clock stop.
+COUNT_INTERVALS = """(() => {
+  const live = new Set();
+  const set = window.setInterval.bind(window);
+  const clear = window.clearInterval.bind(window);
+  window.setInterval = (...args) => { const id = set(...args); live.add(id); return id; };
+  window.clearInterval = (id) => { live.delete(id); clear(id); };
+  window.__liveIntervals = () => live.size;
+})()"""
+RUN_LINE = '() => document.querySelector("#stage-root [data-run-line]")?.textContent ?? null'
+# page.evaluate script: the summary line of the events the stage folded.
+STAGE_SUMMARY_LINE = """async () => {
+  const reducer = await import("/static/trace-reducer.mjs");
+  const {stage} = await import("/static/app.mjs");
+  return reducer.summaryLine(reducer.summarize(stage.view.trace.events));
+}"""
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_the_headline_clock_keeps_counting_until_the_run_ends(
+    pages: GuardedPages, color_scheme: str
+):
+    """Waiting on the run deadline, the headline counts up; at the end it is the summary's."""
+    page, _ = pages.open(color_scheme=color_scheme)
+    page.add_init_script(COUNT_INTERVALS)
+    open_shell(page)
+    assert page.evaluate("() => window.__liveIntervals()") == 0
+
+    play(page, scenario="run-deadline")
+    # The scenario's slow Cluster Sentinel holds collect_telemetry ~3 s with no event: the wait.
+    page.wait_for_selector(
+        '#stage-root [data-node="collect_telemetry"][data-state="active"]', state="attached"
+    )
+    first = page.evaluate(RUN_LINE)
+    # Sampling a clock takes real time: the one fixed wait here is the interval sampled.
+    page.wait_for_timeout(1_000)
+    second = page.evaluate(RUN_LINE)
+    assert first is not None and first.startswith("Running, "), first
+    assert second is not None and second.startswith("Running, "), second
+    assert second != first, "the headline's clock stood still"
+    assert page.evaluate("() => window.__liveIntervals()") == 1, "one clock ticks while it runs"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    wait_for_run(page)
+    assert page.evaluate(RUN_LINE) == page.evaluate(STAGE_SUMMARY_LINE)
+    assert page.evaluate("() => window.__liveIntervals()") == 0, "the clock still ticks"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+# page.evaluate script: count every component render by the component's name, through Preact's
+# public `options.diffed` hook (chained, as @preact/signals hooks it too).
+COUNT_RENDERS = """async () => {
+  const {options} = await import("preact");
+  const renders = {};
+  const previous = options.diffed;
+  options.diffed = (vnode) => {
+    if (typeof vnode.type === "function") {
+      renders[vnode.type.name] = (renders[vnode.type.name] ?? 0) + 1;
+    }
+    previous?.(vnode);
+  };
+  window.__renders = () => ({...renders});
+}"""
+# Components that show no time: a clock tick must not render any of them again.
+TIMELESS = ("LiveStage", "Stage", "Graph", "Waterfall", "GuidedChapters", "Chapter", "FreePlay")
+
+
+def test_a_clock_tick_renders_only_the_line_that_shows_the_time(pages: GuardedPages):
+    """While a run's headline counts, each tick redraws its clocked line and nothing else: not
+    the stage's graph or timeline, not the chapters, not the finished free-play panel."""
+    page, _ = pages.open()
+    page.clock.install()
+    open_shell(page)
+    free_play = page.locator("#free-play-root")
+    free_play.get_by_label("Your incident").fill(unique_question())
+    free_play.get_by_role("button", name="Triage").click()
+    wait_for_run(page, root="#free-play-root")
+    page.locator('[data-scenario="run-deadline"] .scenario__toggle').click()
+
+    play(page, scenario="run-deadline")
+    # The slow Cluster Sentinel holds collect_telemetry ~3 s with no event: only ticks change.
+    page.wait_for_selector(
+        '#stage-root [data-node="collect_telemetry"][data-state="active"]', state="attached"
+    )
+    page.evaluate(COUNT_RENDERS)
+    first = page.evaluate(RUN_LINE)
+    page.clock.run_for(2_000)  # eight ticks of the page's clock, in no real time
+
+    renders = page.evaluate("() => window.__renders()")
+    assert page.evaluate(RUN_LINE) != first, "the clock didn't tick"
+    assert page.locator("#stage-root [data-run-state]").get_attribute("data-run-state") == (
+        "streaming"
+    )
+    assert renders.get("Clocked", 0) > 0, renders
+    assert {name: renders[name] for name in TIMELESS if name in renders} == {}

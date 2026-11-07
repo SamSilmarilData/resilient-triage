@@ -1,4 +1,4 @@
-"""Node: fallback_report - Constructs a safe report on a provider failure or repair exhaustion."""
+"""Node: fallback_report - Builds a safe report when the model fails or can't fix its JSON."""
 
 from collections.abc import Sequence
 from typing import Any

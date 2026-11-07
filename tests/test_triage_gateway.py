@@ -13,6 +13,7 @@ from resilient_triage.cache.semantic_cache import SemanticCacheManager
 from resilient_triage.cache.vector_store import VectorEntry
 from resilient_triage.config import Settings, settings
 from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport, SeverityLevel
+from resilient_triage.triage.budget import RunBudget
 from resilient_triage.triage.gateway import (
     Analyzed,
     CacheHit,
@@ -389,6 +390,27 @@ async def test_a_caller_cancelling_a_run_propagates_and_frees_its_run_slot(cache
     outcome = await gateway.triage("Checkout latency spike in eu-west-1", None)
     assert isinstance(outcome, Analyzed)
     assert outcome.report.summary == "Answer for Checkout latency spike in eu-west-1"
+
+
+async def test_a_request_cancelled_while_queued_for_a_slot_takes_no_budget(cache):
+    # The budget counts graph runs only: a request cancelled (e.g. its client left) while it
+    # waited for a run slot ran no graph, so it must give its admission back.
+    graph = BlockingGraph()
+    budget = RunBudget(runs_per_minute=2)
+    gateway = TriageGateway(cache, graph.ainvoke, _one_slot(timeout_s=5.0), budget=budget)
+    first = asyncio.create_task(gateway.triage(QUERY, None))
+    await graph.started.wait()
+    queued = asyncio.create_task(gateway.triage("Checkout latency spike in eu-west-1", None))
+    await asyncio.sleep(0.01)  # let it take its admission and queue for the held slot
+
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    graph.release.set()
+    assert isinstance(await first, Analyzed)
+
+    outcome = await gateway.triage("Search index lagging behind writes", None)
+    assert isinstance(outcome, Analyzed)
 
 
 async def test_a_timeout_raised_inside_the_graph_is_a_graph_exception_not_the_deadline(cache):

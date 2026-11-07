@@ -8,14 +8,16 @@ import { waterfallView } from "../trace-reducer.mjs";
 /** @typedef {import("../trace-reducer.mjs").TraceView} TraceView */
 /** @typedef {import("../trace-reducer.mjs").WaterfallRow} WaterfallRow */
 
-/** @param {{ row: WaterfallRow }} props */
-function Row({ row }) {
+/** @param {{ row: WaterfallRow, separator: string }} props */
+function Row({ row, separator }) {
   return html`
     <li class="waterfall__row" data-kind=${row.kind} data-tone=${row.tone} data-depth=${row.depth}>
       <span class="waterfall__label">
         <span class="waterfall__name">${row.name}</span>
         <span class="waterfall__detail">
-          ${row.detail}${row.tag && html` <span class="waterfall__tag">${row.tag}</span>`}
+          ${row.detailParts.map(
+            (part, i) => html`${i > 0 && separator}<span class="waterfall__part">${part}</span>`,
+          )}${row.tag && html` <span class="waterfall__tag">${row.tag}</span>`}
         </span>
       </span>
       <span class="waterfall__track">
@@ -25,9 +27,12 @@ function Row({ row }) {
   `;
 }
 
-/** @param {{ trace: TraceView }} props */
-export function Waterfall({ trace }) {
-  const view = waterfallView(trace);
+/**
+ * @param {{ trace: TraceView, normalBackend?: string | null }} props `normalBackend`: the
+ *   cache backend normal for the run (normalCacheBackend()); cache rows name any other
+ */
+export function Waterfall({ trace, normalBackend = null }) {
+  const view = waterfallView(trace, undefined, normalBackend);
   if (view === null) {
     return html`
       <div class="empty">
@@ -40,13 +45,18 @@ export function Waterfall({ trace }) {
     <figure class="waterfall" style=${`--zero:${view.zeroPct}%`}>
       <figcaption class="waterfall__caption">Timeline</figcaption>
       <ol class="waterfall__rows">
-        ${view.rows.map((row) => html`<${Row} key=${row.key} row=${row} />`)}
+        ${view.rows.map(
+          (row) => html`<${Row} key=${row.key} row=${row} separator=${view.separator} />`,
+        )}
       </ol>
       <div class="waterfall__axis" aria-hidden="true">
         <span></span>
         <span class="waterfall__track waterfall__track--axis">
-          ${view.setupMs > 0 && html`<span class="waterfall__tick waterfall__tick--setup">setup</span>`}
-          <span class="waterfall__zero"><span class="waterfall__tick">0</span></span>
+          ${view.showSetupLabel &&
+          html`<span class="waterfall__tick waterfall__tick--setup">setup</span>`}
+          <span class="waterfall__zero">
+            ${view.showZeroLabel && html`<span class="waterfall__tick">0</span>`}
+          </span>
           <span class="waterfall__tick waterfall__tick--end">${view.endLabel}</span>
         </span>
       </div>

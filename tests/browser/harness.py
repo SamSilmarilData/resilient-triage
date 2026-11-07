@@ -137,16 +137,23 @@ def _wait_started(server: uvicorn.Server, thread: threading.Thread) -> None:
 
 
 @contextmanager
-def serve_live_app(app_settings: Settings = settings) -> Iterator[LiveServer]:
-    """Serve `create_app` over a fresh scripted runtime on `127.0.0.1:<free port>`."""
-    adapter = ScriptedAdapter()
+def serve_live_app(
+    app_settings: Settings = settings, *, keyless: bool = False
+) -> Iterator[LiveServer]:
+    """Serve `create_app` over a fresh scripted runtime on `127.0.0.1:<free port>`.
+
+    By default the scripted model stands in for a real provider. `keyless` builds the runtime
+    as a deployment with no model API key does, so the keyless simulation answers (#153).
+    """
+    if keyless:
+        app_settings = app_settings.model_copy(update={"groq_api_key": None})
     built: list[AppRuntime] = []
 
     def runtime_factory() -> AppRuntime:
         # Called by the app's lifespan, in the server's loop, which then owns the runtime.
         rt = build_runtime(
             app_settings,
-            llm_adapter=adapter,
+            llm_adapter=None if keyless else ScriptedAdapter(),
             embedder=DeterministicEmbeddingProvider(),
             statuspage_http=fake_statuspage_http(),
         )
@@ -163,6 +170,8 @@ def serve_live_app(app_settings: Settings = settings) -> Iterator[LiveServer]:
     try:
         _wait_started(server, thread)
         port = server.servers[0].sockets[0].getsockname()[1]
+        adapter = built[0].llm.adapter
+        assert isinstance(adapter, ScriptedAdapter), "the harness never reaches a real provider"
         live = LiveServer(f"http://127.0.0.1:{port}", built[0], adapter, loop)
         # The cache may sit on a live Redis shared across runs: start every test empty.
         live.run(live.runtime.cache.clear())
@@ -251,9 +260,10 @@ class GuardedPages:
             context.close()
 
 
-def open_shell(page: Page, wait_for_requests: bool = True) -> None:
-    """Load `/` and wait until every region of the page shell has rendered."""
-    page.goto("/")
+def open_shell(page: Page, wait_for_requests: bool = True, path: str = "/") -> None:
+    """Load `path` (`/`, or a deep link like `/#free-play`) and wait until every region of the
+    page shell has rendered."""
+    page.goto(path)
     page.wait_for_selector(SHELL_READY, state="attached")
     if wait_for_requests:
         # Fonts and other subresources settle after the shell renders: wait on them, not a timer.

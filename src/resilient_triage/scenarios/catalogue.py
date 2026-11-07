@@ -439,6 +439,13 @@ SCENARIOS: tuple[Scenario, ...] = (
         cluster_sentinel=SENTINEL_DOWN,
         setup=Setup(tripped_sources=("statuspage", "chaos")),
         setup_notes=(
+            # The page matches this note's wording: trace-reducer.mjs REDIS_DOWN_NOTE
+            # (/\bRedis is (?:unreachable|down)\b/) is the only sign a scenario means Redis
+            # down, and makes its timeline's cache rows say "in memory". Reword it and keep
+            # the regex matching; guarded by tests/browser/test_trace_view.py
+            # test_a_redis_down_run_says_its_cache_ran_in_memory and
+            # test_a_scenario_with_redis_up_names_no_cache_backend, and test_reducer.py
+            # test_a_scenario_names_its_cache_backend_only_when_its_setup_takes_redis_down.
             "Redis is unreachable, so the cache runs in memory.",
             "Statuspage and Cluster Sentinel each failed three reads: both breakers are open.",
             "Both models are out of quota.",

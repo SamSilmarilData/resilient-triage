@@ -5,30 +5,35 @@
 // shows an expected path: only what the run's own trace says (#96).
 import { html } from "htm/preact";
 import { useState } from "preact/hooks";
-import { scenarioPanelView } from "../trace-reducer.mjs";
+import { runHeadline, runTicks, scenarioPanelView, scenarioToggleId } from "../trace-reducer.mjs";
 import { Report } from "./report.mjs";
+import { Clocked } from "./stage.mjs";
 
 /** @typedef {import("../trace-reducer.mjs").ScenarioView} ScenarioView */
 /** @typedef {import("../trace-reducer.mjs").RunView} RunView */
+/** @typedef {import("./stage.mjs").Clock} Clock */
 
 /**
  * @param {{
  *   scenario: ScenarioView,
  *   open: boolean,
+ *   now?: Clock,
  *   run: RunView | null,
+ *   finishedOnce: boolean,
  *   onToggle: () => void,
  *   onPlay: () => void,
  *   onSkip: () => void,
- * }} props
+ * }} props `now`: the page's ticking clock (a signal), read only by a streaming run's line
+ *   (#156)
  */
-export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
+export function Scenario({ scenario, open, now, run, finishedOnce, onToggle, onPlay, onSkip }) {
   const panelId = `scenario-${scenario.id}-panel`;
   return html`
     <article class="scenario" data-scenario=${scenario.id} data-open=${String(open)}>
       <h4 class="scenario__heading">
         <button
           class="scenario__toggle"
-          id=${`scenario-${scenario.id}-toggle`}
+          id=${scenarioToggleId(scenario.id)}
           type="button"
           aria-expanded=${String(open)}
           aria-controls=${panelId}
@@ -43,6 +48,8 @@ export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
         html`<${ScenarioPanel}
           scenario=${scenario}
           run=${run}
+          now=${now}
+          finishedOnce=${finishedOnce}
           onPlay=${onPlay}
           onSkip=${onSkip}
         />`}
@@ -55,12 +62,12 @@ export function Scenario({ scenario, open, run, onToggle, onPlay, onSkip }) {
  * The opened scenario: setup notes, controls, then what this scenario's run showed.
  * Skip to end stays in place once there's nothing left to skip (aria-disabled, not
  * disabled), so a keyboard user's focus stays on it.
- * @param {{ scenario: ScenarioView, run: RunView | null,
+ * @param {{ scenario: ScenarioView, run: RunView | null, finishedOnce: boolean, now?: Clock,
  *           onPlay: () => void, onSkip: () => void }} props
  */
-function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
+function ScenarioPanel({ scenario, run, finishedOnce, now, onPlay, onSkip }) {
   const [everything, setEverything] = useState(false);
-  const view = scenarioPanelView(run);
+  const view = scenarioPanelView(run, finishedOnce);
   const eventsId = `scenario-${scenario.id}-events`;
   return html`
     ${scenario.setup_notes.length > 0 &&
@@ -81,7 +88,12 @@ function ScenarioPanel({ scenario, run, onPlay, onSkip }) {
         Skip to end
       </button>
     </div>
-    ${view.line && html`<p class="scenario__line" data-scenario-line>${view.line}</p>`}
+    ${view.line &&
+    html`<p class="scenario__line" data-scenario-line>
+      ${now && run && runTicks(run)
+        ? html`<${Clocked} now=${now} text=${(/** @type {number} */ t) => runHeadline(run, t).line} />`
+        : view.line}
+    </p>`}
     ${view.report &&
     html`
       <button

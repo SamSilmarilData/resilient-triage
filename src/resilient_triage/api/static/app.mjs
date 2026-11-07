@@ -5,7 +5,7 @@
 // and sse.mjs does the network I/O.
 // Importing @preact/signals installs its Preact integration, so components re-render when a
 // signal they read changes.
-import { signal } from "@preact/signals";
+import { computed, effect, signal } from "@preact/signals";
 import { html } from "htm/preact";
 import { render } from "preact";
 import { Chapters } from "./components/chapter.mjs";
@@ -17,15 +17,61 @@ import { freePlaySource, loadInto, scenarioSource } from "./sse.mjs";
 import {
   createRunController,
   createScenarioStage,
+  deepLinkTarget,
+  freePlaySubmit,
+  freePlayTicks,
   idleRun,
   inspectorView,
   needsReveal,
+  normalCacheBackend,
+  runTicks,
+  scenarioToggleId,
+  stageRevealTop,
+  stageScenario,
   toggledOpen,
+  VISITOR_SCROLL_EVENTS,
+  visitorScrolls,
 } from "./trace-reducer.mjs";
 
 /** @typedef {import("./trace-reducer.mjs").GraphLayout} GraphLayout */
 /** @typedef {import("./trace-reducer.mjs").Catalogue} Catalogue */
 /** @typedef {import("./trace-reducer.mjs").GraphNode} GraphNode */
+
+// --- The page's clock ---
+
+/** The wall clock: run controllers stamp `startedAt` with it and the ticking `now` reads it. */
+const wallClock = () => Date.now();
+/** How often the clock ticks while something counts: fine enough for the headline's 0.1 s. */
+const CLOCK_TICK_MS = 250;
+
+/**
+ * A `now` signal (wall-clock ms) that ticks while `active` is true and holds still otherwise:
+ * its one timer runs only then, so an idle page has none. Components never keep a timer of
+ * their own. They get the signal itself, not its value, and only the leaf that shows a time
+ * reads it (stage.mjs Clocked), so a tick redraws that text and not the panels around it.
+ * Widen `active` for anything else that counts (#160's countdown).
+ * `active` is given the clock itself, so a countdown can stop the clock once it reaches zero.
+ * @param {(now: number) => boolean} isActive
+ * @param {number} [periodMs]
+ */
+function tickingClock(isActive, periodMs = CLOCK_TICK_MS) {
+  const now = signal(wallClock());
+  const active = computed(() => isActive(now.value));
+  /** @type {ReturnType<typeof setInterval> | undefined} */
+  let timer;
+  effect(() => {
+    if (active.value && timer === undefined) {
+      now.value = wallClock();
+      timer = setInterval(() => {
+        now.value = wallClock();
+      }, periodMs);
+    } else if (!active.value && timer !== undefined) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+  });
+  return now;
+}
 
 /**
  * A signal holding a run, and the run controller that reports into it.
@@ -38,6 +84,7 @@ function runSignal() {
     onChange: (view) => {
       run.value = view;
     },
+    clock: wallClock,
   });
   return { run, controller };
 }
@@ -49,6 +96,12 @@ const layout = signal(
 /** GET /scenarios once fetched: the chapters' copy. */
 const catalogue = signal(
   /** @type {import("./trace-reducer.mjs").Loadable<Catalogue>} */ ("loading"),
+);
+/** GET /health once fetched: the deployment's cache backend, normal for free play's runs. */
+const health = signal(
+  /** @type {import("./trace-reducer.mjs").Loadable<import("./trace-reducer.mjs").HealthView>} */ (
+    "loading"
+  ),
 );
 /** The scenario opened inline, if any; one at a time. */
 const openId = signal(/** @type {string | null} */ (null));
@@ -68,14 +121,49 @@ const freePlayRun = runSignal();
 /** The free-play panel's run controller: a visitor's question plays here, not on the stage. */
 export const freePlay = freePlayRun.controller;
 
+/**
+ * The page's clock: ticks while either run's headline counts (#156) or free play's budget
+ * shed counts down to its retry time (#160).
+ */
+const now = tickingClock(
+  (time) =>
+    runTicks(stageRun.run.value) ||
+    runTicks(freePlayRun.run.value) ||
+    freePlayTicks(freePlayRun.run.value, time),
+);
+/** Free play's message about a question it won't send, if any (#160). */
+const freePlayInputError = signal(/** @type {string | null} */ (null));
+
 /** The live-trace column, bound to the stage's signals. */
 function LiveStage() {
   return html`<${Stage}
     run=${stageRun.run.value}
+    now=${now}
     layout=${layout.value}
     onReplay=${() => stage.replay()}
     onSelectNode=${inspect}
+    scenario=${stageScenario(catalogue.value, stageRun.run.value)}
+    onBack=${backToScenario}
+    normalBackend=${normalCacheBackend(stageRun.run.value.trace, catalogue.value, health.value)}
   />`;
+}
+
+// --- Back from the stage to its scenario ---
+/**
+ * Take the visitor from the stage back to a scenario's card (the stage's way-back link, at
+ * phone width): open the card if it was closed, so its report shows, then once it has drawn
+ * scroll its top into view and focus its toggle. The scroll follows html's scroll-behavior,
+ * so it is instant under reduced motion.
+ * @param {string} id
+ */
+function backToScenario(id) {
+  if (openId.value !== id) openId.value = id;
+  requestAnimationFrame(() => {
+    const toggle = document.getElementById(scenarioToggleId(id));
+    if (!toggle) return;
+    toggle.closest("[data-scenario]")?.scrollIntoView({ block: "start" });
+    toggle.focus({ preventScroll: true });
+  });
 }
 
 /** The guided chapters, bound to the catalogue and the stage's run. */
@@ -85,7 +173,9 @@ function GuidedChapters() {
     catalogue=${catalogue.value}
     onRetry=${loadCatalogue}
     openId=${openId.value}
+    now=${now}
     runOf=${(/** @type {string} */ id) => scenarios.runOf(run, id)}
+    finishedOnce=${(/** @type {string} */ id) => scenarios.finishedOnce(id)}
     onToggle=${(/** @type {string} */ id) => {
       openId.value = toggledOpen(openId.value, id);
     }}
@@ -103,13 +193,16 @@ function GuidedChapters() {
 /**
  * Bring the stage into view for a run that just started, when needsReveal() says so. The
  * scroll follows html's scroll-behavior, so it is instant under reduced motion. Focus stays
- * on Play.
+ * on Play. A pinned stage scrolled down inside itself goes back to its graph (#157).
  */
 function revealStage() {
   const element = document.querySelector(".stage");
-  if (element && needsReveal(element.getBoundingClientRect(), window.innerHeight)) {
+  if (!element) return;
+  if (needsReveal(element.getBoundingClientRect(), window.innerHeight)) {
     element.scrollIntoView({ block: "start" });
   }
+  const top = stageRevealTop(element);
+  if (top !== null) element.scrollTo({ top });
 }
 
 /** Fetch GET /scenarios into its signal; on failure the chapters offer Retry (#101). */
@@ -121,8 +214,17 @@ function loadCatalogue() {
 function LiveFreePlay() {
   return html`<${FreePlay}
     run=${freePlayRun.run.value}
+    now=${now}
     layout=${layout.value}
-    onSubmit=${(request) => freePlay.play(freePlaySource(request))}
+    inputError=${freePlayInputError.value}
+    normalBackend=${normalCacheBackend(freePlayRun.run.value.trace, catalogue.value, health.value)}
+    onSubmit=${(/** @type {import("./trace-reducer.mjs").FreePlayFields} */ fields) => {
+      // The controller's view and the wall clock, not the last render: a double click's
+      // second press lands before the first one's run has re-rendered the button (#160).
+      const { error, request } = freePlaySubmit(fields, freePlay.view, wallClock());
+      freePlayInputError.value = error;
+      if (request) freePlay.play(freePlaySource(request));
+    }}
     onReplay=${() => freePlay.replay()}
     onSelectNode=${inspect}
   />`;
@@ -175,17 +277,47 @@ function loadLayout() {
   return loadInto(layout, "/static/graph-layout.json");
 }
 
+// --- Deep links ---
+/**
+ * Scroll to the URL's fragment (a link like `/#free-play`) once, after the regions above it
+ * have filled in: the browser's own jump lands before the chapters grow, so it ends up a
+ * chapter short. The scroll follows html's scroll-behavior, so it is instant under reduced
+ * motion. Skipped when the visitor has scrolled since this was called (deepLinkTarget()): one
+ * who scrolled while the fetches were slow stays where they are. Sets `data-deep-link="done"`
+ * on <html> after, for browser tests to wait on.
+ * @param {Promise<unknown>[]} loads the fetches that change the page's height
+ */
+async function landOnFragment(loads) {
+  let visitorScrolled = false;
+  /** @param {Event} event */
+  const scrolled = (event) => {
+    const key = event instanceof KeyboardEvent ? event.key : null;
+    if (visitorScrolls(event.type, key)) visitorScrolled = true;
+  };
+  for (const type of VISITOR_SCROLL_EVENTS) {
+    window.addEventListener(type, scrolled, { passive: true });
+  }
+  await Promise.allSettled([...loads, document.fonts.ready]);
+  // Signal changes re-render on the next tick; wait for that render to be laid out.
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  for (const type of VISITOR_SCROLL_EVENTS) window.removeEventListener(type, scrolled);
+  const id = deepLinkTarget(location.hash, visitorScrolled);
+  if (id !== null) document.getElementById(id)?.scrollIntoView({ block: "start" });
+  document.documentElement.dataset.deepLink = "done";
+}
+
 function main() {
-  loadLayout();
-  loadCatalogue();
+  const loads = [loadLayout(), loadCatalogue()];
   mount("stage-root", html`<${LiveStage} />`);
   mount("chapters-root", html`<${GuidedChapters} />`);
   mount("free-play-root", html`<${LiveFreePlay} />`);
-  loadGraphNodes();
+  loads.push(loadGraphNodes());
+  loadInto(health, "/health");
   mount("built-nodes-root", html`<${BuiltNodes} />`);
   mount("node-inspector-root", html`<${Inspector} />`);
   // Browser tests wait on this instead of sleeping: every region has rendered.
   document.documentElement.dataset.shell = "ready";
+  landOnFragment(loads);
 }
 
 main();

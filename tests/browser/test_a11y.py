@@ -228,11 +228,19 @@ def test_phone_width_never_scrolls_sideways_after_runs_or_with_the_inspector(
     wait_for_run(page)
     page.locator(f'[data-scenario="{scenario}"] [data-action="show-everything"]').click()
     _fits(page, "after a scenario run")
+    back = page.locator("#stage-root [data-stage-back]")
+    assert back.is_visible(), "a finished run links back to its scenario (#158)"
+    back.click()
+    _fits(page, "back at the scenario from the stage")
 
     page.get_by_label("Your incident").fill(unique_question("Payments API returning 502s"))
     page.locator("#free-play-root").get_by_role("button", name="Triage").click()
     wait_for_run(page, root="#free-play-root")
-    _fits(page, "after a free-play run")
+    report = page.locator('#free-play-root [data-report="report"]')
+    assert report.count() == 1, "the free-play run shows its report"
+    assert page.locator("#free-play-root [data-stage-scenario]").count() == 0, "no scenario"
+    report.scroll_into_view_if_needed()
+    _fits(page, "after a free-play run, with its report")
 
     page.locator('#stage-root [data-node="generate_report"]').click()
     page.wait_for_selector("dialog.inspector[open]")
@@ -266,3 +274,237 @@ def test_every_chapters_final_state_has_no_serious_axe_violations(
     violations = axe_violations(page)
     assert violations == [], describe(violations)
     assert watch.failed == []
+
+
+# --- #157: the pinned stage fits the window ---------------------------------------------------
+
+LAPTOP = {"width": 1280, "height": 720}
+# A wide window too short for the stage's content, so the pinned stage must scroll inside itself.
+SHORT = {"width": 1280, "height": 480}
+# Below the wide breakpoint (60rem) the stage sits inline under the chapters, not pinned.
+NARROW = {"width": 900, "height": 720}
+# The pinned stage's offset under the window's top (`top: 1rem`).
+PIN_OFFSET = 16
+# page.evaluate script: the stage's box against the viewport, and how it scrolls.
+STAGE_BOX = """() => {
+  const stage = document.querySelector(".stage");
+  const r = stage.getBoundingClientRect();
+  const style = getComputedStyle(stage);
+  return {top: r.top, bottom: r.bottom, viewport: innerHeight,
+    scrollHeight: stage.scrollHeight, clientHeight: stage.clientHeight,
+    position: style.position, overflowY: style.overflowY, maxHeight: style.maxHeight};
+}"""
+# page.evaluate script: whether an element inside the stage shows within both the stage's
+# visible box and the viewport. `whole`: all of it; otherwise its top edge.
+SHOWN_IN_STAGE = """([selector, whole]) => {
+  const el = document.querySelector(selector);
+  if (!el) return false;
+  const s = document.querySelector(".stage").getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const top = Math.max(s.top, 0) - 1, bottom = Math.min(s.bottom, innerHeight) + 1;
+  return whole ? r.top >= top && r.bottom <= bottom : r.top >= top && r.top < bottom;
+}"""
+# page.evaluate script: scroll the stage to its end at once; returns how far it scrolled.
+SCROLL_STAGE_TO_END = """() => {
+  const stage = document.querySelector(".stage");
+  stage.scrollTo({top: stage.scrollHeight, behavior: "instant"});
+  return stage.scrollTop;
+}"""
+# page.evaluate script: resolves once the stage's own scroll has stood still for 3 frames.
+STAGE_SETTLED = """async () => {
+  const stage = document.querySelector(".stage");
+  const frame = () => new Promise((done) => requestAnimationFrame(done));
+  for (let still = 0, y = stage.scrollTop, n = 0; still < 3 && n < 120; n++) {
+    await frame();
+    still = stage.scrollTop === y ? still + 1 : 0;
+    y = stage.scrollTop;
+  }
+}"""
+# page.evaluate script: whether the stage is pinned, i.e. stuck at its offset.
+PINNED = """(offset) => {
+  return Math.abs(document.querySelector(".stage").getBoundingClientRect().top - offset) < 1;
+}"""
+
+
+def _open_wide(pages: GuardedPages, **options: Any) -> "Page":
+    """A page at a wide window once its chapters and graph have drawn."""
+    page, _ = pages.open(**options)
+    open_shell(page)
+    page.wait_for_selector(CATALOGUE_READY, state="attached")
+    page.wait_for_selector(GRAPH_READY, state="attached")
+    return page
+
+
+def _pinned_after_a_run(page: "Page", scenario: str) -> dict[str, Any]:
+    """Play `scenario` with its Play button, scroll the page until the stage is pinned, and
+    return the stage's box once the run has finished."""
+    page.locator(f"#scenario-{scenario}-toggle").click()
+    page.locator(f'[data-scenario="{scenario}"] [data-action="play"]').click()
+    wait_for_run(page)
+    page.evaluate("window.scrollTo({top: document.querySelector('#guided').offsetTop + 400})")
+    page.wait_for_function(PINNED, arg=PIN_OFFSET)
+    return dict(page.evaluate(STAGE_BOX))
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_pinned_stage_fits_a_laptop_window(pages: GuardedPages, scheme: str):
+    """At 1280x720 after a run, the pinned stage ends inside the window and passes axe."""
+    page = _open_wide(pages, viewport=LAPTOP, color_scheme=scheme)
+
+    box = _pinned_after_a_run(page, "self-repair")
+
+    assert box["position"] == "sticky", box
+    assert box["bottom"] <= box["viewport"], f"the pinned stage runs off the window: {box}"
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_in_a_short_window_the_pinned_stage_scrolls_inside_itself(pages: GuardedPages, scheme: str):
+    """When the window is shorter than the stage, the stage scrolls and its end is reachable."""
+    page = _open_wide(pages, viewport=SHORT, color_scheme=scheme)
+
+    box = _pinned_after_a_run(page, "self-repair")
+    assert box["bottom"] <= box["viewport"], f"the pinned stage runs off the window: {box}"
+    assert box["scrollHeight"] > box["clientHeight"], f"nothing to scroll: {box}"
+
+    assert page.evaluate(SCROLL_STAGE_TO_END) > 0
+    # The last thing in the stage, the timeline's axis, shows whole at the end of the scroll.
+    assert page.evaluate(SHOWN_IN_STAGE, ["#stage-root .waterfall__axis", True])
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+def test_tab_keeps_every_graph_node_of_the_pinned_stage_in_view(pages: GuardedPages):
+    """Tabbing through the graph scrolls the pinned stage: every focused node shows whole."""
+    page = _open_wide(pages, viewport=LAPTOP)
+    _pinned_after_a_run(page, "self-repair")
+    nodes = page.locator("#stage-root [data-node][tabindex]")
+    names = [nodes.nth(i).get_attribute("data-node") for i in range(nodes.count())]
+    assert len(names) > 5, names
+
+    for i, name in enumerate(names):
+        selector = f'#stage-root [data-node="{name}"]'
+        if i == 0:
+            _tab_to(page, selector)
+        else:
+            page.keyboard.press("Tab")
+            # Focus scrolls the stage smoothly: check the node once that scroll stops.
+            page.evaluate(STAGE_SETTLED)
+            _focused(page, selector)
+        page.wait_for_function(SHOWN_IN_STAGE, arg=[f"{selector} .graph__box", True])
+
+
+@pytest.mark.parametrize("motion", ["no-preference", "reduce"])
+def test_play_shows_the_pinned_stages_graph(pages: GuardedPages, motion: str):
+    """With the stage scrolled to its timeline, Play brings its graph back into view."""
+    page = _open_wide(pages, viewport=LAPTOP, reduced_motion=motion)
+    _pinned_after_a_run(page, "self-repair")
+    assert page.evaluate(SCROLL_STAGE_TO_END) > 0
+    assert not page.evaluate(SHOWN_IN_STAGE, ["#stage-root .graph", False])
+
+    page.locator('[data-scenario="self-repair"] [data-action="play"]').click()
+    page.wait_for_function(SHOWN_IN_STAGE, arg=["#stage-root .graph", False])
+
+
+@pytest.mark.parametrize("viewport", [NARROW, PHONE], ids=["narrow", "phone"])
+def test_below_the_wide_breakpoint_the_stage_is_not_pinned_or_capped(
+    pages: GuardedPages, viewport: dict[str, int]
+):
+    """Under 60rem the stage sits inline at its full height: no pin, no cap, no inner scroll."""
+    page = _open_wide(pages, viewport=viewport)
+    page.locator("#scenario-self-repair-toggle").click()
+    page.locator('[data-scenario="self-repair"] [data-action="play"]').click()
+    wait_for_run(page)
+
+    box = page.evaluate(STAGE_BOX)
+    assert box["position"] == "static", box
+    assert box["overflowY"] == "visible" and box["maxHeight"] == "none", box
+    assert box["scrollHeight"] <= box["clientHeight"], box
+
+
+# --- #158: the stage names its scenario; a way back on phones ----------------------------------
+
+STAGE_TITLE = "#stage-root [data-stage-scenario]"
+STAGE_BACK = "#stage-root [data-stage-back]"
+# page.evaluate script: the id of the focused element, or null.
+FOCUSED_ID = "() => document.activeElement?.id || null"
+
+
+def _play_from_card(page: "Page", scenario: str) -> None:
+    """Open a scenario (unless it is open) and press its Play; wait for the run to finish."""
+    toggle = page.locator(f"#scenario-{scenario}-toggle")
+    if toggle.get_attribute("aria-expanded") != "true":
+        toggle.click()
+    page.locator(f'[data-scenario="{scenario}"] [data-action="play"]').click()
+    page.wait_for_function(
+        """([selector, id]) => document.querySelector(selector)?.dataset.stageScenario === id""",
+        arg=[STAGE_TITLE, scenario],
+    )
+    wait_for_run(page)
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_live_trace_names_the_scenario_it_shows(pages: GuardedPages, scheme: str):
+    """The stage shows the catalogue title of the scenario it draws, and follows the next one
+    played. On a wide window there is no way-back link: the scenario sits beside the stage."""
+    first, second = public_catalogue().chapters[0].scenarios[:2]
+    page = _open_wide(pages, viewport=DESKTOP, color_scheme=scheme)
+    assert page.locator(STAGE_TITLE).count() == 0, "an idle stage names no scenario"
+
+    _play_from_card(page, first.id)
+    assert page.locator(STAGE_TITLE).inner_text() == first.title
+    assert not page.locator(STAGE_BACK).is_visible()
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    _play_from_card(page, second.id)
+    assert page.locator(STAGE_TITLE).inner_text() == second.title
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("theme", PHONE_THEMES)
+def test_at_phone_width_a_finished_run_links_back_to_its_scenario(pages: GuardedPages, theme: str):
+    """At 375 px Play moves the visitor down to the stage; once the run finishes, a link takes
+    them back to the scenario's card, opened on its report, with focus on its toggle."""
+    scenario = public_catalogue().chapters[0].scenarios[0]
+    page = _open_wide(pages, viewport=PHONE, **PHONE_THEMES[theme])
+    _play_from_card(page, scenario.id)
+    back = page.locator(STAGE_BACK)
+    assert back.is_visible()
+    assert page.locator(STAGE_TITLE).inner_text() == scenario.title
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+    # Closed meanwhile, the card opens again on the way back, so its report shows.
+    page.locator(f"#scenario-{scenario.id}-toggle").click()
+    back.click()
+
+    card = f'[data-scenario="{scenario.id}"]'
+    page.wait_for_function(TOP_IN_VIEW, arg=card)
+    assert page.locator(f"#scenario-{scenario.id}-toggle").get_attribute("aria-expanded") == "true"
+    assert page.locator(f'{card} [data-report="report"]').is_visible()
+    assert page.evaluate(FOCUSED_ID) == f"scenario-{scenario.id}-toggle"
+    _fits(page, "back at the scenario")
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_scenario_title_keeps_the_pinned_stage_in_a_laptop_window(
+    pages: GuardedPages, scheme: str
+):
+    """At 1280x720 the title sits in the pinned stage with the run, the stage still ends inside
+    the window, and its timeline is still reached by scrolling the stage."""
+    page = _open_wide(pages, viewport=LAPTOP, color_scheme=scheme)
+
+    box = _pinned_after_a_run(page, "self-repair")
+
+    assert box["bottom"] <= box["viewport"], f"the pinned stage runs off the window: {box}"
+    assert page.evaluate(SHOWN_IN_STAGE, [STAGE_TITLE, True])
+    assert not page.locator(STAGE_BACK).is_visible()
+    page.evaluate(SCROLL_STAGE_TO_END)
+    assert page.evaluate(SHOWN_IN_STAGE, ["#stage-root .waterfall__axis", True])
+    violations = axe_violations(page)
+    assert violations == [], describe(violations)

@@ -1,4 +1,4 @@
-"""Node: validate_report - Parses candidate output strictly into IncidentTriageReport."""
+"""Node: validate_report - Checks the model's JSON against the strict report schema."""
 
 import json
 import logging

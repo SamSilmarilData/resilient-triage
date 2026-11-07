@@ -92,7 +92,7 @@ def stage_free_play(page: Page) -> tuple[str, ...]:
 CAPTURES = (
     Capture("page", 800, stage_page),
     Capture("scenario-run", 1600, stage_scenario_run),
-    Capture("free-play", 1800, stage_free_play),
+    Capture("free-play", 2200, stage_free_play),
 )
 
 
