@@ -1,5 +1,7 @@
 """The page shell in Chromium (#117): loads clean, passes axe in both themes, fits 375 px."""
 
+from typing import TYPE_CHECKING
+
 import pytest
 from harness import (
     PAGE_WIDTHS,
@@ -9,7 +11,9 @@ from harness import (
     describe,
     open_shell,
 )
-from playwright.sync_api import Route
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Route
 
 pytestmark = pytest.mark.browser
 

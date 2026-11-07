@@ -24,16 +24,23 @@ from harness import (
     unique_question,
     wait_for_run,
 )
-from playwright.sync_api import expect
 
 from resilient_triage.config import Settings, settings
 from resilient_triage.llm.scripted import DEFAULT_REPORT_JSON, ScriptedReply
 from resilient_triage.schemas.api import TriageRequest
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Locator, Page
+    from playwright.sync_api import Locator, LocatorAssertions, Page
 
 pytestmark = pytest.mark.browser
+
+
+def expect(locator: Locator) -> LocatorAssertions:
+    """Playwright's expect(), imported on use: the regular run collects this module without it."""
+    from playwright.sync_api import expect as playwright_expect
+
+    return playwright_expect(locator)
+
 
 PANEL = "#free-play-root"
 
