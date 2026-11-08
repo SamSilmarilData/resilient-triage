@@ -176,6 +176,7 @@ Explore the architecture, resilience engineering, API specifications, and archit
   - [ADR 0008: Execution Trace from a Per-Request Recorder, Streamed over SSE](docs/decisions/0008-execution-trace.md)
   - [ADR 0009: Scenario Runs Are Fully Isolated from the Shared Runtime](docs/decisions/0009-scenario-runs-are-isolated.md)
   - [ADR 0010: Build-Free, Vendored Frontend](docs/decisions/0010-build-free-vendored-frontend.md)
+  - [ADR 0011: One Per-App Runtime, No Module-Level Singletons](docs/decisions/0011-one-per-app-runtime.md)
 
 ---
 
