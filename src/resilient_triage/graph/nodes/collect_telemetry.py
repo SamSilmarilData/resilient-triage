@@ -1,55 +1,35 @@
-"""Node: collect_telemetry - Concurrently gathers targeted telemetry signals."""
+"""Node: collect_telemetry - Reads the chosen telemetry sources behind breakers and retries."""
 
-import asyncio
+from collections.abc import Iterable, Set
 from typing import Any
 
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
-from resilient_triage.schemas.incident import TelemetrySignal
+from langgraph.runtime import Runtime
+
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.schemas.state import TriageState
-from resilient_triage.telemetry.chaos import ChaosClient
-from resilient_triage.telemetry.statuspage import StatuspageClient
 
 
-async def collect_telemetry_node(state: TriageState) -> dict[str, Any]:
-    """Execute concurrent telemetry collection on dynamically targeted tools."""
-    target_tools = state.get("target_tools", ["statuspage", "chaos"])
-    tasks = []
-    task_names = []
-
-    if "statuspage" in target_tools:
-        sp_client = StatuspageClient()
-        tasks.append(sp_client.fetch_signals())
-        task_names.append("statuspage")
-
-    if "chaos" in target_tools:
-        ch_client = ChaosClient()
-        tasks.append(
-            ch_client.fetch_signals(
-                service_hint=state.get("service_filter"),
-                query=state.get("query"),
-            )
-        )
-        task_names.append("chaos")
-
-    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    aggregated_signals: list[TelemetrySignal] = []
-    for name, res in zip(task_names, raw_results, strict=True):
-        if isinstance(res, Exception):
-            aggregated_signals.append(
-                TelemetrySignal(
-                    source=f"{name}:error",
-                    status="UNAVAILABLE",
-                    raw_snippet=f"Telemetry fetch failed: {res}",
-                )
-            )
-        elif isinstance(res, list):
-            aggregated_signals.extend(res)
-
-    statuses = circuit_breaker_registry.get_all_statuses()
-    cb_status = {name: info.state for name, info in statuses.items()}
-
+async def collect_telemetry_node(
+    state: TriageState, runtime: Runtime[TriageDeps]
+) -> dict[str, Any]:
+    """Collect every targeted source in one probe call and record what failed."""
+    probe = runtime.context.telemetry
+    # No targeting yet means every source.
+    targets = state.get("targeted_sources", probe.source_ids)
+    reading = await probe.collect(
+        frozenset(targets),
+        state.get("query", ""),
+        state.get("service_filter"),
+        trace=runtime.context.trace,
+    )
     return {
-        "telemetry_signals": [s.model_dump() for s in aggregated_signals],
-        "circuit_breaker_status": cb_status,
+        "telemetry_signals": [s.model_dump() for s in reading.signals],
+        "circuit_breaker_status": reading.breaker_states,
+        "tripped_breakers": _in_order(probe.source_ids, reading.tripped_breakers),
+        "unavailable_sources": _in_order(probe.source_ids, reading.unavailable_sources),
     }
+
+
+def _in_order(order: Iterable[str], ids: Set[str]) -> list[str]:
+    """List ids in the given (source registration) order, so the state is stable."""
+    return [i for i in order if i in ids]

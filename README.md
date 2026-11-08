@@ -2,14 +2,14 @@
 
 > **Fault-tolerant incident triage gateway powered by LangGraph, Groq LPUs, and Redis 8 RediSearch that doesn't collapse when external systems are on fire.**
 
-[![Release v1.3.0](https://img.shields.io/badge/Release-v1.3.0-blue.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
+[![Release v2.0.0](https://img.shields.io/badge/Release-v2.0.0-blue.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage/releases/tag/v2.0.0)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.135.1+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-FF6F00.svg?style=flat&logo=chainlink&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![Redis 8](https://img.shields.io/badge/Redis_8-RediSearch_HNSW-DC382D.svg?style=flat&logo=redis&logoColor=white)](https://redis.io/)
 [![Groq LPU](https://img.shields.io/badge/Groq_LPU-Qwen_3.8_27B-F55036.svg?style=flat)](https://groq.com)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063.svg?style=flat&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
-[![Tests Passing](https://img.shields.io/badge/Tests-85%2F85_Passed-10B981.svg?style=flat)](https://github.com/SamSilmarilData/resilient-triage)
+[![CI](https://github.com/SamSilmarilData/resilient-triage/actions/workflows/ci.yml/badge.svg)](https://github.com/SamSilmarilData/resilient-triage/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 
 ---
@@ -26,48 +26,45 @@
 
 ---
 
-## 🖥️ SRE Incident Command Center UI (Served at `/`)
+## 🖥️ Explorable Page (Served at `/`)
 
-`resilient-triage` ships with a dark-mode (`#09090b` zinc) interactive SRE command console built with Tailwind CSS, Inter, and JetBrains Mono typography:
+`/` serves a build-free page (ADR-010) that explains a triage run by playing it. A graph of the triage state machine and a waterfall timeline draw the run's real execution trace as it streams; select any node to see what it does, its file, the settings that tune it and the ADRs behind it.
 
-- **Real-Time Telemetry Navbar**: Displays live active model (`⚡ Groq LPU (qwen/qwen3.8-27b)`), system health (`HEALTHY` / `DEGRADED`), live Redis driver state (`REDIS: CONNECTED (RediSearch)`), and circuit breakers (`statuspage`, `chaos`).
-- **Incident Query Console**: 1-click preset incident scenarios (`💥 Actions 503 Outage`, `💳 Stripe Ingestion Timeout`, `🗄️ Postgres Pool Exhaustion`) with `Cmd+Enter` hotkey execution.
-- **Dual-Metric Latency Telemetry**:
-  - `⚡ X-Cache: HIT • Server: 1.16ms (Redis HNSW) • Net RTT: 78ms (79ms total)` (emerald pulse)
-  - `🔍 X-Cache: MISS • Server: 1.27s (Groq LPU) • Net RTT: 85ms (1.35s total)` (violet pulse)
-- **Structured Report Viewer**: Renders severity pills, confidence meter, root cause analysis, affected services, and prioritized diagnostic/remediative action items with 1-click **Copy Command** clipboard actions.
-- **Chaos & Resilience Controller Panel**:
-  - Toggle HTTP 503 fault injections dynamically into upstream probes.
-  - Inject artificial latency and random failure rates via sliders.
-  - `⚡ Trip Breaker`: Manually trips circuit breakers to `OPEN` to verify automatic compensatory graph routing.
-  - `🔄 Reset Circuits`: Restores all breakers to `CLOSED` and clears chaos state.
-  - `🧹 Flush Semantic Cache`: Purges Redis and in-memory vector cache on demand.
-- **Live Event Audit Stream**: Real-time ticker logging every request with dual-metric precision: `POST /triage 200 (Srv: 1ms | Net: 78ms)`.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/page-dark.png">
+  <img src="docs/img/page-light.png" alt="The explorable page: the hook and the guided scenario chapters" width="100%">
+</picture>
 
-> 🎬 **Showcasing or Presenting?** Check out the [Interactive Demo Guide & 5-Act Presentation Script](docs/demo.md).
+- **Scenario runs** (guided chapters): 13 scenarios in four chapters (fast paths, the model misbehaving, dependencies failing, everything at once), each setting up one situation (a cache hit, a malformed model reply, a tripped breaker, every run slot busy, everything down) and playing it on the pinned live trace, then shows the run's one-line summary, every trace event and the triage report. Scenarios run on their own private collaborators with scripted model replies (ADR-009), so they never touch the shared cache, breakers, `/metrics` or your Groq quota, and they behave the same with or without a Groq key.
+- **Free play**: type your own incident and it runs through the real gateway (`POST /triage/stream`): the shared semantic cache, live telemetry and Groq when `GROQ_API_KEY` is set, otherwise the scripted simulation. Free play is capped at `FREE_PLAY_RUNS_PER_MINUTE` graph runs; cache hits are free.
+- **Admin key**: the page needs no key. Breaking the *shared* runtime by hand (`POST /chaos/inject`, `/resilience/reset`, `/cache/clear`) needs the `X-Admin-Key` header to match `ADMIN_API_KEY`; with no key configured those routes refuse everyone (`403`). Use **Authorize** in `/docs`; see [Admin key](docs/deployment.md#admin-key).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/free-play-dark.png">
+  <img src="docs/img/free-play-light.png" alt="Free play: your own incident streamed through the live graph and waterfall" width="100%">
+</picture>
+
+Everything the page loads, Preact, htm, Signals and the Inter and JetBrains Mono fonts included, is vendored and served from the app's own origin. The screenshots are captured from the app on a scripted runtime by `scripts/screenshots.py` (run by hand; see [deployment](docs/deployment.md#screenshots)).
 
 ---
 
 ## 🏛️ System Architecture
 
 <p align="center">
-  <a href="docs/architecture-diagram.html">
-    <img src="docs/architecture-diagram.svg" alt="Resilient Incident Triage Architecture" width="100%">
-  </a>
+  <img src="docs/architecture-diagram.svg" alt="Resilient Incident Triage Architecture" width="100%">
 </p>
 <p align="center">
-  <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation. <a href="docs/architecture-diagram.html">Open interactive view &rarr;</a></em>
+  <em>Figure 1: Full-system topology showing ingress routing, dual-engine semantic caching highway (Redis 8 & NumPy fallback), circuit-breaker guarded telemetry probes, and strict Pydantic validation.</em>
 </p>
 
 ### 🔄 LangGraph State Machine & Resilience Lifecycle
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/scenario-run-dark.png">
+  <img src="docs/img/scenario-run-light.png" alt="A scenario run on the live trace: the LangGraph state machine with the taken path lit, above its waterfall" width="100%">
+</picture>
 <p align="center">
-  <a href="docs/state-machine-diagram.html">
-    <img src="docs/state-machine-diagram.svg" alt="LangGraph State Machine Lifecycle" width="100%">
-  </a>
-</p>
-<p align="center">
-  <em>Figure 2: LangGraph cyclic state machine lifecycle showing the primary execution rail, adaptive recovery detours (blindspot compensation & self-repair), and terminal resolution outcomes. <a href="docs/state-machine-diagram.html">Open interactive view &rarr;</a></em>
+  <em>Figure 2: The LangGraph state machine as the page draws it, here for a played scenario: the nodes and routes the run took are lit, recovery detours (blindspot compensation, self-repair) included, above a waterfall of every node, model call and telemetry read at its real timing.</em>
 </p>
 
 ---
@@ -78,12 +75,12 @@
    - Computes dense 384-dimensional query embeddings in ~3.5ms via FastEmbed ONNX runtime (`BAAI/bge-small-en-v1.5`).
    - RediSearch HNSW vector indexing performs KNN similarity searches directly inside Redis in **`7.71ms`**.
    - If Redis crashes or disconnects during live traffic, `SemanticCacheManager` intercepts socket errors and seamlessly fails over to an in-memory NumPy vector matrix with **0 dropped requests and 0 HTTP 500 errors**.
-   - Background non-blocking probes automatically reconnect when Redis recovers.
+   - There is no background probe: once Redis recovers, the next cache lookup or store reconnects, as does `check_connection()` from `/health`, `/resilience/status` and `/metrics`, at most once per 5-second cooldown.
 2. **Pybreaker Circuit Breakers**:
    - Guards external telemetry probes against systemic failures (`fail_max=3`, `reset_timeout=30s`).
    - If an external status page crashes or hangs, the breaker trips `OPEN`, causing the LangGraph state machine to route into `DegradedFallbackNode` instead of stalling requests.
 3. **Tenacity Exponential Backoff & Jitter**:
-   - Telemetry clients and LLM invocation wrappers absorb transient network drops and HTTP 429 rate limits via exponential backoff with full randomized jitter.
+   - Telemetry clients absorb transient network drops and HTTP 429 rate limits via exponential backoff with full randomized jitter. Model calls go through the LLM gateway, which retries an outage once and fails over to a second Groq model on a 429 ([resilience guide](docs/resilience.md#6-llm-gateway-failover-and-rate-limit-cooldowns)).
 4. **Pydantic Validation & Automated Self-Repair**:
    - All LLM outputs are strictly validated against `IncidentTriageReport`.
    - Any `ValidationError` extracts exact error paths and feeds the traceback back to the LLM context to iteratively repair malformed fields (capped at 2 retries).
@@ -93,7 +90,7 @@
    - If an external `REDIS_URL` is provided (e.g. Upstash or Docker Compose), internal Redis is bypassed automatically.
 6. **Telemetry & Embedding Vector Optimization (v1.3.0)**:
    - **10-Second Statuspage In-Memory Cache**: Eliminates redundant transcontinental network fetches to status APIs, saving ~700ms on successive triage queries.
-   - **Persistent Groq HTTP Connection Pooling**: Keeps connections warm with `max_tokens=650`, eliminating TCP/TLS handshake latency.
+   - **Persistent Groq HTTP Connection Pooling**: Keeps connections warm and caps generation at `LLM_MAX_TOKENS` (default 2500), eliminating TCP/TLS handshake latency.
    - **In-Memory LRU Vector Cache & Pre-Warming**: Caches up to 512 query vectors and pre-warms demo presets at boot, driving cache-hit lookups down to **1.16ms**.
 
 ---
@@ -115,9 +112,11 @@ cp .env.example .env
 ./scripts/run_local.sh
 ```
 
-- **SRE Command Center Dashboard**: [http://127.0.0.1:8000](http://127.0.0.1:8000)
+- **Explorable page**: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 - **Interactive OpenAPI Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - **Live Health Endpoint**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+
+To check the installed package as CI's Docker job does, without Docker, run `./scripts/check_package.sh` (or `./scripts/check.sh --package`): it builds the wheel, installs it into a throwaway venv, verifies the vendored files and runs the smoke test against it, with no Redis or Groq key. The image's OS layer and non-root user are checked in CI only. See [docs/deployment.md](docs/deployment.md#check-the-package-without-docker).
 
 ---
 
@@ -135,22 +134,17 @@ docker compose up -d --build
 
 ## 🧪 Testing & Verification
 
-### Automated Pytest Suite (85 Tests)
+### Automated Pytest Suite
 
 ```bash
-.venv/bin/pytest tests/ -v
+./scripts/check.sh            # ruff, ruff format, mypy, pytest, as CI runs them
+./scripts/check.sh --browser  # the Playwright tier (needs the `browser` extra and Chromium)
 ```
 
-```
-============================== 85 passed in 1.80s ==============================
-- tests/test_api.py: 24 passed (FastAPI endpoints, middleware, load shedding, admin auth, metrics)
-- tests/test_cache.py: 17 passed (HNSW indexing, LRU caching, disconnect failover, scope isolation, offline fallback)
-- tests/test_graph.py: 16 passed (LangGraph state machine, BoundedMemorySaver, self-repair loops)
-- tests/test_schemas.py: 10 passed (Pydantic v2 strict models, confidence bounds, enum validation)
-- tests/test_telemetry.py: 9 passed (Statuspage parsing, 10s short-TTL cache, dynamic probe routing)
-- tests/test_retry.py: 5 passed (Tenacity backoff, jitter, HTTP 429 retries)
-- tests/test_circuit_breaker.py: 4 passed (Pybreaker state transitions, snapshots, half-open probing)
-```
+The suite runs offline (scripted LLM, canned Statuspage, in-memory cache fallback when Redis is
+absent). It covers the API routes and streams, the semantic cache and its failover, the LangGraph
+state machine and self-repair loops, the report schemas, telemetry probing, retries and circuit
+breakers, the scenario catalogue and the page in headless Chromium.
 
 ### Live Smoke Test Battery (9/9 Steps)
 
@@ -170,14 +164,19 @@ Explore the architecture, resilience engineering, API specifications, and archit
 - 🛡️ **[Resilience Engineering Deep-Dive](docs/resilience.md)**: Finite state machines, full jitter exponential backoff formulas, and zero-downtime cache failovers.
 - 🏛️ **[System Architecture](docs/architecture.md)**: State machine topology, cyclic bounds, dynamic tool dispatch, and unified state management.
 - 📋 **[Data Contracts & Schemas](docs/schemas.md)**: Strict Pydantic v2 data models (`extra="forbid"`), enums, and state models.
-- 🎬 **[Interactive SRE Demo Guide](docs/demo.md)**: 5-Act presentation script and walkthrough instructions for live demonstrations.
 - ☁️ **[Free Cloud Deployment](docs/deployment.md)**: 100% free hosting recipes on Hugging Face Spaces and Render.com.
 - ⚖️ **[Architecture Decision Records (MADR)](docs/decisions/)**:
   - [ADR 0001: LangGraph Cyclic State Machine](docs/decisions/0001-langgraph-cyclic-state-machine.md)
   - [ADR 0002: Dual-Engine Semantic Caching](docs/decisions/0002-dual-engine-semantic-caching.md)
   - [ADR 0003: Pybreaker & Tenacity for Resilience](docs/decisions/0003-pybreaker-and-tenacity-for-resilience.md)
   - [ADR 0004: Strict Pydantic Contracts & Self-Repair Loop](docs/decisions/0004-strict-pydantic-contracts-and-self-repair.md)
-  - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md)
+  - [ADR 0005: Free Tier Groq Quota Monitoring & Model Failover](docs/decisions/0005-free-tier-groq-quota-monitoring-and-failover.md) (fallback model superseded by ADR 0006)
+  - [ADR 0006: Project-Owned LLM Gateway](docs/decisions/0006-project-owned-llm-gateway.md)
+  - [ADR 0007: No Checkpointing on the Request Path](docs/decisions/0007-no-checkpointing-on-the-request-path.md)
+  - [ADR 0008: Execution Trace from a Per-Request Recorder, Streamed over SSE](docs/decisions/0008-execution-trace.md)
+  - [ADR 0009: Scenario Runs Are Fully Isolated from the Shared Runtime](docs/decisions/0009-scenario-runs-are-isolated.md)
+  - [ADR 0010: Build-Free, Vendored Frontend](docs/decisions/0010-build-free-vendored-frontend.md)
+  - [ADR 0011: One Per-App Runtime, No Module-Level Singletons](docs/decisions/0011-one-per-app-runtime.md)
 
 ---
 
@@ -197,7 +196,7 @@ See the full [REST API Reference](docs/api.md) for detailed JSON schemas, header
 | `GET` | `/chaos/probe` | Trigger live diagnostic probe through Tenacity retries and circuit breaker. |
 | `POST` | `/resilience/reset` | Administratively reset all tripped circuit breakers, chaos state, and LLM counters. |
 | `POST` | `/cache/clear` | Flush all entries from Redis and in-memory semantic cache. |
-| `GET` | `/` | Serve the interactive SRE Incident Command Center UI. |
+| `GET` | `/` | Serve the explorable page (static shell; assets under `/static`). |
 
 
 ---
@@ -212,15 +211,16 @@ resilient-triage/
 ├── scripts/
 │   ├── docker-entrypoint.sh        # Dual-mode container bootstrapper (embedded vs external Redis)
 │   ├── run_local.sh                # 1-click native macOS local runner
+│   ├── screenshots.py              # Captures the page's README screenshots (Playwright, by hand)
 │   └── smoke_test.py               # 9-step automated end-to-end smoke test suite
 ├── docs/
 │   ├── api.md                      # Complete OpenAPI REST API reference & examples
 │   ├── resilience.md               # Fault tolerance, circuit breakers & jitter backoff deep dive
 │   ├── architecture.md             # Deep-dive system design & resilience state machine
 │   ├── schemas.md                  # Strict Pydantic contracts and schemas
-│   ├── demo.md                     # Interactive 5-Act presentation script & demo guide
 │   ├── deployment.md               # 100% Free cloud hosting guide (Hugging Face Spaces / Render)
-│   └── decisions/                  # MADR Architecture Decision Records (0001 - 0005)
+│   ├── img/                        # Page screenshots, light and dark (scripts/screenshots.py)
+│   └── decisions/                  # MADR Architecture Decision Records (0001 - 0007)
 ├── src/resilient_triage/
 │   ├── config.py                   # Centralized pydantic-settings configuration
 │   ├── schemas/                    # Pydantic v2 data contracts (incident, telemetry, state, api)
@@ -228,7 +228,7 @@ resilient-triage/
 │   ├── telemetry/                  # Live Statuspage and configurable Chaos clients
 │   ├── cache/                      # Redis 8 RediSearch & NumPy vector caching engine
 │   ├── graph/                      # LangGraph cyclic state machine and self-repair nodes
-│   └── api/                        # FastAPI gateway, middleware, and SRE console UI
+│   └── api/                        # FastAPI gateway, middleware, and the page (static/)
 └── tests/                          # 58 unit, integration, and chaos resilience tests
 ```
 

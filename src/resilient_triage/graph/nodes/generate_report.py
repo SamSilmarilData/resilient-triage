@@ -1,33 +1,35 @@
-"""Node: generate_report - Invokes LLM to produce candidate report JSON."""
+"""Node: generate_report - Asks the model for a draft report as JSON."""
 
 import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage
+from langgraph.runtime import Runtime
 
-from resilient_triage.config import settings
-from resilient_triage.graph.llm import get_triage_llm
+from resilient_triage.graph.deps import TriageDeps
+from resilient_triage.llm import Completion
 from resilient_triage.schemas.state import TriageState
 
 logger = logging.getLogger(__name__)
 
 
-async def generate_report_node(state: TriageState) -> dict[str, Any]:
+async def generate_report_node(state: TriageState, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
     """Call LLM with accumulated messages to generate candidate triage JSON."""
-    llm = get_triage_llm()
-    messages = state.get("messages", [])
-
-    try:
-        response = await llm.ainvoke(messages)
-        raw_content = response.content if hasattr(response, "content") else str(response)
+    result = await runtime.context.llm.complete(
+        state.get("messages", []), trace=runtime.context.trace
+    )
+    if isinstance(result, Completion):
         return {
-            "candidate_report_raw": raw_content,
-            "messages": [AIMessage(content=raw_content)],
+            "candidate_report_raw": result.text,
+            "messages": [AIMessage(content=result.text)],
+            "provider_failure": None,
         }
-    except Exception as exc:
-        logger.error("LLM inference call failed in generate_report_node: %s", exc)
-        return {
-            "candidate_report_raw": "",
-            "validation_errors": [f"LLM Provider Failure: {exc}"],
-            "repair_attempts": settings.max_self_repair_retries,
-        }
+    logger.error(
+        "LLM provider failure in generate_report_node: %s: %s", type(result).__name__, result.detail
+    )
+    # In a refine round, keep the valid report the round started from (None otherwise).
+    return {
+        "candidate_report_raw": "",
+        "provider_failure": result,
+        "final_report": state.get("refined_from"),
+    }

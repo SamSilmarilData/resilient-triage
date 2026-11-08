@@ -4,6 +4,9 @@ Can run against an already-running server or automatically spawn a temporary loc
 """
 
 import argparse
+import hashlib
+import os
+import secrets
 import subprocess
 import sys
 import time
@@ -16,6 +19,15 @@ YELLOW = "\033[93m"
 CYAN = "\033[96m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
+
+# Step 7 must reach Cluster Sentinel, whose breaker step 6 opened.
+# tests/test_smoke_script.py checks that query analysis routes it there.
+OUTAGE_QUERY = "Kubernetes ingress for internal auth service returning 502 bad gateway across pods"
+
+ADMIN_KEY_HINT = (
+    "Admin routes need X-Admin-Key equal to the server's ADMIN_API_KEY (pass --admin-key or set "
+    "$ADMIN_API_KEY): they answer 403 while the server has no key and 401 when the key differs."
+)
 
 
 def print_step(name: str):
@@ -39,8 +51,36 @@ def is_server_running(base_url: str) -> bool:
         return False
 
 
-def run_battery(base_url: str):
-    client = httpx.Client(base_url=base_url, timeout=30.0)
+VENDOR_TYPES = {".mjs": "text/javascript", ".woff2": "font/woff2"}
+IMMUTABLE = "public, max-age=31536000, immutable"
+
+
+def check_vendored_assets(client: httpx.Client):
+    """Fetch every file the served manifest lists and check its sha256, type and cache header."""
+    res = client.get("/static/vendor/manifest.json")
+    if res.status_code != 200:
+        print_fail(f"/static/vendor/manifest.json returned HTTP {res.status_code}")
+    count = 0
+    for package in res.json()["packages"]:
+        for entry in package["files"]:
+            path = f"/static/vendor/{package['name']}@{package['version']}/{entry['path']}"
+            asset = client.get(path)
+            if asset.status_code != 200:
+                print_fail(f"{path} returned HTTP {asset.status_code}")
+            if hashlib.sha256(asset.content).hexdigest() != entry["sha256"]:
+                print_fail(f"{path} does not match its manifest sha256")
+            expected = VENDOR_TYPES.get(os.path.splitext(path)[1])
+            if expected and not asset.headers.get("content-type", "").startswith(expected):
+                print_fail(f"{path} served as {asset.headers.get('content-type')}, not {expected}")
+            if asset.headers.get("cache-control") != IMMUTABLE:
+                print_fail(f"{path} Cache-Control is {asset.headers.get('cache-control')!r}")
+            count += 1
+    print_pass(f"{count} vendored files match the manifest, typed and cached as immutable")
+
+
+def run_battery(base_url: str, admin_key: str):
+    # Every call sends the admin key (see ADMIN_KEY_HINT).
+    client = httpx.Client(base_url=base_url, timeout=30.0, headers={"X-Admin-Key": admin_key})
 
     # 1. Health Probe
     print_step("Step 1: System Health & Active Model Engine Probe")
@@ -54,12 +94,17 @@ def run_battery(base_url: str):
     print_pass(f"Circuit Breakers: {data['circuits']}")
 
     # Ensure clean slate before running tests
-    client.post("/cache/clear")
-    client.post("/resilience/reset")
+    for admin_path in ("/cache/clear", "/resilience/reset"):
+        res_admin = client.post(admin_path)
+        if res_admin.status_code in (401, 403):
+            print_fail(f"{admin_path} returned HTTP {res_admin.status_code}. {ADMIN_KEY_HINT}")
 
     # 2. Triage Cache Miss (Live Inference)
     print_step("Step 2: Live Incident Triage Query (Cache MISS)")
-    q1 = "GitHub Actions runner queue is stalled with 504 gateway timeout and elevated webhook latency"
+    q1 = (
+        "GitHub Actions runner queue is stalled with 504 gateway timeout "
+        "and elevated webhook latency"
+    )
     start = time.monotonic()
 
     res1 = client.post("/triage", json={"query": q1})
@@ -97,7 +142,8 @@ def run_battery(base_url: str):
         f"Status: HTTP 200 | Cache: {BOLD}{GREEN}HIT{RESET} | Cosine Similarity: {similarity:.4f}"
     )
     print_pass(
-        f"Turnaround Latency: {BOLD}{GREEN}{elapsed2:.2f}ms{RESET} (Strict sub-20ms requirement met!)"
+        f"Turnaround Latency: {BOLD}{GREEN}{elapsed2:.2f}ms{RESET} "
+        "(Strict sub-20ms requirement met!)"
     )
 
     # 4. Force Refresh Bypass
@@ -138,8 +184,7 @@ def run_battery(base_url: str):
 
     # 7. Triage Under Outage (Degraded Recovery)
     print_step("Step 7: Incident Triage Under Active Upstream Outage (Compensatory Routing)")
-    q_chaos = "Kubernetes ingress reporting 502 bad gateway across backend pods"
-    res_under_chaos = client.post("/triage", json={"query": q_chaos})
+    res_under_chaos = client.post("/triage", json={"query": OUTAGE_QUERY})
     if res_under_chaos.status_code != 200:
         print_fail(f"Triage failed during outage: HTTP {res_under_chaos.status_code}")
 
@@ -168,6 +213,10 @@ def run_battery(base_url: str):
         print_fail("Failed to clear cache")
     print_pass("Semantic cache memory successfully flushed")
 
+    # 10. Vendored frontend assets, served from the installed package (#115)
+    print_step("Step 10: Vendored Static Assets (hashes, types, cache headers)")
+    check_vendored_assets(client)
+
     print(
         f"\n{BOLD}{GREEN}========================================================================"
     )
@@ -178,6 +227,12 @@ def run_battery(base_url: str):
 def main():
     parser = argparse.ArgumentParser(description="Resilient Triage Live Smoke Test")
     parser.add_argument("--url", default="http://127.0.0.1:8000", help="Target API base URL")
+    parser.add_argument(
+        "--admin-key",
+        default=os.environ.get("ADMIN_API_KEY"),
+        help="X-Admin-Key for admin routes (default: $ADMIN_API_KEY); an ephemeral instance "
+        "gets a random one when this is unset.",
+    )
     args = parser.parse_args()
 
     import socket
@@ -186,10 +241,15 @@ def main():
 
     target_url = args.url.rstrip("/")
     server_process = None
+    admin_key = args.admin_key
 
     if is_server_running(target_url):
         print(f"{CYAN}Detected running server at {target_url}. Running tests directly.{RESET}")
+        if not admin_key:
+            print_fail(f"No admin key given. {ADMIN_KEY_HINT}")
     else:
+        # The ephemeral instance gets the key in its environment, which wins over .env.
+        admin_key = admin_key or secrets.token_urlsafe(32)
         parsed = urllib.parse.urlparse(target_url)
         target_host = parsed.hostname or "127.0.0.1"
         target_port = parsed.port or 8000
@@ -209,11 +269,13 @@ def main():
                 target_port = sock.getsockname()[1]
             target_url = f"http://{target_host}:{target_port}"
             print(
-                f"{YELLOW}Port was occupied by another process. Relocating ephemeral instance to {target_url}...{RESET}"
+                f"{YELLOW}Port was occupied by another process. Relocating ephemeral "
+                f"instance to {target_url}...{RESET}"
             )
         else:
             print(
-                f"{YELLOW}No running server found at {target_url}. Launching ephemeral instance...{RESET}"
+                f"{YELLOW}No running server found at {target_url}. Launching ephemeral "
+                f"instance...{RESET}"
             )
 
         log_file = tempfile.NamedTemporaryFile(mode="w+", delete=False, prefix="smoke_uvicorn_")
@@ -230,6 +292,7 @@ def main():
             ],
             stdout=log_file,
             stderr=log_file,
+            env={**os.environ, "ADMIN_API_KEY": admin_key},
         )
         # Wait for readiness (up to 30s to allow cold-start ONNX model initialization)
         ready = False
@@ -247,7 +310,7 @@ def main():
             print_fail(f"Ephemeral server failed to start within 30 seconds.\n{err_output}")
 
     try:
-        run_battery(target_url)
+        run_battery(target_url, admin_key)
     finally:
         if server_process:
             print(f"{CYAN}Tearing down ephemeral server instance...{RESET}")

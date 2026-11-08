@@ -1,16 +1,26 @@
-"""Node: validate_report - Parses candidate output strictly into IncidentTriageReport."""
+"""Node: validate_report - Checks the model's JSON against the strict report schema."""
 
 import json
 import logging
 import re
 from typing import Any
 
+from langgraph.runtime import Runtime
 from pydantic import ValidationError
 
-from resilient_triage.schemas.incident import DegradationStatus, IncidentTriageReport
+from resilient_triage.config import settings
+from resilient_triage.graph.deps import TriageDeps
+from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.state import TriageState
+from resilient_triage.trace.events import ValidationFailed
+from resilient_triage.trace.recorder import record_event
 
 logger = logging.getLogger(__name__)
+
+
+def self_repair_exhausted(repair_attempts: int) -> bool:
+    """Return True once repair_attempts has used up the self-repair budget."""
+    return repair_attempts >= settings.max_self_repair_retries
 
 
 def clean_json_string(raw: str) -> str:
@@ -33,8 +43,10 @@ def clean_json_string(raw: str) -> str:
     return text
 
 
-def validate_report_node(state: TriageState) -> dict[str, Any]:
+def validate_report_node(state: TriageState, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
     """Validate candidate report strictly against Pydantic schema."""
+    # A failure is recorded on the run's trace as validation_failed: field names and error
+    # types only, never the candidate's values (ADR-008).
     candidate_raw = state.get("candidate_report_raw") or ""
     repair_attempts = state.get("repair_attempts", 0)
 
@@ -46,35 +58,12 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
                 data["confidence_score"] = 0.85
             if not data.get("severity"):
                 data["severity"] = "UNKNOWN"
-            if not data.get("degradation_status"):
-                data["degradation_status"] = "HEALTHY"
             if not data.get("summary"):
                 data["summary"] = state.get("query") or "Automated incident triage summary"
             if not data.get("root_cause_analysis"):
                 data["root_cause_analysis"] = "Diagnostic analysis in progress"
 
         report = IncidentTriageReport.model_validate(data)
-
-        # Enforce safety policy: state-mutating (remediative) actions must require approval
-        for action in report.recommended_actions:
-            if action.action_type.lower() == "remediative" and not action.requires_approval:
-                logger.warning(
-                    "Programmatic safety policy enforced: setting requires_approval=True on remediative action '%s'",
-                    action.action,
-                )
-                action.requires_approval = True
-
-        # Enforce consistency with circuit breaker status from state machine
-        cb_status = state.get("circuit_breaker_status", {})
-        tripped = [name for name, st in cb_status.items() if st == "open"]
-        if tripped:
-            report.circuit_breakers_tripped = list(set(report.circuit_breakers_tripped + tripped))
-            if report.degradation_status == DegradationStatus.HEALTHY:
-                report.degradation_status = (
-                    DegradationStatus.SEVERELY_DEGRADED
-                    if len(tripped) >= 2
-                    else DegradationStatus.PARTIALLY_DEGRADED
-                )
 
         logger.info("Candidate report successfully validated against IncidentTriageReport schema.")
         return {
@@ -84,11 +73,13 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
 
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("Pydantic validation failed on attempt %d: %s", repair_attempts + 1, exc)
+        failure = exc  # the except name is unbound after the block; the lambda runs inside it
+        record_event(
+            runtime.context.trace,
+            lambda: ValidationFailed.from_error(failure, attempt=repair_attempts + 1),
+        )
 
-        # Preserve upstream LLM provider failure errors while refreshing per-attempt schema errors
-        existing_errors = state.get("validation_errors", [])
-        provider_errors = [e for e in existing_errors if "LLM Provider Failure" in e]
-        errors: list[str] = list(provider_errors)
+        errors: list[str] = []
         if isinstance(exc, ValidationError):
             for err in exc.errors():
                 loc = " -> ".join(str(p) for p in err.get("loc", []))
@@ -98,8 +89,11 @@ def validate_report_node(state: TriageState) -> dict[str, Any]:
         else:
             errors.append(f"JSON Parsing Error: {exc}")
 
+        # A refine round that runs out of self-repair keeps the valid report it started from.
+        # It shares the first generation's repair budget, which bounds the longest path.
+        exhausted = self_repair_exhausted(repair_attempts + 1)
         return {
-            "final_report": None,
+            "final_report": state.get("refined_from") if exhausted else None,
             "repair_attempts": repair_attempts + 1,
             "validation_errors": errors,
         }

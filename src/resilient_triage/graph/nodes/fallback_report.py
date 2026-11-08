@@ -1,10 +1,17 @@
-"""Node: fallback_report - Constructs deterministic safe report on retry exhaustion."""
+"""Node: fallback_report - Builds a safe report when the model fails or can't fix its JSON."""
 
+from collections.abc import Sequence
 from typing import Any
 
+from resilient_triage.llm.failures import (
+    MalformedResponse,
+    ProviderFailure,
+    RateLimited,
+    Rejected,
+    Unavailable,
+)
 from resilient_triage.schemas.incident import (
     ActionRecommendation,
-    DegradationStatus,
     IncidentTriageReport,
     PriorityLevel,
     SeverityLevel,
@@ -13,52 +20,73 @@ from resilient_triage.schemas.incident import (
 from resilient_triage.schemas.state import TriageState
 
 
-def fallback_report_node(state: TriageState) -> dict[str, Any]:
-    """Emit guaranteed valid IncidentTriageReport when LLM self-repair retries are exhausted."""
-    query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
-    validation_errors = state.get("validation_errors", [])
-    cb_status = state.get("circuit_breaker_status", {})
-    tripped = [name for name, st in cb_status.items() if st == "open"]
+def _fallback_reason(failure: ProviderFailure | None, validation_errors: list[str]) -> str:
+    """Explain the fallback by the provider failure kind, or by exhausted self-repair."""
+    match failure:
+        case RateLimited():
+            return (
+                "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis "
+                "engaged."
+            )
+        case Unavailable() | MalformedResponse():
+            return "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
+        case Rejected():
+            return "LLM provider rejected the request. Safe heuristic fallback engaged."
+        case None:
+            err_snippet = (
+                "; ".join(validation_errors[:2]) if validation_errors else "LLM synthesis error"
+            )
+            return f"Self-repair limits reached. Diagnostic context: {err_snippet}"
 
-    raw_signals = state.get("telemetry_signals", [])
-    signals = []
-    for s in raw_signals:
-        try:
-            signals.append(TelemetrySignal.model_validate(s))
-        except Exception:
-            pass
 
-    err_snippet = "; ".join(validation_errors[:2]) if validation_errors else "LLM synthesis error"
-    if "429" in err_snippet:
-        root_cause = "LLM provider rate limit reached (HTTP 429). Degraded heuristic fallback analysis engaged."
-    elif "503" in err_snippet or "unavailable" in err_snippet.lower():
-        root_cause = (
-            "Upstream LLM provider temporarily unavailable. Safe heuristic fallback engaged."
-        )
-    else:
-        root_cause = f"Self-repair limits reached. Diagnostic context: {err_snippet}"
-
-    report = IncidentTriageReport(
+def build_fallback_report(
+    query: str, *, reason: str, signals: Sequence[TelemetrySignal] = ()
+) -> IncidentTriageReport:
+    """Build a guaranteed valid low-confidence report whose root cause is ``reason``."""
+    return IncidentTriageReport(
         summary=f"Automated incident triage degraded for: {query[:80]}",
         severity=SeverityLevel.UNKNOWN,
-        root_cause_analysis=root_cause,
+        root_cause_analysis=reason,
         affected_services=[],
-        telemetry_signals=signals,
+        telemetry_signals=list(signals),
         recommended_actions=[
             ActionRecommendation(
                 priority=PriorityLevel.P0,
                 action="Manually inspect service dashboards and verify telemetry signals",
                 target_system="Monitoring",
                 action_type="diagnostic",
-                requires_approval=False,
             )
         ],
-        degradation_status=DegradationStatus.SEVERELY_DEGRADED,
-        circuit_breakers_tripped=tripped,
         confidence_score=0.20,
     )
 
+
+def _valid_signals(raw_signals: Sequence[Any]) -> list[TelemetrySignal]:
+    """Keep the telemetry signals that validate, dropping malformed ones."""
+    signals = []
+    for s in raw_signals:
+        try:
+            signals.append(TelemetrySignal.model_validate(s))
+        except Exception:
+            pass
+    return signals
+
+
+def fallback_report_from_state(query: str, state: TriageState) -> IncidentTriageReport:
+    """Build the unreconciled fallback report a run's state explains, keeping its valid signals."""
+    return build_fallback_report(
+        query,
+        reason=_fallback_reason(state.get("provider_failure"), state.get("validation_errors", [])),
+        signals=_valid_signals(state.get("telemetry_signals", [])),
+    )
+
+
+def fallback_report_node(state: TriageState) -> dict[str, Any]:
+    """Emit a guaranteed valid report after a provider failure or exhausted self-repair."""
+    query = str(state.get("query") or state.get("incident_query") or "Incident investigation")
+
     return {
-        "final_report": report,
+        "final_report": fallback_report_from_state(query, state),
         "is_degraded": True,
+        "synthesis_fell_back": True,
     }

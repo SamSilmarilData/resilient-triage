@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from resilient_triage.schemas.incident import IncidentTriageReport
 from resilient_triage.schemas.telemetry import ChaosConfig
+from resilient_triage.trace.summary import TraceSummary
 
 
 class TriageRequest(BaseModel):
@@ -49,6 +50,14 @@ class TriageResponse(BaseModel):
     execution_time_ms: float = Field(
         ...,
         description="Total round-trip time in milliseconds (sub-20ms target for cache hits)",
+    )
+    trace: TraceSummary | None = Field(
+        default=None,
+        description=(
+            "Structured summary of this request's execution trace (ADR-008): node path, "
+            "routes, model calls, telemetry reads, reconciliation and timings. Never the "
+            "event list. None when the request was not traced."
+        ),
     )
 
 
@@ -130,7 +139,9 @@ class HealthResponse(BaseModel):
         description="Active cache driver: 'redisearch', 'redis_hash_fallback', or 'in_memory'",
     )
     circuits: dict[str, str] = Field(
-        description="Current state of all registered circuit breakers ('closed', 'open', 'half-open')"
+        description=(
+            "Current state of all registered circuit breakers ('closed', 'open', 'half-open')"
+        )
     )
     active_model: str = Field(
         default="Zero-Config SRE Simulation",
@@ -159,3 +170,65 @@ class ResilienceStatusResponse(BaseModel):
         default=None,
         description="Active LLM quota and rate limit telemetry snapshot",
     )
+
+
+class ScenarioView(BaseModel):
+    """What the page may see of a scenario: its copy, never its script or expected outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    chapter: str = Field(description="Id of the chapter the scenario is shown under")
+    title: str
+    caption: str
+    setup_notes: tuple[str, ...] = Field(
+        description="What is true before the run, in words: its setup, overrides and faults"
+    )
+
+
+class ScenarioChapterView(BaseModel):
+    """A chapter of the scenario catalogue, with its scenarios in display order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    title: str
+    intro: str = Field(description="What the chapter breaks, in a sentence or two for the page")
+    scenarios: list[ScenarioView]
+
+
+class ScenarioCatalogue(BaseModel):
+    """GET /scenarios: the public catalogue, chapters and their scenarios in display order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    chapters: list[ScenarioChapterView]
+
+
+class ConfigFieldView(BaseModel):
+    """A `Settings` field that tunes a graph node: its name and description, never its value."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    description: str
+
+
+class NodeInspectorView(BaseModel):
+    """What the node inspector shows for one graph node (#121)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    purpose: str = Field(description="The node module's docstring, without its 'Node:' prefix")
+    file: str = Field(description="The node module's path in the repository")
+    config_fields: list[ConfigFieldView]
+    adrs: list[str] = Field(description="Repository paths of the ADRs that explain the node")
+
+
+class GraphNodes(BaseModel):
+    """GET /graph/nodes: inspector content for every graph node, in registration order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    nodes: list[NodeInspectorView]

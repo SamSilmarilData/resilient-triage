@@ -76,7 +76,9 @@ class ActionRecommendation(BaseModel):
     target_system: str = Field(..., description="Target service or infrastructure component")
     action_type: str = Field(
         default="remediative",
-        description="Action nature: 'diagnostic' (read-only/safe) or 'remediative' (mutating/mitigating)",
+        description=(
+            "Action nature: 'diagnostic' (read-only/safe) or 'remediative' (mutating/mitigating)"
+        ),
     )
     requires_approval: bool = Field(
         default=False,
@@ -116,7 +118,9 @@ class IncidentTriageReport(BaseModel):
     )
     degradation_status: DegradationStatus = Field(
         default=DegradationStatus.HEALTHY,
-        description="Agent operational mode during triage (HEALTHY, PARTIALLY_DEGRADED, SEVERELY_DEGRADED)",
+        description=(
+            "Agent operational mode during triage (HEALTHY, PARTIALLY_DEGRADED, SEVERELY_DEGRADED)"
+        ),
     )
     circuit_breakers_tripped: list[str] = Field(
         default_factory=list,

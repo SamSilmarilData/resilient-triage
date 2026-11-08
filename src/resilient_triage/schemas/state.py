@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
+from resilient_triage.llm.failures import ProviderFailure
 from resilient_triage.schemas.incident import IncidentTriageReport
 
 
@@ -15,8 +16,8 @@ class TriageState(TypedDict, total=False):
     query: str
     service_filter: str | None
 
-    # Dynamic tool targeting
-    target_tools: list[str]
+    # Targeted sources: Telemetry source ids the probe selected, sorted
+    targeted_sources: list[str]
 
     # Message history for agent nodes and self-repair loop
     messages: Annotated[list[Any], add_messages]
@@ -28,6 +29,9 @@ class TriageState(TypedDict, total=False):
 
     # Resilience tracking & compensatory history
     circuit_breaker_status: dict[str, str]  # e.g. {"statuspage": "CLOSED", "chaos": "OPEN"}
+    tripped_breakers: list[str]  # targeted sources whose breaker was open at collection
+    unavailable_sources: list[str]  # targeted sources that could not be read, breaker not tripped
+    synthesis_fell_back: bool  # report was built by fallback_report
     is_degraded: bool
     degradation_reason: str | None
     historical_context: list[str]
@@ -37,6 +41,12 @@ class TriageState(TypedDict, total=False):
     repair_attempts: int
     refinement_attempts: int
     validation_errors: list[str]
+    provider_failure: ProviderFailure | None  # the latest generation's failure, else None
+    refined_from: IncidentTriageReport | None  # the valid report a refine round started from
 
     # Validated final output
     final_report: IncidentTriageReport | None
+
+    # The node that ran last: set by builder.py's trace wrapper, so the next node's wrapper
+    # can derive the route taken from the (previous, current) node pair (ADR-008)
+    previous_node: str

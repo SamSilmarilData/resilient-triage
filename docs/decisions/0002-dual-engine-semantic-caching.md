@@ -1,7 +1,7 @@
 # ADR-002: Dual-Engine Semantic Caching (Redis 8 RediSearch HNSW with NumPy Fallback)
 
 ## Status
-Accepted
+Accepted. Amended 2026-10-29 (spec #13); see [Amended](#amended).
 
 ## Date
 2026-10-10
@@ -49,3 +49,10 @@ We implemented a **Dual-Engine Semantic Cache Architecture** managed by `Semanti
 - **Sub-2ms Turnaround**: Repeat and synonymous incident queries return in $\approx 1.16\text{ms}$ on server execution.
 - **100% Availability Guarantee**: If Redis crashes or undergoes maintenance, traffic seamlessly transitions to in-memory NumPy fallback with 0 dropped requests and 0 HTTP 500 errors.
 - **Zero Cloud Cost**: Runs completely in-memory and inside free single-container deployments (Hugging Face Spaces, Render Free, local Docker) with no paid API dependencies.
+
+## Amended
+2026-10-29, spec #13. The two engines now sit behind adapters on one `VectorStore` seam (`cache/vector_store.py`): `RedisVectorStore` (`cache/redis_store.py`) and `InMemoryVectorStore` (`cache/in_memory_store.py`). `SemanticCacheManager` keeps embedding, scope normalization, TTL choice, write-through and read routing, and drops Redis only through `_mark_down`, which closes the client and starts the 5-second reconnect cooldown. The Redis adapter reports failures as `StoreUnavailable` (fail over) or `StoreQueryError` (log, stay connected). The index, key prefix and hash fields are unchanged.
+
+- After a RediSearch failover, the in-memory standby holds only this process's writes. Search mode does not hydrate the standby from Redis; only `redis_hash_fallback` mode does.
+- A lookup matches only entries stored under exactly the same service scope; "no scope" is its own scope, not a wildcard.
+- Decision item 4 overstates the probing: there is no background task. Reconnection is attempted lazily, at most once per cooldown, by `lookup` / `store` and by `check_connection()` from the status routes.

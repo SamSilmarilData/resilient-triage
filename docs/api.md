@@ -18,10 +18,13 @@ Every HTTP response returned by the API includes the following observability hea
 | `x-process-time-ms` | Total server processing time in milliseconds | `12.45` |
 | `x-cache` | Cache status (`HIT` or `MISS`) — *present on `/triage`* | `HIT` |
 | `x-cache-similarity` | Cosine similarity score ($\ge 0.90$) — *present on cache `HIT`* | `0.9417` |
-| `x-thread-id` | LangGraph persistence checkpoint thread identifier — *present on `/triage`* | `e1f8b4a2-...` |
+| `x-thread-id` | Correlation id: the caller's `X-Thread-ID` echoed back, or a new UUID4 if none was sent. It names no checkpoint thread (ADR-007) — *present on `/triage`* | `e1f8b4a2-...` |
 
 ### Security & Authentication Headers
-- `X-Admin-Key`: Required for mutating endpoints (`/resilience/reset`, `/cache/clear`, `/chaos/inject`) if `ADMIN_API_KEY` is configured in the environment. Unauthenticated requests receive `401 Unauthorized`.
+- `X-Admin-Key`: Required on the mutating admin endpoints (`/resilience/reset`, `/cache/clear`, `/chaos/inject`). They fail closed:
+  - `ADMIN_API_KEY` unset or empty on the server: `403 Forbidden` for every caller, whatever header it sends.
+  - `ADMIN_API_KEY` set: a missing or wrong header gets `401 Unauthorized`; the matching key (compared in constant time) is admitted.
+- The header is declared as an OpenAPI `apiKey` security scheme (`AdminKey`), so `/docs` has an **Authorize** button: enter the key there once and Swagger UI sends it on the admin routes. That is the operator path. Admin routes act only on the shared runtime.
 
 ---
 
@@ -30,6 +33,10 @@ Every HTTP response returned by the API includes the following observability hea
 | Method | Endpoint | Description | Auth |
 | :--- | :--- | :--- | :---: |
 | `POST` | [`/triage`](#1-post-triage) | Run autonomous incident triage analysis | Public |
+| `POST` | [`/triage/stream`](#1a-post-triagestream) | Same triage, streaming its execution trace as Server-Sent Events | Public |
+| `GET` | [`/scenarios`](#1b-get-scenarios) | The scenario catalogue's public view, by chapter in display order | Public |
+| `POST` | [`/scenarios/{scenario_id}/stream`](#1c-post-scenariosscenario_idstream) | Run one catalogued scenario on private collaborators, streaming its trace | Public |
+| `GET` | [`/graph/nodes`](#1d-get-graphnodes) | The node inspector's content: each graph node's purpose, file, config fields and ADRs | Public |
 | `GET` | [`/health`](#2-get-health) | Check system availability, active model, and circuit states | Public |
 | `GET` | [`/resilience/status`](#3-get-resiliencestatus) | Detailed diagnostics for breakers, chaos, and cache | Public |
 | `GET` | [`/llm/quota`](#4-get-llmquota) | Retrieve real-time Groq rate limits and token budgets | Public |
@@ -39,6 +46,8 @@ Every HTTP response returned by the API includes the following observability hea
 | `GET` | [`/chaos/config`](#8-get-chaosconfig) | Retrieve active runtime chaos simulation configuration | Public |
 | `GET` | [`/chaos/probe`](#9-get-chaosprobe) | Upstream probe target to test circuit tripping | Public |
 | `POST` | [`/cache/clear`](#10-post-cacheclear) | Flush Redis and in-memory semantic cache | Admin (`X-Admin-Key`) |
+| `GET` | [`/static/{path}`](#11-get-staticpath) | The page's static files, vendored libraries and fonts included | Public |
+| `GET` | [`/`](#12-get-) | The explorable page (HTML shell) | Public |
 
 ---
 
@@ -48,7 +57,9 @@ Every HTTP response returned by the API includes the following observability hea
 Executes autonomous incident triage. Checks Redis semantic cache for similarity $\ge 0.90$. If miss, dispatches LangGraph cyclic state machine.
 
 > [!NOTE]
-> **Concurrency Load Shedding**: Execution is bounded by an async semaphore (max 10 concurrent LangGraph workflows). If saturated with a wait exceeding 5.0 seconds, the gateway sheds load with `HTTP 503 Service Unavailable`.
+> **Concurrency Load Shedding**: The Triage gateway bounds graph runs to `TRIAGE_MAX_CONCURRENT_RUNS` (default 10) per app. A request that waits longer than `TRIAGE_QUEUE_TIMEOUT_S` (default 5.0s) for a run slot is shed with `HTTP 503 Service Unavailable`.
+>
+> **Free-play run budget**: at most `FREE_PLAY_RUNS_PER_MINUTE` (default 20) graph runs are admitted in any sliding 60 s window, per process (per worker). Only graph runs count: a cache miss or a `force_refresh` request, counted once admitted; one then shed for lack of a slot ran no graph and is refunded. Cache hits are always free, and scenario runs never count. A run over the budget is shed at once (no queueing) with `HTTP 503` and a `Retry-After` header: whole seconds (at least 1) until the oldest counted run leaves the window. A shed for lack of a slot has no `Retry-After`. Both count as `saturated` on `/metrics`. `POST /triage/stream` sends no `Retry-After` header (its 200 headers go out before the budget is checked): there, the retry-after is the `run_slot` event's `retry_after_s`, and the stream still ends with `trace_finished(outcome=shed)`.
 
 #### Request Body (`application/json`)
 ```json
@@ -105,9 +116,77 @@ Executes autonomous incident triage. Checks Redis semantic cache for similarity 
   },
   "cached": false,
   "cache_similarity": null,
-  "execution_time_ms": 1296.74
+  "execution_time_ms": 1296.74,
+  "trace": {
+    "scenario_id": null,
+    "outcome": "analyzed",
+    "nodes": [
+      {"node": "analyze_query", "duration_ms": 0.014, "status": "ok"},
+      {"node": "collect_telemetry", "duration_ms": 182.4, "status": "ok"},
+      {"node": "synthesize_telemetry", "duration_ms": 0.018, "status": "ok"},
+      {"node": "generate_report", "duration_ms": 1090.2, "status": "ok"},
+      {"node": "validate_report", "duration_ms": 0.041, "status": "ok"},
+      {"node": "finalize_report", "duration_ms": 0.026, "status": "ok"}
+    ],
+    "routes": ["synthesize", "validate", "finalize"],
+    "model_calls": [
+      {"model": "qwen/qwen3.8-27b", "role": "primary", "outcome": "rate_limited", "duration_ms": 41.0},
+      {"model": "llama-3.1-8b-instant", "role": "fallback", "outcome": "completion", "duration_ms": 1048.9}
+    ],
+    "failovers": 1,
+    "telemetry": [{"source": "chaos", "outcome": "read", "attempts": 1}],
+    "repair_rounds": 0,
+    "refine_rounds": 0,
+    "reconciliation": {
+      "degradation_before": "HEALTHY", "degradation_after": "HEALTHY",
+      "breakers_changed": false, "breakers_after": [], "approval_raised": [0]
+    },
+    "degradation": "HEALTHY",
+    "deadline_exceeded": false,
+    "timings": {
+      "total_ms": 1296.5, "cache_lookup_ms": 4.1, "slot_wait_ms": 0.007,
+      "run_ms": 1281.3, "model_ms": 1089.9
+    }
+  }
 }
 ```
+
+`trace` is the request's **trace summary** (`TraceSummary`, ADR-008): a small, structured digest of its execution trace, never the event list and never free text (every string is an id or a fixed value). It is `summarize()` of the events the Triage gateway recorded before `trace_finished`:
+
+| Field | Meaning |
+| :--- | :--- |
+| `scenario_id` | Catalogue scenario id for a scenario run; `null` for `POST /triage`. |
+| `outcome` | `cache_hit` or `analyzed` (a shed request gets a 503, with no body summary). |
+| `nodes` | Graph node visits in order, each with `duration_ms` and `status` (`ok` / `error` / `cancelled`). Empty on a cache hit. |
+| `routes` | Router keys taken, in order (e.g. `compensate`, `repair`, `refine`, `finalize`). |
+| `model_calls` | One entry per model attempt: `model`, `role` (`primary` / `fallback`), `outcome`, `duration_ms`. |
+| `failovers` | Calls made to the fallback model, failed ones included. |
+| `telemetry` | One entry per run-time source read: `source`, `outcome` (`read` / `tripped` / `unavailable`), `attempts`. |
+| `repair_rounds`, `refine_rounds` | Visits to `self_repair` and `refine_reflection`. |
+| `reconciliation` | What report reconciliation changed (`degradation_before`/`after`, `breakers_changed`, `breakers_after`, `approval_raised` action indexes). `null` on a cache hit. |
+| `degradation` | The answer's reconciled degradation status; `null` on a cache hit (the cached report carries its own). |
+| `deadline_exceeded` | `true` when the run deadline passed and a synthesis fallback answered. |
+| `timings` | Milliseconds from `trace_started`, rounded to microseconds: `total_ms` (to the last event before `trace_finished`), `cache_lookup_ms`, `slot_wait_ms`, `run_ms` (first node start to last node finish), `model_ms` (sum of model calls). `null` where the step did not happen. |
+
+#### Execution trace events
+The summary is derived from the request's trace events. `POST /triage` returns only the summary; the event stream itself is for [`POST /triage/stream`](#1a-post-triagestream), where every stream ends in `trace_finished` carrying the same `TriageResponse` this route returns. Every event has `kind`, `seq` (0, 1, …) and `t_ms` (monotonic ms since `trace_started`, which is stamped 0; a scenario run's `scenario_setup` steps and setup `telemetry_read`s come before it and are stamped 0 too). A cache hit is `trace_started`, `cache_lookup`, `trace_finished`; a run deadline records `deadline_exceeded`, then the reconciled fallback (`reconciled`), `cache_store` (`skipped_fallback`) and `trace_finished`.
+
+| `kind` | Fields (besides `seq`, `t_ms`) |
+|---|---|
+| `scenario_setup` | `step` (`seed_cache` / `hold_run_slots` / `fail_source` / `set_run_deadline`), `count`, `source` (`fail_source`), `deadline_s` (`set_run_deadline`) |
+| `trace_started` | `schema_version` (1), `scenario_id`, `scoped`, `force_refresh`, `simulated` (true when the keyless simulation answers: no model API key and not a scenario run; absent in older traces, read as false) |
+| `cache_lookup` | `backend`, `hit`, `similarity`, `threshold`, `duration_ms` |
+| `run_slot` | `acquired`, `waited_ms`, `capacity`, `reason` (`capacity` / `budget` when shed, else none), `retry_after_s` (budget sheds only) |
+| `node_started` | `node` |
+| `node_finished` | `node`, `duration_ms`, `status` (`ok` / `error` / `cancelled`), `confidence` (validate_report only) |
+| `route_decided` | `source`, `target`, `route` (the router key) |
+| `model_call` | `model`, `role` (`primary` / `fallback`), `outcome`, `rate_limit_scope`, `retry_after_s`, `duration_ms` |
+| `telemetry_read` | `source`, `phase` (`setup` or none), `outcome` (`read` / `tripped` / `unavailable`), `attempts`, `breaker_before`, `breaker_after`, `signals`, `duration_ms` |
+| `validation_failed` | `attempt`, `error_count`, `fields` (declared report fields), `error_types` (Pydantic types) |
+| `reconciled` | `changes`: `degradation_before`/`after`, `breakers_changed`, `breakers_after`, `approval_raised` (action indexes) |
+| `deadline_exceeded` | `deadline_s` |
+| `cache_store` | `backend`, `outcome` (`stored` / `skipped_fallback` / `failed`), `duration_ms` |
+| `trace_finished` | `outcome` (`cache_hit` / `analyzed` / `shed`), `response` (`TriageResponse`, none when shed) |
 
 #### Example cURL
 ```bash
@@ -124,6 +203,119 @@ curl -X POST http://127.0.0.1:8000/triage \
 
 ---
 
+### 1a. `POST /triage/stream`
+Runs the same triage as `POST /triage` (same `TriageRequest` body, same cache, run slots, run deadline and fallbacks) and streams its [execution trace events](#execution-trace-events) as Server-Sent Events while it runs (ADR-008). A browser reads it with `fetch()` and a stream parser: `EventSource` cannot send a POST body.
+
+#### Response (`200 OK` - `text/event-stream`)
+Each trace event is one SSE event: `event:` is its `kind` and `data:` is the event as JSON. While nothing happens the server sends a `: ping` comment line every 15 s; skip comment lines. Responses carry `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
+```text
+event: trace_started
+data: {"kind":"trace_started","seq":0,"t_ms":0.0,"schema_version":1,"scenario_id":null,"scoped":false,"force_refresh":false,"simulated":false}
+
+event: cache_lookup
+data: {"kind":"cache_lookup","seq":1,"t_ms":4.1,"backend":"in_memory","hit":false,"similarity":null,"threshold":0.85,"duration_ms":4.0}
+
+: ping
+
+event: trace_finished
+data: {"kind":"trace_finished","seq":41,"t_ms":2150.7,"outcome":"analyzed","response":{"report":{...},"cached":false,"cache_similarity":null,"execution_time_ms":2150.6,"trace":{...}}}
+```
+
+- **Exactly one `trace_finished`, always last.** Its `response` is the `TriageResponse` that `POST /triage` would return for the same request (none when `outcome` is `shed`). The status is 200 once the stream starts, so failures arrive inside it, never as an HTTP error: a shed request ends `run_slot(acquired=false, reason=capacity|budget)`, `trace_finished(outcome=shed)` (where `POST /triage` answers 503; a budget shed's `run_slot` carries the `retry_after_s` the 503 sends as `Retry-After`; the stream itself has no `Retry-After` header, so a client reads it from that event); a run deadline records `deadline_exceeded` before the fallback; an unexpected exception ends the stream with a `SEVERELY_DEGRADED` synthesis fallback in `trace_finished` (`outcome=analyzed`, not cached). A request body that fails validation is still a 422 before any stream starts.
+- **No headers, no ids, no resume.** The cache outcome is in `trace_finished` (`outcome`, `response.cached`), not in `X-Cache` headers. There is no run id, no `GET` and no `Last-Event-ID` resume: a dropped connection loses its trace, and re-sending the request may now be a cache hit.
+- **A client disconnect cancels the run.** The run's slot is released, nothing is cached (a cancel that lands during the cache store evicts the entry again), and the request counts once, whenever the disconnect lands, in `resilient_triage_abandoned_requests_total` on [`/metrics`](#5-get-metrics), not as a hit, miss or saturated request.
+
+#### Example cURL
+```bash
+curl -N -X POST http://127.0.0.1:8000/triage/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Gateway service reporting 503 errors"}'
+```
+
+---
+
+### 1b. `GET /scenarios`
+The scenario catalogue's public view (ADR-009): every chapter in display order, each with its scenarios in display order. A scenario's entry is its page copy only (`ScenarioView`), never its query, script or expected outcome. The catalogue is fixed in code, so the response only changes with a deploy.
+
+#### Response (`200 OK`) - `ScenarioCatalogue`
+```json
+{
+  "chapters": [
+    {
+      "id": "fast-paths",
+      "title": "Fast paths",
+      "intro": "...",
+      "scenarios": [
+        {
+          "id": "healthy-run",
+          "chapter": "fast-paths",
+          "title": "...",
+          "caption": "...",
+          "setup_notes": []
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `chapters[].id`, `chapters[].title` | The chapter's id and heading (`fast-paths`, `model-misbehaves`, `dependencies-fail`, `finale`). |
+| `chapters[].intro` | The chapter's introduction on the page, a sentence or two (added by #119; clients that ignore unknown fields are unaffected). |
+| `chapters[].scenarios[]` | `id` (what `POST /scenarios/{scenario_id}/stream` takes), `chapter` (the chapter's id), `title`, `caption`, `setup_notes` (what is true before the run, in words). |
+
+---
+
+### 1c. `POST /scenarios/{scenario_id}/stream`
+Runs one catalogued scenario and streams its execution trace exactly like [`POST /triage/stream`](#1a-post-triagestream): same SSE framing and pings, exactly one `trace_finished`, always last; a disconnect cancels the run. The body is empty: the scenario fixes the query, scope, the model's replies and every fault. An unknown `scenario_id` is a `404` before any stream starts.
+
+- **Setup first.** The scenario setup (`scenario_setup` events, and setup `telemetry_read`s with `phase: "setup"`) streams live before `trace_started`, whose `scenario_id` names the scenario; setup events are stamped `t_ms` 0, so the run's clock starts at `trace_started`. A setup that fails ends the stream with an uncached `SEVERELY_DEGRADED` synthesis fallback in `trace_finished`, as for any unexpected exception.
+- **Private collaborators.** Each run gets its own scripted model gateway, telemetry sources, breakers, chaos manager and in-memory cache, so scenario runs never change `/metrics` outcome counts, `/llm/quota`, `/resilience/status` or `/health`, and never read or write the shared cache.
+- **Own slot pool.** Scenario runs share a pool of `SCENARIO_MAX_CONCURRENT_RUNS` (default 4) run slots, separate from free play's, and wait up to `TRIAGE_QUEUE_TIMEOUT_S` for one; free play and scenario traffic can't shed each other. A scenario shed for lack of a slot still answers 200 and ends `trace_finished(outcome=shed)`. `shed-request` holds every slot of a private pool, so it is always shed and never touches the shared one. The free-play run budget does not apply.
+- **Real time.** Scripted replies take about 0.9 s and failures about 0.18 s; `run-deadline` waits about 3 s for its deadline and `shed-request` about 1 s in the queue.
+
+#### Example cURL
+```bash
+curl -N -X POST http://127.0.0.1:8000/scenarios/self-repair/stream
+```
+
+---
+
+### 1d. `GET /graph/nodes`
+Read-only content for the page's node inspector (#121): one entry per triage graph node, in registration order, never `__start__` or `__end__`. *Purpose* is the node module's docstring (its first line, without the `Node: <name> - ` prefix) and *file* the module's path, so both come from the code; `config_fields` and `adrs` come from a small typed registry, `graph/inspector.py` `NODE_NOTES`. `tests/test_node_inspector.py` fails on a graph node with no entry, a stale entry, a field that isn't a `Settings` field (or is a secret) and an ADR file that doesn't exist. The response only changes with a deploy.
+
+#### Response (`200 OK`) - `GraphNodes`
+```json
+{
+  "nodes": [
+    {
+      "name": "generate_report",
+      "purpose": "Asks the model for a draft report as JSON.",
+      "file": "src/resilient_triage/graph/nodes/generate_report.py",
+      "config_fields": [
+        {"name": "groq_model", "description": "Groq model asked first (for example qwen/qwen3.8-27b)"}
+      ],
+      "adrs": ["docs/decisions/0006-project-owned-llm-gateway.md"]
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `name` | The node's name in `get_graph()`, as in trace events and `graph-layout.json`. |
+| `purpose` | One sentence, written for the page's visitors (sentence case, "the model" rather than "LLM"): the node module's docstring. Config descriptions are plain words too; `tests/test_node_inspector.py` checks both. |
+| `file`, `adrs[]` | Repository-relative paths; the page links them on GitHub. `file` follows the module, so `synthesize_telemetry` is `synthesize.py` and `finalize_report` is `finalize.py`. |
+| `config_fields[]` | The `Settings` fields that tune the node: `name` and `description`, never the value. |
+
+#### Example cURL
+```bash
+curl http://127.0.0.1:8000/graph/nodes
+```
+
+---
+
 ### 2. `GET /health`
 Liveness and readiness health probe for Kubernetes/load balancers, returning service availability, Redis connection driver, and circuit breaker states.
 
@@ -131,7 +323,7 @@ Liveness and readiness health probe for Kubernetes/load balancers, returning ser
 ```json
 {
   "status": "healthy",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "redis_connected": true,
   "cache_driver": "redisearch",
   "circuits": {
@@ -142,7 +334,7 @@ Liveness and readiness health probe for Kubernetes/load balancers, returning ser
   "llm_quota": {
     "provider": "groq",
     "active_model": "qwen/qwen3.8-27b",
-    "fallback_model": "openai/gpt-oss-20b",
+    "fallback_model": "llama-3.1-8b-instant",
     "remaining_requests": 999,
     "limit_requests": 1000,
     "remaining_tokens": 7112,
@@ -210,14 +402,14 @@ curl -s http://127.0.0.1:8000/resilience/status
 ---
 
 ### 4. `GET /llm/quota`
-Retrieves live rate limit budgets, remaining token allowances, and failover metrics captured from Groq API response headers.
+Returns the LLM gateway's quota snapshot: the primary model's rate-limit budgets from Groq's response headers, plus call, rate-limit and failover counters for both models. `active_model` is the model that served the last completion. Without `GROQ_API_KEY` the budget fields stay `null`. Field reference: [`LLMQuotaSnapshot`](schemas.md#llmquotasnapshot).
 
 #### Response (`200 OK`)
 ```json
 {
   "provider": "groq",
   "active_model": "qwen/qwen3.8-27b",
-  "fallback_model": "openai/gpt-oss-20b",
+  "fallback_model": "llama-3.1-8b-instant",
   "remaining_requests": 999,
   "limit_requests": 1000,
   "remaining_tokens": 7112,
@@ -250,6 +442,10 @@ Prometheus text exposition format endpoint for scraping operational metrics, cac
 resilient_triage_requests_total{cache="hit"} 42
 resilient_triage_requests_total{cache="miss"} 8
 resilient_triage_requests_total{cache="saturated"} 0
+
+# HELP resilient_triage_abandoned_requests_total Triage requests cancelled before they ended, e.g. by a client disconnect (not a triage outcome)
+# TYPE resilient_triage_abandoned_requests_total counter
+resilient_triage_abandoned_requests_total 1
 
 # HELP resilient_triage_circuit_breaker_state Active circuit breaker state (1 if active, 0 otherwise)
 # TYPE resilient_triage_circuit_breaker_state gauge
@@ -286,12 +482,12 @@ curl -s http://127.0.0.1:8000/metrics
 ---
 
 ### 6. `POST /resilience/reset`
-Administrative reset restoring all circuit breakers to `CLOSED`, clearing chaos injection rules, and resetting LLM quota counters.
+Administrative reset restoring all circuit breakers to `CLOSED`, clearing chaos injection rules, and resetting the LLM gateway: its counters and last error are zeroed and every model cooldown ends.
 
 #### Headers
 | Header | Type | Description |
 | :--- | :--- | :--- |
-| `X-Admin-Key` | `string` | *(Optional)* Required if `ADMIN_API_KEY` is configured in gateway environment. |
+| `X-Admin-Key` | `string` | **Required.** Must equal the server's `ADMIN_API_KEY` (`401` if missing or wrong; `403` if the server has no key configured). |
 
 #### Response (`200 OK`)
 ```json
@@ -315,7 +511,7 @@ Configures live chaos injection parameters to simulate upstream infrastructure f
 #### Headers
 | Header | Type | Description |
 | :--- | :--- | :--- |
-| `X-Admin-Key` | `string` | *(Optional)* Required if `ADMIN_API_KEY` is configured in gateway environment. |
+| `X-Admin-Key` | `string` | **Required.** Must equal the server's `ADMIN_API_KEY` (`401` if missing or wrong; `403` if the server has no key configured). |
 
 #### Request Body (`application/json`)
 ```json
@@ -332,7 +528,7 @@ Configures live chaos injection parameters to simulate upstream infrastructure f
 | `active` | `boolean` | Master enable toggle for chaos injection. |
 | `inject_503` | `boolean` | If `true`, probe immediately returns HTTP 503. |
 | `failure_rate` | `float` | Probability of injected failure ($0.0 \le p \le 1.0$). |
-| `latency_ms` | `integer` | Artificial lag to introduce in milliseconds. |
+| `latency_ms` | `integer` | Artificial lag to introduce in milliseconds (0 to 30 000; above that the request is rejected with `422`). A probe slower than the source deadline (`TELEMETRY_SOURCE_DEADLINE_S`) is cut off and counts as a failure. |
 
 #### Response (`200 OK`)
 ```json
@@ -389,11 +585,12 @@ Health probe target simulated under chaos injection rules. Calling this endpoint
 
 ### 10. `POST /cache/clear`
 Purges all entries from both the Redis vector index and the in-memory fallback store.
+If Redis is down, the in-memory store is emptied at once and the Redis purge stays pending until the next successful reconnect, before Redis serves any lookup. The response is the same either way.
 
 #### Headers
 | Header | Type | Description |
 | :--- | :--- | :--- |
-| `X-Admin-Key` | `string` | *(Optional)* Required if `ADMIN_API_KEY` is configured in gateway environment. |
+| `X-Admin-Key` | `string` | **Required.** Must equal the server's `ADMIN_API_KEY` (`401` if missing or wrong; `403` if the server has no key configured). |
 
 #### Response (`200 OK`)
 ```json
@@ -409,3 +606,49 @@ curl -X POST http://127.0.0.1:8000/cache/clear \
   -H "X-Admin-Key: secret-admin-key"
 ```
 
+---
+
+### 11. `GET /static/{path}`
+Serves the files under `src/resilient_triage/api/static/` from the installed package (ADR-010). `HEAD` works too; any other method is `405`, and a missing file or a path that climbs out of `static/` is `404`.
+
+Third-party files live under `/static/vendor/<package>@<version>/<path>`, where `<path>` is the file's path inside the npm package, with the package's `LICENSE` alongside. `/static/vendor/manifest.json` lists every vendored file with its sha256 (see [deployment](deployment.md#vendored-frontend-files)).
+
+| File kind | `Content-Type` |
+| :--- | :--- |
+| `.mjs`, `.js` | `text/javascript; charset=utf-8` |
+| `.woff2` | `font/woff2` |
+| `.css` | `text/css; charset=utf-8` |
+| `.json` | `application/json` |
+| `.html` | `text/html; charset=utf-8` |
+| `.svg` | `image/svg+xml` |
+| `LICENSE` (no suffix), `.txt` | `text/plain; charset=utf-8` |
+
+These types come from a fixed table in `api/static_assets.py`, not the host's MIME database, so a slim image with no `/etc/mime.types` still serves fonts as `font/woff2`.
+
+| Path | `Cache-Control` |
+| :--- | :--- |
+| `/static/vendor/…` | `public, max-age=31536000, immutable` (the version is in the path, so a new version is a new URL) |
+| any other `/static/…` file | `no-cache` (the URL is stable across releases, so the browser revalidates with `ETag` / `Last-Modified` and usually gets a `304`) |
+
+A `304 Not Modified` carries the same `Cache-Control`.
+
+#### Example cURL
+```bash
+curl -I http://127.0.0.1:8000/static/vendor/preact@10.29.8/dist/preact.mjs
+```
+
+---
+
+### 12. `GET /`
+Serves the explorable page's shell, `static/index.html` (ADR-010), as `text/html; charset=utf-8` with `Cache-Control: no-cache`. The page's own files sit next to it under `/static/`: `app.mjs` (the entry module), `trace-reducer.mjs` (the one logic module: trace events to view state), `sse.mjs` (reads the trace streams with `fetch()`), `components/` (`stage.mjs`, `graph.mjs`, `waterfall.mjs`, `free-play.mjs`, `node-inspector.mjs`, `how-its-built.mjs`, `chapter.mjs`, `scenario.mjs`, `report.mjs`), `styles.css`, `graph-layout.json` (the hand-placed graph layout the page fetches) and `favicon.svg`, all `no-cache`; the vendored modules and fonts are under `/static/vendor/` and immutable (see [section 11](#11-get-staticpath)). On load it fetches `GET /scenarios` for the chapters (a failure leaves the static prose and a Retry notice) and plays a scenario with `POST /scenarios/{scenario_id}/stream`. The page loads nothing from another origin and never calls `/health` or `/resilience/status`.
+
+The live trace reads `POST /scenarios/{scenario_id}/stream` ([section 1c](#1c-post-scenariosscenario_idstream)) or `POST /triage/stream` ([section 1a](#1a-post-triagestream)) as the events arrive and draws only what the stream carried: no expected path, no free text from the server. A stream that sends no event or ping for 30 s, or closes before `trace_finished`, is shown as "Connection lost" with its partial trace kept and a Replay button; a stream refused before it starts (404, 422) or a network error shows its message with Retry.
+
+The free-play panel posts its form as a `TriageRequest` to `POST /triage/stream` and draws that run in its own copy of the stage (the same graph and waterfall), so its errors, lost streams and sheds stay in that panel. It names the model whose call completed (`model_call.model`, with no "scripted reply" mark), and a shed run shows its `run_slot.reason` and, for a budget shed, `retry_after_s`; the form stays usable, so the next question needs no reload.
+
+The node inspector reads `GET /graph/nodes` ([section 1d](#1d-get-graphnodes)) once on load. If it fails, the static "How it's built" prose stays, its node list shows a notice with Retry, and an opened inspector says the details didn't load.
+
+#### Example cURL
+```bash
+curl -i http://127.0.0.1:8000/
+```

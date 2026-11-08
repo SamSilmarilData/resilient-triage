@@ -37,9 +37,10 @@ git push space main
 2. Under **New secret**, add:
    - Key: `GROQ_API_KEY`
    - Value: `gsk_...` (your Groq key)
+   - Optionally, a second secret `ADMIN_API_KEY` (a long random string) to enable the admin routes for yourself. Without it they answer `403` (see [Admin key](#admin-key)).
 3. Your Space will build and deploy automatically!
 4. **Embedded Redis boots automatically**: The container initializes `redis-server` on port 6379, and `GET /health` reports `"redis_connected": true`!
-5. Anyone visiting `https://<YOUR_USERNAME>-resilient-triage.hf.space` gets the full SRE Command Center UI with live SOTA 27B inference in ~1.5s, live Redis vector caching, and zero logins or keys required!
+5. Anyone visiting `https://<YOUR_USERNAME>-resilient-triage.hf.space` gets the explorable page with live SOTA 27B inference in ~1.5s, live Redis vector caching, and zero logins or keys required!
 
 ---
 
@@ -56,7 +57,11 @@ Render allows 1-click deployment connected to your GitHub repository.
 ### Step 2: Configure Environment Variables
 Under the **Environment Variables** tab, add:
 - `GROQ_API_KEY`: `gsk_...`
+- `ADMIN_API_KEY` (optional): a long random string that enables the admin routes. Unset, they answer `403` (see [Admin key](#admin-key)).
 - `CACHE_SIMILARITY_THRESHOLD`: `0.90`
+- `TRIAGE_RUN_DEADLINE_S` (optional, default `45.0`, above 0 and at most 120): the run deadline. A graph run that takes longer is cancelled and the request answered with an uncached `SEVERELY_DEGRADED` fallback report. Keep it below your platform's request timeout so the client gets that report rather than a proxy timeout. Slot wait (`TRIAGE_QUEUE_TIMEOUT_S`) is not included.
+- `FREE_PLAY_RUNS_PER_MINUTE` (optional, default `20`, 1 to 10000): free-play graph runs admitted per sliding 60 s; a run over it gets a 503 with `Retry-After`. Cache hits and scenario runs are free. The budget is per process: with several workers or replicas, each allows this many. `SCENARIO_MAX_CONCURRENT_RUNS` (optional, default `4`, 1 to 100) bounds scenario runs in flight, separately from `TRIAGE_MAX_CONCURRENT_RUNS`.
+- `TELEMETRY_SOURCE_DEADLINE_S` (optional, default `5.0`, 0.5 to 30): the source deadline. One Telemetry source read (Statuspage or Cluster Sentinel), retries included, that takes longer is cut off, counted as a breaker failure, and the source is reported unavailable for that run. Keep it well below `TRIAGE_RUN_DEADLINE_S`.
 
 ### Step 3: Deploy
 Click **Create Web Service**. Render will build the container and provide a live public HTTPS URL (`https://resilient-triage.onrender.com`).
@@ -69,6 +74,7 @@ The embedded Redis daemon automatically starts in the background and is capped a
 For VPS, AWS EC2, or local container runtimes:
 
 ```bash
+export ADMIN_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"  # or set it in .env
 docker-compose up -d --build
 ```
 - API Container: `http://localhost:8000`
@@ -85,10 +91,66 @@ For local development or testing on a MacBook:
 # 1. Install Redis via Homebrew (one-time)
 brew install redis && brew services start redis
 
-# 2. Run the native startup script
+# 2. Create .env from the template; it sets ADMIN_API_KEY (change the value)
+cp .env.example .env
+
+# 3. Run the native startup script
 ./scripts/run_local.sh
 ```
 
-- SRE Command Center UI: `http://127.0.0.1:8000`
+- Explorable page: `http://127.0.0.1:8000`
 - Interactive API Docs: `http://127.0.0.1:8000/docs`
 - Health Endpoint: `http://127.0.0.1:8000/health`
+
+### Check the package without Docker
+
+`./scripts/check_package.sh` (or `./scripts/check.sh --package`) runs CI's docker-job checks on the installed wheel instead of an image, so a Mac needs no Docker:
+
+1. builds the wheel (`pip wheel . --no-deps`) and installs it, non-editable, into a fresh venv in a temporary directory outside the repo;
+2. runs `scripts/vendor.py verify --installed` with that venv's Python, from a directory where `src/` isn't importable;
+3. starts the installed app with that venv's uvicorn on a free loopback port, with no Groq key (the scripted LLM answers) and `REDIS_URL` on a closed port (the in-memory cache serves), waits for `/health`, and runs `scripts/smoke_test.py` against it;
+4. stops the app and deletes the temporary directory on exit.
+
+It needs no Redis and no Groq key. Building the wheel and installing its dependencies use pip's index or cache, and the first start may download the FastEmbed model. **The image's OS layer (python:3.12-slim, apt packages, the embedded Redis in `docker-entrypoint.sh`) and its non-root user are checked only by CI's docker job.**
+
+---
+
+## Vendored frontend files
+
+The page's third-party JavaScript and fonts are committed under `src/resilient_triage/api/static/vendor/` and ship inside the package, so a deployment makes no third-party requests and needs no Node or build step (ADR-010). The Docker image gets them through `pip install .` (package-data `static/**`, setuptools 62.3+); `/app/src` is not on the runtime path.
+
+- **Check a deployment**: `docker run --rm --entrypoint python <image> scripts/vendor.py verify --installed` re-hashes the installed package's copy (in site-packages) against its manifest; CI runs it on every image, and checks the image does not run as root. Without Docker, `./scripts/check_package.sh` runs the same check on the installed wheel (above). `python scripts/smoke_test.py` also fetches every vendored file over HTTP and checks its sha256, media type and `Cache-Control`.
+- **Check the checkout**: `python scripts/vendor.py verify` (offline; `./scripts/check.sh` runs the same check in pytest).
+- **Update or bump a package** (manual, needs network, never run by tests or CI): edit its `version` in `static/vendor/manifest.json`, then run `python scripts/vendor.py update`. It reads the version's tarball URL and integrity from `registry.npmjs.org`, refuses a version whose integrity differs from the one already recorded, checks the tarball's sha512, extracts only the listed files, records their sha256 and removes files no package lists. Commit the manifest and files together. Adding a package or file means adding its entry by hand first, and needs approval (CODING_STANDARDS "Frontend").
+- **Caching**: `/static/vendor/…` is served `Cache-Control: public, max-age=31536000, immutable`, so a CDN or browser keeps it for a year; a bump changes the URL. Other `/static/` files are `no-cache`.
+
+---
+
+## Browser tests
+
+The browser tier (`tests/browser/`) runs the page in headless Chromium through Playwright. It is optional locally and a separate CI job, `browser` (required on protected branches).
+
+- **Set up once**: `.venv/bin/pip install -e ".[test,browser]"`, then `.venv/bin/playwright install chromium` (downloads the browser; run it outside pytest).
+- **Run**: `./scripts/check.sh --browser` runs only this tier (extra arguments go to pytest). It fails, never skips, when Playwright or Chromium is missing; plain `./scripts/check.sh` never needs either.
+- **CI**: the `browser` job installs `.[test,browser]`, restores `~/.cache/ms-playwright` keyed by the Playwright version, runs `playwright install --with-deps --only-shell chromium` (system libraries are installed even on a cache hit) and then `./scripts/check.sh --browser`. It needs no Redis and no embedding model.
+- **Screenshots**: see [Screenshots](#screenshots) below; they use this tier's harness.
+- **axe-core** is test-only, under `tests/vendor/` with its licenses and `tests/vendor/manifest.json` (same format as the page's). `python scripts/vendor.py verify --dir tests/vendor` checks it offline, as the regular test run does. To bump it, update the version, tarball, integrity and sha256 values in that manifest by hand and replace the files.
+
+---
+
+## Screenshots
+
+The README's and docs' page screenshots (`docs/img/<name>-light.png` and `-dark.png`, embedded with `<picture>` so GitHub shows the one matching the reader's theme) are produced by `scripts/screenshots.py`, run by hand after a visible page change; nothing regenerates them in CI.
+
+- **Run**: `.venv/bin/python scripts/screenshots.py` (needs the browser tier's setup above; `--out <dir>` writes elsewhere). It serves the app on loopback over the browser tier's scripted runtime (scripted model replies, canned Statuspage, emptied cache), so it needs no Groq key, Redis or network, and it aborts any request off the app's origin. It captures the top of the page, the self-repair scenario after its run, and a finished free-play run, at 1280 px wide and 2x scale with reduced motion.
+- **Check**: `tests/test_doc_images.py`, in the regular test run, fails when the README or any doc under `docs/` references an image that doesn't exist. It doesn't compare pixels: review the regenerated PNGs in the diff.
+
+---
+
+## Admin key
+
+The mutating admin routes (`POST /chaos/inject`, `/resilience/reset`, `/cache/clear`) fail closed: they answer `403` until `ADMIN_API_KEY` is set, and then need a matching `X-Admin-Key` header (`401` otherwise). Every other route, `/triage` included, needs no key.
+
+- **Set it** in `.env` locally (`.env.example` has a placeholder), or as a secret / environment variable on the host. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+- **Use it** from `/docs`: click **Authorize**, paste the key, and Swagger UI sends it on the admin routes. Or send the header yourself: `curl -X POST <url>/resilience/reset -H "X-Admin-Key: $ADMIN_API_KEY"`.
+- **Smoke test**: `python scripts/smoke_test.py` reads `ADMIN_API_KEY` (or `--admin-key`). Against a running server it must match that server's key; an instance it launches itself gets a random key if none is set.

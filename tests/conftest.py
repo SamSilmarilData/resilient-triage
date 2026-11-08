@@ -1,64 +1,175 @@
-"""Pytest configuration and global fixtures for resilient-triage test suite.
+"""Pytest configuration and shared fixtures for the resilient-triage test suite.
 
-Provides centralized singleton lifecycle resets, fast retry wait boundaries for testing,
-and shared client fixtures.
+Every test gets fast retry waits and no network beyond loopback; tests that need app state
+take the `runtime` fixture, a fresh AppRuntime per test, so there are no module-level
+singletons to reset.
 """
 
+import asyncio
+import ipaddress
+import socket
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from typing import Any
+
 import httpx
+import pytest
 import pytest_asyncio
+from fakes import AppServer, fake_statuspage_http
+from pydantic import SecretStr
 
-from resilient_triage.api.app import app
-from resilient_triage.cache.semantic_cache import semantic_cache
-from resilient_triage.config import settings
-from resilient_triage.graph.llm import (
-    MockTriageChatModel,
-    close_groq_async_client,
-    groq_quota_tracker,
-    set_triage_llm,
-)
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
-from resilient_triage.telemetry.chaos import chaos_manager
-from resilient_triage.telemetry.statuspage import (
-    clear_statuspage_cache,
-    close_statuspage_client,
-)
+from resilient_triage.api.app import create_app
+from resilient_triage.config import Settings, settings
+from resilient_triage.llm import ModelAdapter, ScriptedAdapter, scripted
+from resilient_triage.runtime import AppRuntime, build_runtime
+
+ADMIN_TEST_KEY = "test-admin-key"
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def reset_global_test_environment(monkeypatch):
-    """Uniformly reset application singletons, clear caches, and minimize retry delays for fast execution."""
-    # Compress retry wait intervals in tests to eliminate idle sleeps while testing retry logic
+@pytest.fixture(autouse=True)
+def fast_retry_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compress retry wait intervals so retry tests don't sleep."""
     monkeypatch.setattr(settings, "retry_min_wait_seconds", 0.001)
     monkeypatch.setattr(settings, "retry_max_wait_seconds", 0.005)
 
-    # 1. Reset state before test execution
-    circuit_breaker_registry.reset_all()
-    chaos_manager.reset()
-    groq_quota_tracker.reset_counters()
-    clear_statuspage_cache()
-    await semantic_cache.clear()
-    set_triage_llm(MockTriageChatModel())
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register this suite's markers."""
+    config.addinivalue_line(
+        "markers", "real_scripted_delays: keep ScriptedReply delays (opts out of the zeroing)"
+    )
+
+
+@pytest.fixture(autouse=True)
+def instant_scripted_delays(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero every ScriptedReply delay, unless the test is marked real_scripted_delays."""
+    if request.node.get_closest_marker("real_scripted_delays") is not None:
+        return
+
+    async def no_delay(_delay_s: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(scripted, "sleep", no_delay)
+
+
+@pytest.fixture(autouse=True)
+def admin_key_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure an admin key: admin routes fail closed (403) without one (#107)."""
+    monkeypatch.setattr(settings, "admin_api_key", SecretStr(ADMIN_TEST_KEY))
+
+
+def _is_local(host: object) -> bool:
+    if host is None or host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def offline_only(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Block and fail any connection off loopback, so no test reaches real Groq or Statuspage.
+
+    The app degrades instead of raising, so a blocked call alone could still pass; every
+    attempt is recorded and fails the test at teardown. Loopback (local Redis) stays open.
+    """
+    attempts: list[str] = []
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_getaddrinfo = socket.getaddrinfo
+
+    def blocked(target: object) -> OSError:
+        attempts.append(repr(target))
+        return OSError(f"network access outside loopback is blocked in tests: {target!r}")
+
+    def connect(self: socket.socket, address: Any) -> None:
+        if isinstance(address, tuple) and not _is_local(address[0]):
+            raise blocked(address)
+        real_connect(self, address)
+
+    def connect_ex(self: socket.socket, address: Any) -> int:
+        if isinstance(address, tuple) and not _is_local(address[0]):
+            raise blocked(address)
+        return real_connect_ex(self, address)
+
+    def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if not _is_local(host.decode() if isinstance(host, bytes) else host):
+            raise blocked(host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
     yield
+    hint = " (cold FastEmbed model cache? load it once outside pytest)"
+    assert not attempts, f"test tried to reach the network: {attempts}" + (
+        hint if any("huggingface" in a for a in attempts) else ""
+    )
 
-    # 2. Reset and release connections after test execution
-    circuit_breaker_registry.reset_all()
-    chaos_manager.reset()
-    groq_quota_tracker.reset_counters()
-    clear_statuspage_cache()
-    await semantic_cache.clear()
-    set_triage_llm(None)
-    await close_statuspage_client()
-    await close_groq_async_client()
-    await semantic_cache.close()
+
+@asynccontextmanager
+async def _started_runtime(
+    llm_adapter: ModelAdapter, app_settings: Settings
+) -> AsyncIterator[AppRuntime]:
+    """Start a runtime with the given LLM adapter and a canned Statuspage, its cache emptied."""
+    rt = build_runtime(
+        app_settings, llm_adapter=llm_adapter, statuspage_http=fake_statuspage_http()
+    )
+    await rt.start()
+    # The cache may sit on a live Redis shared across runtimes: start every test empty.
+    await rt.cache.clear()
+    yield rt
+    await rt.aclose()
+
+
+@asynccontextmanager
+async def _app_client(
+    rt: AppRuntime, *, send_admin_key: bool = True
+) -> AsyncIterator[httpx.AsyncClient]:
+    """Open an async test client for an app that owns `rt`, lifespan included."""
+    app = create_app(lambda: rt)
+    headers = {"X-Admin-Key": ADMIN_TEST_KEY} if send_admin_key else {}
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers=headers
+        ) as ac:
+            yield ac
+
+
+@asynccontextmanager
+async def _serve_app(
+    llm_adapter: ModelAdapter, app_settings: Settings = settings
+) -> AsyncIterator[tuple[AppRuntime, httpx.AsyncClient]]:
+    """Serve an app over a fresh runtime with the given LLM adapter; yield both."""
+    async with _started_runtime(llm_adapter, app_settings) as rt, _app_client(rt) as ac:
+        yield rt, ac
 
 
 @pytest_asyncio.fixture
-async def client():
-    """Yield an async test client configured with the FastAPI app lifespan."""
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
-        ) as ac:
-            yield ac
+async def runtime() -> AsyncIterator[AppRuntime]:
+    """A started runtime with a scripted LLM and a canned Statuspage, its cache emptied."""
+    async with _started_runtime(ScriptedAdapter(), settings) as rt:
+        yield rt
+
+
+@pytest_asyncio.fixture
+async def client(runtime: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
+    """An async test client for an app that owns the `runtime` fixture, sent as the operator."""
+    async with _app_client(runtime) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def anonymous_client(runtime: AppRuntime) -> AsyncIterator[httpx.AsyncClient]:
+    """Like `client`, but sends no X-Admin-Key header: a visitor, not the operator."""
+    async with _app_client(runtime, send_admin_key=False) as ac:
+        yield ac
+
+
+@pytest.fixture
+def serve_app() -> AppServer:
+    """A factory serving an app over its own runtime: `async with serve_app(adapter) as (rt, c)`."""
+    return _serve_app

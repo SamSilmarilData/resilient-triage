@@ -1,0 +1,116 @@
+"""Trace recorders: the per-request source of an execution trace (ADR-008).
+
+A recorder is made per request and passed explicitly (never a module-level singleton).
+`record()` is synchronous and never raises, so recording can't change a run's result.
+
+The run's clock starts at `trace_started`: `t_ms` counts from it, so it is stamped 0, and any
+event recorded before it (a scenario run's setup) is stamped 0 too, keeping its order by `seq`.
+
+A leaf module at import time (events and the summary are imported only for type checking,
+or lazily), so `llm.gateway`, which `schemas` imports, can default to `NullTrace` without
+an import cycle through `trace.events` -> `schemas.api` -> `llm`.
+"""
+
+import asyncio
+import logging
+import time
+from collections.abc import AsyncIterator, Callable
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from resilient_triage.trace.events import TraceEvent
+    from resilient_triage.trace.summary import TraceSummary
+
+logger = logging.getLogger(__name__)
+
+TraceSink = Callable[["TraceEvent"], None]
+
+
+class TraceRecorder(Protocol):
+    """Where a request's trace events go; record() never raises."""
+
+    def record(self, event: "TraceEvent") -> None:
+        """Record one event, stamping its seq and t_ms; never raises."""
+        ...
+
+
+class NullTrace:
+    """Records nothing: the default for callers outside a traced request."""
+
+    def record(self, event: "TraceEvent") -> None:
+        """Drop the event."""
+
+
+class ListTrace:
+    """Keeps the stamped events in order, and hands each to an optional sink."""
+
+    def __init__(
+        self, *, clock: Callable[[], float] = time.monotonic, sink: TraceSink | None = None
+    ) -> None:
+        self._clock = clock
+        self._sink = sink
+        self._started: float | None = None  # set when trace_started is recorded
+        self._events: list[TraceEvent] = []
+
+    @property
+    def events(self) -> "tuple[TraceEvent, ...]":
+        """The events recorded so far, in seq order."""
+        return tuple(self._events)
+
+    def summary(self) -> "TraceSummary":
+        """The trace summary of the events recorded so far."""
+        from resilient_triage.trace.summary import summarize
+
+        return summarize(self._events)
+
+    def record(self, event: "TraceEvent") -> None:
+        """Stamp seq and t_ms (0 until trace_started), keep it, feed the sink; never raises."""
+        try:
+            t_ms = 0.0
+            if self._started is not None:
+                t_ms = ms_since(self._started, self._clock)
+            elif event.kind == "trace_started":
+                self._started = self._clock()
+            if self._events:
+                t_ms = max(t_ms, self._events[-1].t_ms)
+            stamped = event.model_copy(update={"seq": len(self._events), "t_ms": t_ms})
+            self._events.append(stamped)
+            if self._sink is not None:
+                self._sink(stamped)
+        except Exception:
+            logger.exception("Trace recorder dropped a %s event.", event.kind)
+
+
+class StreamingTrace(ListTrace):
+    """A ListTrace that also feeds every stamped event to an unbounded, lossless queue."""
+
+    # Unbounded on purpose: a slow client must never block a run, and no event is ever
+    # dropped; a run emits a few dozen events within its deadline (ADR-008).
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._queue: asyncio.Queue[TraceEvent | None] = asyncio.Queue()
+        super().__init__(clock=clock, sink=self._queue.put_nowait)
+
+    def close(self) -> None:
+        """Mark the end of the trace: follow() stops once it has yielded every earlier event."""
+        self._queue.put_nowait(None)
+
+    async def follow(self) -> "AsyncIterator[TraceEvent]":
+        """Yield each event as it is recorded, in seq order, until close()."""
+        while (event := await self._queue.get()) is not None:
+            yield event
+
+
+def ms_since(started: float, clock: Callable[[], float] = time.monotonic) -> float:
+    """Milliseconds from `started` to now on `clock`, never negative, rounded to microseconds."""
+    return round(max((clock() - started) * 1000.0, 0.0), 3)
+
+
+def record_event(trace: TraceRecorder, build: "Callable[[], TraceEvent]") -> None:
+    """Build an event and record it; never raises, so tracing can't change a run's result."""
+    # Instrumented code calls this rather than `trace.record()`: it also guards the event's
+    # construction, and a recorder that breaks the never-raises contract.
+    try:
+        trace.record(build())
+    except Exception:
+        logger.exception("Dropped a trace event.")

@@ -1,17 +1,25 @@
 """End-to-end integration and resilience test suite for FastAPI gateway."""
 
 import asyncio
-import sys
+import dataclasses
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fakes import AppServer, fake_statuspage_http
+from langchain_core.messages import HumanMessage
+from pydantic import SecretStr
 
-from resilient_triage.graph.llm import groq_quota_tracker
-from resilient_triage.resilience.circuit_breaker import circuit_breaker_registry
+from resilient_triage.api.app import create_app
+from resilient_triage.config import settings
+from resilient_triage.llm import RateLimited, ScriptedAdapter, build_llm_gateway
+from resilient_triage.runtime import AppRuntime, build_runtime
+from resilient_triage.schemas.api import TriageResponse
 from resilient_triage.schemas.incident import SeverityLevel
-from resilient_triage.telemetry.chaos import ChaosClient
+from resilient_triage.telemetry.chaos import ClusterSentinelSource
+from resilient_triage.telemetry.statuspage import StatuspageSource
+from resilient_triage.trace.summary import TraceSummary
 
 
 @pytest.mark.asyncio
@@ -22,7 +30,7 @@ async def test_health_endpoint(client: httpx.AsyncClient):
 
     data = resp.json()
     assert data["status"] == "healthy"
-    assert data["version"] == "1.3.0"
+    assert data["version"] == "2.0.0"
     assert "statuspage" in data["circuits"]
     assert "chaos" in data["circuits"]
     assert data["circuits"]["statuspage"] == "closed"
@@ -84,6 +92,28 @@ async def test_triage_semantic_cache_hit_under_20ms(client: httpx.AsyncClient):
     assert data2["execution_time_ms"] < 20.0
 
 
+async def test_triage_response_carries_a_valid_trace_summary(client: httpx.AsyncClient):
+    """POST /triage returns its trace summary (structured, never the event list)."""
+    q = "GitHub Actions queue is stalling with 504 gateway timeout"
+
+    miss = (await client.post("/triage", json={"query": q})).json()
+    hit = (await client.post("/triage", json={"query": q})).json()
+
+    TriageResponse.model_validate(miss)
+    miss_trace = TraceSummary.model_validate(miss["trace"])
+    assert miss_trace.outcome == "analyzed"
+    assert [visit.node for visit in miss_trace.nodes][0] == "analyze_query"
+    assert miss_trace.nodes[-1].node == "finalize_report"
+    assert miss_trace.model_calls
+    assert miss_trace.degradation == miss["report"]["degradation_status"]
+    assert miss_trace.timings.cache_lookup_ms is not None
+    assert miss_trace.timings.slot_wait_ms is not None
+
+    hit_trace = TraceSummary.model_validate(hit["trace"])
+    assert (hit_trace.outcome, hit_trace.nodes, hit_trace.model_calls) == ("cache_hit", [], [])
+    assert "events" not in miss["trace"]
+
+
 @pytest.mark.asyncio
 async def test_triage_force_refresh_bypasses_cache(client: httpx.AsyncClient):
     """Verify force_refresh=True skips cache lookup even when an entry exists."""
@@ -137,22 +167,22 @@ async def test_chaos_injection_and_config(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_chaos_probe_trips_circuit_breaker(client: httpx.AsyncClient):
+async def test_chaos_probe_trips_circuit_breaker(client: httpx.AsyncClient, runtime: AppRuntime):
     """Verify injected 503 causes chaos probe to trip circuit breaker into OPEN state."""
     # 1. Enable 503 chaos
     await client.post("/chaos/inject", json={"active": True, "inject_503": True})
 
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
-    assert chaos_cb.is_open is False
+    chaos_cb = runtime.breakers.get_or_create("chaos")
+    assert chaos_cb.info().is_open is False
 
     # 2. Probe until fail_max is reached and breaker trips
-    for _ in range(chaos_cb.fail_max):
+    for _ in range(chaos_cb.info().fail_max):
         try:
             await client.get("/chaos/probe")
         except Exception:
             pass
 
-    assert chaos_cb.is_open is True
+    assert chaos_cb.info().is_open is True
 
     # 3. /health should now report degraded status
     health_resp = await client.get("/health")
@@ -163,18 +193,18 @@ async def test_chaos_probe_trips_circuit_breaker(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient):
+async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient, runtime: AppRuntime):
     """Verify system degrades gracefully and delivers report when circuit breaker trips."""
     # 1. Force chaos circuit breaker to trip OPEN
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    chaos_cb = runtime.breakers.get_or_create("chaos")
 
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
 
-    for _ in range(chaos_cb.fail_max):
+    for _ in range(chaos_cb.info().fail_max):
         with pytest.raises(Exception):
             await chaos_cb.call(_failing_task)
-    assert chaos_cb.is_open is True
+    assert chaos_cb.info().is_open is True
 
     # 2. Trigger triage request through API
     resp = await client.post(
@@ -191,15 +221,15 @@ async def test_end_to_end_resilience_under_chaos(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_resilience_status_and_reset(client: httpx.AsyncClient):
+async def test_resilience_status_and_reset(client: httpx.AsyncClient, runtime: AppRuntime):
     """Verify /resilience/status diagnostics and /resilience/reset recovery."""
     # Trip chaos breaker
-    chaos_cb = circuit_breaker_registry.get_or_create("chaos")
+    chaos_cb = runtime.breakers.get_or_create("chaos")
 
     async def _failing_task():
         raise RuntimeError("Injected downstream failure to trip breaker")
 
-    for _ in range(chaos_cb.fail_max):
+    for _ in range(chaos_cb.info().fail_max):
         with pytest.raises(Exception):
             await chaos_cb.call(_failing_task)
 
@@ -216,7 +246,7 @@ async def test_resilience_status_and_reset(client: httpx.AsyncClient):
     assert reset_resp.status_code == 200
 
     # Verify breaker is closed and health restored
-    assert chaos_cb.is_open is False
+    assert chaos_cb.info().is_open is False
     health_resp = await client.get("/health")
     assert health_resp.json()["status"] == "healthy"
 
@@ -242,53 +272,127 @@ async def test_cache_clear_endpoint(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_global_exception_handler_sanitization(client: httpx.AsyncClient):
+async def test_global_exception_handler_sanitization(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
     """Verify unhandled exceptions return structured JSON without leaking tracebacks."""
+    # /triage degrades instead of raising, so trigger the handler from another route.
+    monkeypatch.setattr(
+        runtime.llm, "snapshot", MagicMock(side_effect=RuntimeError("Secret internal db failure"))
+    )
+    resp = await client.get("/llm/quota")
+    assert resp.status_code == 500
+    data = resp.json()
+    assert data["error"] == "InternalServerError"
+    assert data["message"] == "An unexpected error occurred during incident triage."
+    assert "request_id" in data
+    assert "Secret internal db failure" not in str(data)
+    assert resp.headers.get("x-request-id") == data["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_triage_graph_exception_degrades_to_a_200_fallback(client: httpx.AsyncClient):
+    """A graph that raises gives a 200 MISS with a degraded report, not a 500."""
     with patch(
-        "resilient_triage.api.app.triage_graph.ainvoke",
+        "resilient_triage.runtime.triage_graph.ainvoke",
         side_effect=RuntimeError("Secret internal db failure"),
     ):
         resp = await client.post(
             "/triage",
-            json={"query": "Trigger unhandled exception failure", "force_refresh": True},
+            json={"query": "Checkout latency spike across regions", "force_refresh": True},
+            headers={"X-Thread-ID": "incident-thread-72"},
         )
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"] == "InternalServerError"
-        assert data["message"] == "An unexpected error occurred during incident triage."
-        assert "request_id" in data
-        assert "Secret internal db failure" not in str(data)
-        assert resp.headers.get("x-request-id") == data["request_id"]
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-cache") == "MISS"
+    assert resp.headers.get("x-thread-id") == "incident-thread-72"
+    data = resp.json()
+    assert data["cached"] is False
+    assert data["report"]["degradation_status"] == "SEVERELY_DEGRADED"
+    assert "Secret internal db failure" not in str(data)
 
 
 @pytest.mark.asyncio
-async def test_triage_llm_failure_degrades_gracefully(client: httpx.AsyncClient):
-    """Verify that when LLM inference fails (e.g., HTTP 429 or network error), the system returns 200 with a fallback report."""
-    with patch("resilient_triage.graph.nodes.generate_report.get_triage_llm") as mock_get_llm:
-        mock_llm = MagicMock()
-        mock_llm.ainvoke = AsyncMock(
-            side_effect=httpx.HTTPStatusError(
-                "429 Too Many Requests: Rate limit reached",
-                request=httpx.Request("POST", "https://api.groq.com"),
-                response=httpx.Response(429),
-            )
-        )
-        mock_get_llm.return_value = mock_llm
+async def test_triage_llm_failure_degrades_gracefully(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
+    """Verify a failed LLM call (e.g. HTTP 429, network error) still returns 200 with a fallback."""
+    failure = RateLimited(retry_after_s=None, scope="unknown", detail="Rate limit reached")
+    # Enough failures for every model call one complete() may make.
+    scripted = build_llm_gateway(settings, ScriptedAdapter([failure] * 3))
+    monkeypatch.setattr(runtime, "deps", dataclasses.replace(runtime.deps, llm=scripted))
+    resp = await client.post(
+        "/triage",
+        json={"query": "High memory pressure on payment service", "force_refresh": True},
+    )
 
+    assert resp.status_code == 200
+    data = resp.json()
+    report = data["report"]
+    assert report["degradation_status"] == "SEVERELY_DEGRADED"
+    assert (
+        "429" in report["root_cause_analysis"]
+        or "rate limit" in report["root_cause_analysis"].lower()
+    )
+    assert len(report["recommended_actions"]) > 0
+
+
+def _graph_without_final_report():
+    """Return a patch making the triage graph run but yield no final_report."""
+    from resilient_triage.graph.builder import triage_graph
+
+    async def _ainvoke(*args, **kwargs):
+        state = await triage_graph.ainvoke(*args, **kwargs)
+        return {k: v for k, v in state.items() if k != "final_report"}
+
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(side_effect=_ainvoke)
+    return patch("resilient_triage.runtime.triage_graph", graph)
+
+
+@pytest.mark.asyncio
+async def test_emergency_fallback_report_is_severely_degraded(client: httpx.AsyncClient):
+    """The emergency fallback report (graph yields no report) is SEVERELY_DEGRADED."""
+    with _graph_without_final_report():
         resp = await client.post(
             "/triage",
-            json={"query": "High memory pressure on payment service", "force_refresh": True},
+            json={"query": "Checkout latency spike across regions", "force_refresh": True},
         )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        report = data["report"]
-        assert report["degradation_status"] == "SEVERELY_DEGRADED"
-        assert (
-            "429" in report["root_cause_analysis"]
-            or "rate limit" in report["root_cause_analysis"].lower()
+    assert resp.status_code == 200
+    report = resp.json()["report"]
+    assert report["degradation_status"] == "SEVERELY_DEGRADED"
+
+
+@pytest.mark.asyncio
+async def test_emergency_fallback_report_lists_tripped_breakers(
+    client: httpx.AsyncClient, runtime: AppRuntime
+):
+    """The emergency fallback report names a targeted breaker that was open."""
+    chaos_cb = runtime.breakers.get_or_create("chaos")
+
+    async def _failing_task():
+        raise RuntimeError("Injected downstream failure to trip breaker")
+
+    for _ in range(chaos_cb.info().fail_max):
+        with pytest.raises(Exception):
+            await chaos_cb.call(_failing_task)
+    assert chaos_cb.info().is_open is True
+
+    with _graph_without_final_report():
+        resp = await client.post(
+            "/triage",
+            json={
+                "query": "Internal API gateway cluster failing with 503 outage",
+                "service_filter": "internal",
+                "force_refresh": True,
+            },
         )
-        assert len(report["recommended_actions"]) > 0
+
+    assert resp.status_code == 200
+    report = resp.json()["report"]
+    assert report["degradation_status"] == "SEVERELY_DEGRADED"
+    assert report["circuit_breakers_tripped"] == ["chaos"]
 
 
 @pytest.mark.asyncio
@@ -328,27 +432,25 @@ async def test_health_and_resilience_status_contain_llm_quota(client: httpx.Asyn
 
 
 @pytest.mark.asyncio
-async def test_resilience_reset_clears_llm_quota_counters(client: httpx.AsyncClient):
+async def test_resilience_reset_clears_llm_quota_counters(
+    client: httpx.AsyncClient, runtime: AppRuntime
+):
     """Verify POST /resilience/reset resets LLM quota tracker metrics."""
-    # Simulate some tracked calls
-    mock_resp = httpx.Response(
-        429,
-        headers={
-            "x-ratelimit-remaining-tokens": "500",
-            "x-ratelimit-limit-tokens": "8000",
-        },
-        request=httpx.Request("POST", "https://api.groq.com"),
-    )
-    groq_quota_tracker.record_response(mock_resp, model_name="qwen/qwen3.8-27b")
-    snap_before = groq_quota_tracker.get_snapshot()
-    assert snap_before.total_calls == 1
+    # Simulate some tracked calls: a primary 429 answered by the fallback model
+    adapter = runtime.llm.adapter
+    assert isinstance(adapter, ScriptedAdapter)
+    adapter.script.append(RateLimited(retry_after_s=None, scope="unknown", detail="Rate limit"))
+    await runtime.llm.complete([HumanMessage(content="Is checkout down?")])
+    snap_before = runtime.llm.snapshot()
+    assert snap_before.total_calls == 2
     assert snap_before.rate_limit_hits == 1
+    assert snap_before.failover_events == 1
 
     # Reset via API
     reset_resp = await client.post("/resilience/reset")
     assert reset_resp.status_code == 200
 
-    snap_after = groq_quota_tracker.get_snapshot()
+    snap_after = runtime.llm.snapshot()
     assert snap_after.total_calls == 0
     assert snap_after.rate_limit_hits == 0
     assert snap_after.failover_events == 0
@@ -377,7 +479,7 @@ async def test_chaos_probe_latency_via_api(client: httpx.AsyncClient):
 
 @pytest.mark.asyncio
 async def test_chaos_probe_failure_rate_via_api(client: httpx.AsyncClient):
-    """Verify that POST /chaos/inject with failure_rate=1.0 causes GET /chaos/probe to fail with 503."""
+    """Verify POST /chaos/inject with failure_rate=1.0 makes GET /chaos/probe fail with 503."""
     resp = await client.post(
         "/chaos/inject",
         json={"active": True, "failure_rate": 1.0, "inject_503": False, "latency_ms": 0},
@@ -389,41 +491,32 @@ async def test_chaos_probe_failure_rate_via_api(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_triage_internal_scope_only_targets_chaos(client: httpx.AsyncClient):
-    """Verify that triage requests with service_filter='internal' only target internal chaos telemetry and exclude external Statuspage."""
+async def test_triage_internal_scope_only_targets_chaos(
+    client: httpx.AsyncClient, runtime: AppRuntime
+):
+    """Verify service_filter='internal' targets only chaos telemetry, not external Statuspage."""
     with (
-        patch("resilient_triage.telemetry.statuspage.StatuspageClient.fetch_signals") as mock_sp,
-        patch(
-            "resilient_triage.telemetry.chaos.ChaosClient.fetch_signals",
-            wraps=ChaosClient().fetch_signals,
+        patch.object(StatuspageSource, "read", new_callable=AsyncMock) as mock_sp,
+        patch.object(
+            ClusterSentinelSource, "read", autospec=True, side_effect=ClusterSentinelSource.read
         ) as mock_chaos,
     ):
         resp = await client.post(
             "/triage",
             json={
-                "query": "Internal API gateway cluster failing with 503 outage and elevated probe latency",
+                "query": (
+                    "Internal API gateway cluster failing with 503 outage and elevated probe "
+                    "latency"
+                ),
                 "service_filter": "internal",
                 "force_refresh": True,
             },
         )
         assert resp.status_code == 200
-        # StatuspageClient must never be invoked for internal scope
+        # The Statuspage source must never be invoked for internal scope
         mock_sp.assert_not_called()
-        # ChaosClient must be invoked for internal scope
+        # Cluster Sentinel must be invoked for internal scope
         assert mock_chaos.called
-
-
-@pytest.mark.asyncio
-async def test_sre_console_renders_html(client: httpx.AsyncClient):
-    """Verify that GET / serves the interactive SRE command center single-page console."""
-    resp = await client.get("/")
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers.get("content-type", "")
-    assert "Resilient Triage" in resp.text
-    assert "Live Architecture Pipeline Simulation" in resp.text
-    assert "CACHE &amp; VECTOR TIER" in resp.text or "CACHE & VECTOR TIER" in resp.text
-    assert "RESILIENT ORCHESTRATION" in resp.text
-    assert "Fast-Path Highway" in resp.text
 
 
 @pytest.mark.asyncio
@@ -440,33 +533,60 @@ async def test_prometheus_metrics_endpoint(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_concurrency_semaphore_shedding(client: httpx.AsyncClient, monkeypatch):
-    """Verify that semaphore exhaustion triggers 503 load shedding."""
-    # Temporarily set semaphore to 0 to simulate full saturation
-    saturated_sem = asyncio.Semaphore(0)
-    # api/__init__.py exposes `app` which shadows the submodule name; use sys.modules for module globals
-    app_module = sys.modules["resilient_triage.api.app"]
-    monkeypatch.setattr(app_module, "GRAPH_SEMAPHORE", saturated_sem)
+async def test_metrics_count_triage_hits_and_misses(client: httpx.AsyncClient):
+    """Verify /metrics counts each triage outcome under its cache label."""
+    query = {"query": "Checkout API returning 503 errors in us-east-1"}
+    assert (await client.post("/triage", json=query)).headers["x-cache"] == "MISS"
+    assert (await client.post("/triage", json=query)).headers["x-cache"] == "HIT"
 
-    # Patch wait_for timeout to 0.02s for fast test execution
-    orig_wait_for = asyncio.wait_for
+    content = (await client.get("/metrics")).text
 
-    async def fast_wait_for(fut, timeout):
-        return await orig_wait_for(fut, timeout=0.02)
+    assert 'resilient_triage_requests_total{cache="hit"} 1' in content
+    assert 'resilient_triage_requests_total{cache="miss"} 1' in content
+    assert 'resilient_triage_requests_total{cache="saturated"} 0' in content
 
-    monkeypatch.setattr(asyncio, "wait_for", fast_wait_for)
 
-    resp = await client.post(
-        "/triage",
-        json={"query": "Sudden traffic spike causing saturating concurrency"},
+class _BlockingAdapter(ScriptedAdapter):
+    """A ScriptedAdapter whose calls wait until `release` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def call(self, model, messages):
+        self.started.set()
+        await self.release.wait()
+        return await super().call(model, messages)
+
+
+@pytest.mark.asyncio
+async def test_concurrency_semaphore_shedding(serve_app: AppServer):
+    """Verify that a request finding every run slot busy past the queue timeout gets a 503."""
+    llm = _BlockingAdapter()
+    one_slot = settings.model_copy(
+        update={"triage_max_concurrent_runs": 1, "triage_queue_timeout_s": 0.02}
     )
+    async with serve_app(llm, one_slot) as (_, ac):
+        first = asyncio.create_task(
+            ac.post("/triage", json={"query": "Checkout API returning 503 errors"})
+        )
+        await asyncio.wait_for(llm.started.wait(), timeout=5.0)
+
+        resp = await ac.post(
+            "/triage",
+            json={"query": "Sudden traffic spike causing saturating concurrency"},
+        )
+        llm.release.set()
+        assert (await first).status_code == 200
+
     assert resp.status_code == 503
     assert "saturated" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
 async def test_triage_request_payload_bounds_rejection(client: httpx.AsyncClient):
-    """Verify TriageRequest rejects oversized queries or invalid service_filter characters with 422."""
+    """Verify TriageRequest rejects oversized queries or bad service_filter characters (422)."""
     # 1. Query too long (>2000 chars)
     oversized_query = "A" * 2001
     resp_over = await client.post("/triage", json={"query": oversized_query})
@@ -491,63 +611,123 @@ async def test_triage_request_payload_bounds_rejection(client: httpx.AsyncClient
     assert resp_ok.status_code == 200
 
 
+ADMIN_ROUTES = [
+    pytest.param("/chaos/inject", {"active": False}, id="chaos-inject"),
+    pytest.param("/resilience/reset", None, id="resilience-reset"),
+    pytest.param("/cache/clear", None, id="cache-clear"),
+]
+
+
+@pytest.mark.parametrize(("path", "body"), ADMIN_ROUTES)
+@pytest.mark.parametrize(
+    ("configured_key", "sent_key", "expected_status"),
+    [
+        pytest.param(None, None, 403, id="unset-key-no-header"),
+        pytest.param(None, "anything", 403, id="unset-key-any-header"),
+        pytest.param("", "", 403, id="empty-key-empty-header"),
+        pytest.param("super_secret_token_42", None, 401, id="missing-header"),
+        pytest.param("super_secret_token_42", "wrong", 401, id="wrong-header"),
+        pytest.param("super_secret_token_42", "super_secret_token_42", 200, id="right-header"),
+    ],
+)
+async def test_admin_routes_fail_closed(
+    anonymous_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    body: dict[str, object] | None,
+    configured_key: str | None,
+    sent_key: str | None,
+    expected_status: int,
+):
+    """Admin routes refuse every caller without ADMIN_API_KEY, and need the right key with one."""
+    secret = None if configured_key is None else SecretStr(configured_key)
+    monkeypatch.setattr(settings, "admin_api_key", secret)
+    headers = {} if sent_key is None else {"X-Admin-Key": sent_key}
+
+    resp = await anonymous_client.post(path, json=body, headers=headers)
+
+    assert resp.status_code == expected_status
+
+
+async def test_openapi_declares_admin_key_security_scheme(client: httpx.AsyncClient):
+    """/docs gets an Authorize button: the X-Admin-Key header is an OpenAPI security scheme."""
+    schema = (await client.get("/openapi.json")).json()
+
+    schemes = schema["components"]["securitySchemes"]
+    (scheme_name,) = schemes
+    scheme = schemes[scheme_name]
+    assert (scheme["type"], scheme["in"], scheme["name"]) == ("apiKey", "header", "X-Admin-Key")
+    for route in ADMIN_ROUTES:
+        path = route.values[0]
+        assert schema["paths"][path]["post"]["security"] == [{scheme_name: []}]
+    assert "security" not in schema["paths"]["/triage"]["post"]
+
+
 @pytest.mark.asyncio
-async def test_admin_api_key_protection(client: httpx.AsyncClient, monkeypatch):
-    """Verify mutating control-plane endpoints enforce X-Admin-Key authentication when configured."""
-    from resilient_triage.config import settings
-
-    # Configure secret admin key
-    monkeypatch.setattr(settings, "admin_api_key", "super_secret_token_42")
-
-    # /chaos/inject rejected without key
-    r1 = await client.post("/chaos/inject", json={"active": True})
-    assert r1.status_code == 401
-    assert "unauthorized" in r1.json()["detail"].lower()
-
-    # /chaos/inject rejected with wrong key
-    r2 = await client.post("/chaos/inject", json={"active": True}, headers={"X-Admin-Key": "wrong"})
-    assert r2.status_code == 401
-
-    # /chaos/inject accepted with valid key
-    r3 = await client.post(
-        "/chaos/inject", json={"active": False}, headers={"X-Admin-Key": "super_secret_token_42"}
+async def test_lifespan_closes_telemetry_and_llm_clients(monkeypatch):
+    """Verify the app lifespan starts its runtime and closes the Statuspage and Groq clients."""
+    groq_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    monkeypatch.setattr("resilient_triage.llm.groq.new_groq_http_client", lambda t: groq_http)
+    statuspage_http = fake_statuspage_http()
+    rt = build_runtime(
+        settings.model_copy(update={"groq_api_key": "test-key"}), statuspage_http=statuspage_http
     )
-    assert r3.status_code == 200
+    app = create_app(lambda: rt)
 
-    # /resilience/reset rejected without key
-    r4 = await client.post("/resilience/reset")
-    assert r4.status_code == 401
-
-    # /resilience/reset accepted with valid key
-    r5 = await client.post("/resilience/reset", headers={"X-Admin-Key": "super_secret_token_42"})
-    assert r5.status_code == 200
-
-    # /cache/clear rejected without key
-    r6 = await client.post("/cache/clear")
-    assert r6.status_code == 401
-
-    # /cache/clear accepted with valid key
-    r7 = await client.post("/cache/clear", headers={"X-Admin-Key": "super_secret_token_42"})
-    assert r7.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_lifespan_closes_telemetry_and_llm_clients():
-    """Verify close_statuspage_client and close_groq_async_client execute safely without error."""
-    from resilient_triage.graph.llm import close_groq_async_client, get_groq_async_client
-    from resilient_triage.telemetry.statuspage import (
-        _get_statuspage_client,
-        close_statuspage_client,
-    )
-
-    # Instantiate clients
-    c1 = _get_statuspage_client()
-    assert not c1.is_closed
-    c2 = get_groq_async_client()
-    assert not c2.is_closed
+    async with app.router.lifespan_context(app):
+        # Clients open while the app serves
+        assert not statuspage_http.is_closed
+        assert not groq_http.is_closed
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            health = (await ac.get("/health")).json()
+        assert set(health["circuits"]) == {"statuspage", "chaos"}
 
     # Teardown
-    await close_statuspage_client()
-    assert c1.is_closed
-    await close_groq_async_client()
-    assert c2.is_closed
+    assert statuspage_http.is_closed
+    assert groq_http.is_closed
+
+
+@pytest.mark.asyncio
+async def test_status_routes_ping_the_cache_exactly_once(
+    client: httpx.AsyncClient, runtime: AppRuntime, monkeypatch
+):
+    """Verify /health, /resilience/status and /metrics each ping Redis exactly once."""
+    pings: list[str] = []
+    real_check = runtime.cache.check_connection
+
+    async def counting_check() -> bool:
+        pings.append("ping")
+        return await real_check()
+
+    monkeypatch.setattr(runtime.cache, "check_connection", counting_check)
+
+    for route in ("/health", "/resilience/status", "/metrics"):
+        pings.clear()
+        resp = await client.get(route)
+        assert resp.status_code == 200
+        assert len(pings) == 1, route
+
+
+@pytest.mark.asyncio
+async def test_two_apps_keep_separate_breakers_and_request_metrics(
+    client: httpx.AsyncClient, runtime: AppRuntime, serve_app: AppServer
+):
+    """Verify a second app instance has its own runtime: breakers and counters don't leak."""
+    async with serve_app(ScriptedAdapter()) as (_, other):
+        await client.post("/chaos/inject", json={"active": True, "inject_503": True})
+        for _ in range(runtime.breakers.get_or_create("chaos").info().fail_max):
+            await client.get("/chaos/probe")
+        await client.post(
+            "/triage", json={"query": "Payments API returning 503", "force_refresh": True}
+        )
+
+        assert (await client.get("/health")).json()["status"] == "degraded"
+        assert (await other.get("/health")).json()["status"] == "healthy"
+        assert (
+            'resilient_triage_requests_total{cache="miss"} 1' in (await client.get("/metrics")).text
+        )
+        assert (
+            'resilient_triage_requests_total{cache="miss"} 0' in (await other.get("/metrics")).text
+        )

@@ -1,23 +1,24 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=62.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "resilient-triage"
-version = "1.3.0"
+version = "2.0.0"
 description = "Fault-tolerant incident triage agent powered by LangGraph, Tenacity, Pybreaker, and Redis Semantic Cache"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.110.0",
+    "fastapi>=0.135.1",
     "uvicorn[standard]>=0.28.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",
-    "langgraph>=0.2.0",
+    "langgraph>=1.0,<2",
     "langchain-core>=0.2.0",
     "tenacity>=8.2.3",
-    "pybreaker>=1.2.0",
+    "pybreaker>=1.3.0,<1.5",
     "httpx>=0.27.0",
+    "anyio>=4.0,<5",
     "redis>=5.0.0",
     "numpy>=1.26.0",
     "fastembed>=0.8.0",
@@ -34,18 +35,28 @@ lint = [
     "ruff>=0.3.0",
     "mypy>=1.9.0",
 ]
+# The browser test tier (#117): run `playwright install chromium` once after installing.
+browser = [
+    "playwright>=1.49",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"resilient_triage.api" = ["templates/*.html"]
+# static/** needs setuptools 62.3+ (recursive globs).
+"resilient_triage.api" = ["static/**"]
 
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+# The browser tier needs Chromium: deselected here, run by `./scripts/check.sh --browser`.
+addopts = '-m "not browser"'
+markers = [
+    "browser: drives the page in Chromium through Playwright (./scripts/check.sh --browser)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -61,17 +72,20 @@ select = [
     "B",   # flake8-bugbear
 ]
 ignore = [
-    "E501",   # line length
-    "UP042",  # AGENTS.md rule mandates enums inherit from (str, Enum)
+    "UP042",  # CODING_STANDARDS.md: enums inherit from (str, Enum)
     "B027",   # optional empty method on BaseEmbeddingProvider
     "B017",   # pytest.raises(Exception) in test assertions
     "UP047",  # generic type parameters syntax
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Prompt text is sent to the LLM verbatim; wrapping it would change the prompt.
+"src/resilient_triage/graph/prompts.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = false
 warn_unused_configs = true
-disallow_untyped_defs = false
+disallow_untyped_defs = true
 ignore_missing_imports = true
 

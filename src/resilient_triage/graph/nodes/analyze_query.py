@@ -1,61 +1,36 @@
-"""Node: analyze_query - Extracts intent, normalizes scope, and targets relevant telemetry."""
+"""Node: analyze_query - Cleans up the question and picks which telemetry sources to read."""
 
 from typing import Any
 
+from langgraph.runtime import Runtime
+
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.schemas.state import TriageState
 
-EXTERNAL_KEYWORDS = {
-    "github",
-    "statuspage",
-    "actions",
-    "repo",
-    "webhook",
-    "cloud",
-    "aws",
-    "gcp",
-    "atlassian",
-}
-INTERNAL_KEYWORDS = {
-    "internal",
-    "chaos",
-    "auth",
-    "database",
-    "redis",
-    "latency probe",
-    "payment",
-    "chaos_probe",
-}
 
-
-def analyze_query_node(state: TriageState) -> dict[str, Any]:
-    """Inspect query context and dynamically target relevant telemetry sources."""
+def analyze_query_node(state: TriageState, runtime: Runtime[TriageDeps]) -> dict[str, Any]:
+    """Normalize the query, ask the probe which sources to target, and reset per-run state."""
     raw_query = state.get("query") or state.get("incident_query") or ""
     query = str(raw_query).strip()
     service_filter = state.get("service_filter")
-    combined_text = f"{query} {service_filter or ''}".lower()
-
-    # Dynamic tool targeting
-    has_external = any(kw in combined_text for kw in EXTERNAL_KEYWORDS)
-    has_internal = any(kw in combined_text for kw in INTERNAL_KEYWORDS)
-
-    if has_external and not has_internal:
-        target_tools = ["statuspage"]
-    elif has_internal and not has_external:
-        target_tools = ["chaos"]
-    else:
-        target_tools = ["statuspage", "chaos"]
+    targeted = runtime.context.telemetry.select_targets(query, service_filter)
 
     return {
         "query": query,
         "service_filter": service_filter,
-        "target_tools": target_tools,
+        "targeted_sources": sorted(targeted),
         "messages": [],
         "telemetry_signals": [],
         "circuit_breaker_status": {},
+        "tripped_breakers": [],
+        "unavailable_sources": [],
+        "synthesis_fell_back": False,
         "is_degraded": False,
         "degradation_reason": None,
         "historical_context": [],
         "repair_attempts": 0,
         "refinement_attempts": 0,
         "validation_errors": [],
+        "provider_failure": None,
+        "refined_from": None,
     }

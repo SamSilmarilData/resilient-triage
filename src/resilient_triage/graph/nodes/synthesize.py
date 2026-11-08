@@ -1,4 +1,4 @@
-"""Node: synthesize_telemetry - Consolidates signals, circuit state, and warnings into model prompt."""
+"""Node: synthesize_telemetry - Puts the signals, breaker states and warnings into the prompt."""
 
 from typing import Any
 

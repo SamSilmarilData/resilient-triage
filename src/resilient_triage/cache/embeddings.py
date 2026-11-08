@@ -87,7 +87,10 @@ class FastEmbedProvider(BaseEmbeddingProvider):
                         self._model = TextEmbedding(model_name=self.model_name)
                     except Exception as exc:
                         logger.warning(
-                            "FastEmbed initialization failed (%s). Failing over to DeterministicEmbeddingProvider.",
+                            (
+                                "FastEmbed initialization failed (%s). Failing over to "
+                                "DeterministicEmbeddingProvider."
+                            ),
                             exc,
                         )
                         self._fallback = DeterministicEmbeddingProvider(dimension=self._dim)

@@ -29,7 +29,9 @@ def test_valid_incident_triage_report():
         "timestamp": datetime.now(UTC).isoformat(),
         "summary": "GitHub Actions is failing across all workflow runs.",
         "severity": "CRITICAL",
-        "root_cause_analysis": "Upstream webhook processing failure detected in external statuspage.",
+        "root_cause_analysis": (
+            "Upstream webhook processing failure detected in external statuspage."
+        ),
         "affected_services": [
             {
                 "service_name": "Actions Runner",
@@ -194,7 +196,7 @@ def test_triage_state_initialization():
     state: TriageState = {
         "query": "Investigating high webhook error rate",
         "service_filter": "actions",
-        "target_tools": ["statuspage", "chaos"],
+        "targeted_sources": ["statuspage", "chaos"],
         "messages": [],
         "statuspage_telemetry": None,
         "chaos_telemetry": None,
@@ -211,7 +213,7 @@ def test_triage_state_initialization():
     }
     assert state["query"] == "Investigating high webhook error rate"
     assert state["service_filter"] == "actions"
-    assert state["target_tools"] == ["statuspage", "chaos"]
+    assert state["targeted_sources"] == ["statuspage", "chaos"]
     assert state["circuit_breaker_status"]["statuspage"] == "CLOSED"
     assert state["repair_attempts"] == 0
     assert state["refinement_attempts"] == 0

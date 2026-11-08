@@ -35,7 +35,7 @@ fi
 echo "========================================================================"
 echo "🛡️  Starting Resilient Triage Incident Gateway (Native macOS)"
 echo "========================================================================"
-echo "• SRE Command Center UI : http://127.0.0.1:8000"
+echo "• Explorable page       : http://127.0.0.1:8000"
 echo "• Interactive API Docs  : http://127.0.0.1:8000/docs"
 echo "• Health Endpoint       : http://127.0.0.1:8000/health"
 echo "• Redis Cache Engine    : $REDIS_STATUS"

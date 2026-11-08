@@ -1,0 +1,127 @@
+{
+  "$comment": "Managed by scripts/vendor.py (ADR 0010). Files live at <name>@<version>/<path>, where <path> is the file's path inside the npm tarball's package/ directory. To bump a package, edit its version and run `python scripts/vendor.py update`; tests and CI only verify.",
+  "packages": [
+    {
+      "name": "preact",
+      "version": "10.29.8",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "tarball": "https://registry.npmjs.org/preact/-/preact-10.29.8.tgz",
+      "integrity": "sha512-ej2aVZ+vZ8WO7tvlQWRM9N63A0KzF9q4mWJfDUHgYaIofWY9hu74QdnQrjoPMmZi2/nZ5gN0bJCQF49xQqx09Q==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "1fe6958409c8c257a70c587a18b6f7f412b179b456630790d30b2ec9a8e4b7d4"
+        },
+        {
+          "path": "dist/preact.mjs",
+          "specifier": "preact",
+          "sha256": "c30e721ebfdc6e2ad4c18c14d2dfb82667829c8aec27de1207774e3fc16858a8"
+        },
+        {
+          "path": "hooks/dist/hooks.mjs",
+          "specifier": "preact/hooks",
+          "sha256": "a6ee626f2d01570592dd569a792e3f050154aa02890eead8c223fa3ed5aa3d5a"
+        }
+      ]
+    },
+    {
+      "name": "htm",
+      "version": "3.1.1",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "tarball": "https://registry.npmjs.org/htm/-/htm-3.1.1.tgz",
+      "integrity": "sha512-983Vyg8NwUE7JkZ6NmOqpCZ+sh1bKv2iYTlUkzlWmA5JD2acKoxd4KVxbMmxX/85mtfdnDmTFoNKcg5DGAvxNQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "740725f7252e750af735d0028cc534970772f513331e9f68150fede8fb3ce00f"
+        },
+        {
+          "path": "dist/htm.mjs",
+          "specifier": "htm",
+          "sha256": "ab33dd3f38059b9be4d5f5350128eefb2356639c4e0bbe9d9e8b3ba75847e9e4"
+        },
+        {
+          "path": "preact/index.mjs",
+          "specifier": "htm/preact",
+          "sha256": "b3f51db71c12eabba61819feb74ace7cadc2744af41866c3fcad2ab960415746"
+        }
+      ]
+    },
+    {
+      "name": "@preact/signals-core",
+      "version": "1.14.5",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "tarball": "https://registry.npmjs.org/@preact/signals-core/-/signals-core-1.14.5.tgz",
+      "integrity": "sha512-vcRv7Ityz5JVmeiVqIluLFzT/PDS/AlhHUpw3/aUWqcVUs6bDGIPXE/6RSC4evBNWYvnniozg5Syfj33al3gkg==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "a11fc89e4c6b118854c7a667734a0b2e6bf2af5e45c6686de31adbccc8f3ae8d"
+        },
+        {
+          "path": "dist/signals-core.mjs",
+          "specifier": "@preact/signals-core",
+          "sha256": "0c80bc127d72ecb1496ef116ffddae75079829a3af01e7f417c8e5a6474c68b6"
+        }
+      ]
+    },
+    {
+      "name": "@preact/signals",
+      "version": "2.11.4",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "tarball": "https://registry.npmjs.org/@preact/signals/-/signals-2.11.4.tgz",
+      "integrity": "sha512-Rb+5RPo9gWSaHtzJeauhHxiC8KP/IF2DEPkHPEOGOnuy2wnJzRqyeLRankUCYd6ADqtxS6GnWGv6Ie343d8aYw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "a11fc89e4c6b118854c7a667734a0b2e6bf2af5e45c6686de31adbccc8f3ae8d"
+        },
+        {
+          "path": "dist/signals.mjs",
+          "specifier": "@preact/signals",
+          "sha256": "ba8177597f45acaca4d05dcf3966b527d0a8264cfa2b0a87ace92dff324217f8"
+        }
+      ]
+    },
+    {
+      "name": "@fontsource-variable/inter",
+      "version": "5.3.0",
+      "license": "OFL-1.1",
+      "license_file": "LICENSE",
+      "tarball": "https://registry.npmjs.org/@fontsource-variable/inter/-/inter-5.3.0.tgz",
+      "integrity": "sha512-OupL48va4JNofb97w6NYeF9S7W/kHNKM0Er8Dem5nqi4jeOLrVJDoE8tZEpnMJmtkvNbB1EIPPwHcdkF6b1oUA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+        },
+        {
+          "path": "files/inter-latin-wght-normal.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        }
+      ]
+    },
+    {
+      "name": "@fontsource-variable/jetbrains-mono",
+      "version": "5.3.0",
+      "license": "OFL-1.1",
+      "license_file": "LICENSE",
+      "tarball": "https://registry.npmjs.org/@fontsource-variable/jetbrains-mono/-/jetbrains-mono-5.3.0.tgz",
+      "integrity": "sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "403581b69dac5cff4079205e01c6b467e56af449ecbd7247693ddb1baafa005b"
+        },
+        {
+          "path": "files/jetbrains-mono-latin-wght-normal.woff2",
+          "sha256": "18be452724bfdc236c074ca94a249a7f41a86752c7d04ab258ce9ed5651f6a7e"
+        }
+      ]
+    }
+  ]
+}

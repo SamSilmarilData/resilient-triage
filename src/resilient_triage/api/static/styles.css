@@ -1,0 +1,1334 @@
+/* resilient-triage page (ADR 0010): one hand-written stylesheet, no build step.
+   Calm neutral ground, one teal accent, semantic ok/warn/bad only for system facts, mono for
+   anything the code names. Colours are OKLCH tokens on :root; the dark theme follows the
+   system unless <html data-theme="light|dark"> overrides it. Keep the two dark blocks equal
+   (tests/test_static_assets.py checks it). Fonts are the vendored Latin subsets, which have
+   no arrow glyphs: write "to", not an arrow, in copy. */
+
+@layer tokens, base, layout, components;
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("vendor/@fontsource-variable/inter@5.3.0/files/inter-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("vendor/@fontsource-variable/jetbrains-mono@5.3.0/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@layer tokens {
+  :root {
+    color-scheme: light;
+    --bg: oklch(0.985 0.003 250);
+    --surface: oklch(1 0 0);
+    --sunken: oklch(0.965 0.005 250);
+    --line: oklch(0.91 0.006 250);
+    --line-strong: oklch(0.82 0.01 250);
+    --fg: oklch(0.24 0.015 255);
+    --muted: oklch(0.48 0.015 255);
+    --faint: oklch(0.72 0.01 255);
+    --accent: oklch(0.5 0.1 200);
+    --accent-soft: oklch(0.94 0.04 195);
+    --accent-fg: oklch(0.99 0 0);
+    --focus: oklch(0.5 0.1 200);
+    --ok: oklch(0.5 0.12 155);
+    --warn: oklch(0.55 0.12 70);
+    --bad: oklch(0.52 0.17 25);
+    --sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --radius-sm: 4px;
+    --radius: 8px;
+    --gutter: 16px;
+    --ease: cubic-bezier(0.2, 0, 0, 1);
+    --page-max: 72rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: oklch(0.17 0.008 255);
+      --surface: oklch(0.205 0.009 255);
+      --sunken: oklch(0.15 0.008 255);
+      --line: oklch(0.29 0.01 255);
+      --line-strong: oklch(0.38 0.012 255);
+      --fg: oklch(0.93 0.006 255);
+      --muted: oklch(0.72 0.012 255);
+      --faint: oklch(0.48 0.012 255);
+      --accent: oklch(0.78 0.11 195);
+      --accent-soft: oklch(0.3 0.05 195);
+      --accent-fg: oklch(0.18 0.02 195);
+      --focus: oklch(0.78 0.11 195);
+      --ok: oklch(0.75 0.13 155);
+      --warn: oklch(0.8 0.13 80);
+      --bad: oklch(0.72 0.16 25);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: oklch(0.17 0.008 255);
+    --surface: oklch(0.205 0.009 255);
+    --sunken: oklch(0.15 0.008 255);
+    --line: oklch(0.29 0.01 255);
+    --line-strong: oklch(0.38 0.012 255);
+    --fg: oklch(0.93 0.006 255);
+    --muted: oklch(0.72 0.012 255);
+    --faint: oklch(0.48 0.012 255);
+    --accent: oklch(0.78 0.11 195);
+    --accent-soft: oklch(0.3 0.05 195);
+    --accent-fg: oklch(0.18 0.02 195);
+    --focus: oklch(0.78 0.11 195);
+    --ok: oklch(0.75 0.13 155);
+    --warn: oklch(0.8 0.13 80);
+    --bad: oklch(0.72 0.16 25);
+  }
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-width: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 400 1rem/1.6 var(--sans);
+    font-feature-settings: "cv11", "ss01";
+    overflow-wrap: break-word;
+  }
+
+  h1,
+  h2,
+  h3 {
+    margin: 0;
+    line-height: 1.2;
+    text-wrap: balance;
+  }
+
+  p,
+  ul {
+    margin: 0;
+  }
+
+  a {
+    color: var(--accent);
+    text-underline-offset: 0.18em;
+    text-decoration-thickness: 1px;
+
+    &:hover {
+      text-decoration-thickness: 2px;
+    }
+  }
+
+  code,
+  kbd,
+  samp {
+    font-family: var(--mono);
+    font-size: 0.92em;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  main:focus {
+    outline: none;
+  }
+
+  /* Hidden always wins. A component's display (.events is a grid) beats the UA's
+     [hidden] rule; an !important declaration in this earliest layer beats every later one. */
+  [hidden] {
+    display: none !important;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) {
+      animation: none !important;
+    }
+  }
+}
+
+@layer layout {
+  .wrap {
+    width: 100%;
+    max-width: var(--page-max);
+    margin-inline: auto;
+    padding-left: max(var(--gutter), env(safe-area-inset-left, 0px));
+    padding-right: max(var(--gutter), env(safe-area-inset-right, 0px));
+  }
+
+  .site-header {
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .site-header__inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.25rem 1.5rem;
+    padding-block: 0.75rem;
+  }
+
+  .site-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.25rem;
+    padding: 0;
+    list-style: none;
+    font-size: 0.9rem;
+
+    & a {
+      color: var(--muted);
+      text-decoration: none;
+
+      &:hover {
+        color: var(--fg);
+        text-decoration: underline;
+      }
+    }
+  }
+
+  .hook {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .hook__inner {
+    display: grid;
+    gap: 1rem;
+    padding-block: clamp(2rem, 6vw, 4rem) clamp(2rem, 5vw, 3rem);
+
+    & h1 {
+      max-width: 18ch;
+      font-size: clamp(2rem, 6vw, 3.25rem);
+      font-weight: 650;
+      letter-spacing: -0.025em;
+    }
+  }
+
+  .guided {
+    padding-block: 2.5rem 3.5rem;
+  }
+
+  .section-head {
+    display: grid;
+    gap: 0.5rem;
+    max-width: 44rem;
+    margin-bottom: 1.5rem;
+
+    & h2 {
+      font-size: 1.5rem;
+      letter-spacing: -0.01em;
+    }
+  }
+
+  /* Narrow: the live trace sits inline below the chapters, not pinned. Wide: chapters on the
+     left, the trace pinned in the side column (Deferred UI questions, #101). */
+  .guided__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+
+  @media (min-width: 60rem) {
+    .guided__body {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 26rem);
+      grid-template-areas: "chapters stage";
+      gap: 3rem;
+      align-items: start;
+    }
+
+    .stage {
+      grid-area: stage;
+      position: sticky;
+      top: 1rem;
+    }
+
+    /* Pinned stage fits the window. Capped at the viewport less its offset above and
+       below, it scrolls inside itself; focus and Play scroll it, smoothly unless motion is
+       reduced (the base reduced-motion rule forces scroll-behavior: auto). */
+    .stage {
+      max-height: calc(100dvh - 2rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .stage {
+        scroll-behavior: smooth;
+      }
+    }
+
+    .chapters {
+      grid-area: chapters;
+    }
+  }
+
+  .free-play,
+  .built {
+    border-top: 1px solid var(--line);
+    background: var(--sunken);
+    padding-block: 2.5rem;
+  }
+
+  .built {
+    background: var(--bg);
+    padding-bottom: 4rem;
+  }
+
+  .prose {
+    display: grid;
+    gap: 1rem;
+
+    & > * {
+      max-width: 44rem;
+    }
+
+    & h2 {
+      font-size: 1.5rem;
+      letter-spacing: -0.01em;
+    }
+  }
+
+  .site-footer {
+    border-top: 1px solid var(--line);
+    padding-block: 1.5rem;
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
+}
+
+@layer components {
+  /* Read by screen readers, never drawn: the stage's run announcement (#122). */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .skip-link {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 10;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    transform: translateY(-200%);
+
+    &:focus-visible {
+      transform: none;
+    }
+  }
+
+  .brand {
+    color: var(--fg);
+    font: 600 0.95rem/1.4 var(--mono);
+    text-decoration: none;
+  }
+
+  .eyebrow {
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .lede {
+    max-width: 62ch;
+    color: var(--muted);
+    font-size: 1.1rem;
+  }
+
+  .section-intro {
+    color: var(--muted);
+  }
+
+  .notice {
+    max-width: 62ch;
+    padding: 0.75rem 1rem;
+    border-left: 3px solid var(--warn);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    background: var(--surface);
+  }
+
+  .panel-title {
+    margin-bottom: 0.75rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .stage {
+    min-width: 0;
+    padding: 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+
+    /* At phone width the panel drops its chrome so the graph gets the full content width
+       (343 px at 375 px), which graph-layout.json is sized for. */
+    @media (max-width: 30rem) {
+      padding: 0;
+      border: 0;
+      background: none;
+    }
+  }
+
+  .button {
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    font: 500 0.875rem/1.2 var(--sans);
+    cursor: pointer;
+
+    &:hover {
+      border-color: var(--accent);
+    }
+
+    /* Nothing to do now, but still focusable, so focus never drops to the page. */
+    &[aria-disabled="true"] {
+      border-color: var(--line);
+      color: var(--muted);
+      cursor: default;
+    }
+  }
+
+  /* One run on the stage: its headline, then the graph inline above the waterfall at every
+     width (#101). A lost stream keeps its partial trace, dimmed. */
+  .run {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .run__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 0.75rem;
+    min-height: 2rem;
+  }
+
+  .run__line {
+    font-size: 0.925rem;
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .run__line--idle {
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  /* The stage names the scenario it draws; at narrow widths, where the scenario's card sits
+     far above the stage, a finished run links back to it. Pinned beside the chapters (wide),
+     the card is in view already, so the link is not drawn. */
+  .run__scenario {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.25rem 0.75rem;
+  }
+
+  .run__scenario-title {
+    font-weight: 600;
+  }
+
+  .run__back {
+    font-size: 0.875rem;
+  }
+
+  @media (min-width: 60rem) {
+    .run__back {
+      display: none;
+    }
+  }
+
+  .run__panels {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .run[data-dimmed="true"] .run__panels {
+    opacity: 0.55;
+  }
+
+  /* The triage graph: SVG in the layout's user units, so its font sizes come from the
+     layout too. Idle is quiet; visited and active nodes and taken edges take the accent. */
+  .graph {
+    margin: 0;
+  }
+
+  .graph__svg {
+    display: block;
+    width: 100%;
+    max-width: 24rem;
+    height: auto;
+    margin-inline: auto;
+    overflow: visible;
+  }
+
+  .graph__box {
+    fill: var(--surface);
+    stroke: var(--line-strong);
+    stroke-width: 1;
+  }
+
+  .graph__name {
+    fill: var(--muted);
+    font-family: var(--mono);
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+
+  .graph__terminal {
+    fill: var(--line-strong);
+  }
+
+  .graph__line {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.25;
+  }
+
+  .graph__arrow {
+    fill: var(--line-strong);
+  }
+
+  .graph__label {
+    fill: var(--muted);
+    font-family: var(--sans);
+  }
+
+  .graph__node:not([data-state="idle"]) {
+    & .graph__box {
+      fill: var(--accent-soft);
+      stroke: var(--accent);
+    }
+
+    & .graph__name {
+      fill: var(--fg);
+    }
+
+    & .graph__terminal {
+      fill: var(--accent);
+    }
+  }
+
+  .graph__node[data-state="active"] .graph__box {
+    stroke-width: 2.5;
+  }
+
+  .graph__node[role="button"] {
+    cursor: pointer;
+
+    &:focus-visible {
+      outline: none;
+
+      & .graph__box {
+        stroke: var(--focus);
+        stroke-width: 3;
+      }
+    }
+  }
+
+  .graph__edge[data-taken="true"] {
+    & .graph__line {
+      stroke: var(--accent);
+      stroke-width: 2;
+    }
+
+    & .graph__arrow {
+      fill: var(--accent);
+    }
+
+    & .graph__label {
+      fill: var(--fg);
+      font-weight: 600;
+    }
+  }
+
+  /* The waterfall: a label column and a track per row, all tracks one clock. --zero (set
+     inline) is t = 0 as a share of the track; setup draws left of it. */
+  .waterfall {
+    display: grid;
+    gap: 0.25rem;
+    margin: 0;
+  }
+
+  .waterfall__caption {
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .waterfall__rows {
+    display: grid;
+    gap: 0.125rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .waterfall__row,
+  .waterfall__axis {
+    display: grid;
+    /* A fixed label column, so every track (the axis's too) spans the same x range. */
+    grid-template-columns: 9.5rem minmax(0, 1fr);
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .waterfall__label {
+    display: grid;
+    min-width: 0;
+    line-height: 1.25;
+
+    .waterfall__row[data-depth="1"] & {
+      padding-left: 0.75rem;
+    }
+  }
+
+  .waterfall__name {
+    font: 500 0.75rem/1.3 var(--mono);
+    overflow-wrap: anywhere;
+  }
+
+  .waterfall__detail {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .waterfall__tag {
+    color: var(--fg);
+    font-style: italic;
+  }
+
+  .waterfall__track {
+    position: relative;
+    height: 1.25rem;
+    border-radius: 2px;
+    background: linear-gradient(var(--line), var(--line)) var(--zero, 0%) 0 / 1px 100% no-repeat;
+  }
+
+  .waterfall__bar {
+    position: absolute;
+    top: 0.3rem;
+    bottom: 0.3rem;
+    min-width: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+
+    [data-tone="warn"] & {
+      background: var(--warn);
+    }
+
+    [data-tone="bad"] & {
+      background: var(--bad);
+    }
+
+    [data-tone="setup"] & {
+      background: var(--faint);
+    }
+
+    [data-tone="running"] & {
+      background: var(--accent-soft);
+      outline: 1px solid var(--accent);
+    }
+
+    [data-kind="node"] & {
+      top: 0.2rem;
+      bottom: 0.2rem;
+    }
+  }
+
+  .waterfall__track--axis {
+    height: 1rem;
+    background: none;
+  }
+
+  .waterfall__zero {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--zero, 0%);
+    width: 1px;
+    background: var(--line-strong);
+  }
+
+  .waterfall__tick {
+    position: absolute;
+    top: 0;
+    left: 0.25rem;
+    color: var(--muted);
+    font: 0.7rem/1 var(--mono);
+    white-space: nowrap;
+  }
+
+  /* Ends just left of the zero line; overflows into the empty label column if setup is short. */
+  .waterfall__tick--setup {
+    right: calc(100% - var(--zero, 0%) + 0.25rem);
+    left: auto;
+  }
+
+  .waterfall__tick--end {
+    right: 0;
+    left: auto;
+  }
+
+  /* Readable timeline. A detail value ("under 1 ms") moves to the next line whole rather
+     than break inside, unless it is wider than the column on its own; in the pinned side panel
+     the label column is wide enough that node and model names never break mid-word. */
+  .waterfall__part {
+    display: inline-block;
+    max-width: 100%;
+  }
+
+  @media (min-width: 60rem) {
+    .stage .waterfall__row,
+    .stage .waterfall__axis {
+      grid-template-columns: 10.5rem minmax(0, 1fr);
+    }
+  }
+
+  /* Motion is CSS only and opt-in: nothing moves under reduced motion. */
+  @media (prefers-reduced-motion: no-preference) {
+    /* Colour only: bar geometry is the run's real timing, never tweened. */
+    .waterfall__bar {
+      transition: background-color 240ms var(--ease);
+    }
+
+    .graph__box,
+    .graph__name,
+    .graph__terminal,
+    .graph__line,
+    .graph__arrow,
+    .graph__label {
+      transition:
+        fill 240ms var(--ease),
+        stroke 240ms var(--ease);
+    }
+
+    .graph__node[data-state="active"] .graph__box {
+      animation: graph-active 900ms var(--ease) infinite alternate;
+    }
+  }
+
+  @keyframes graph-active {
+    to {
+      stroke-width: 1;
+    }
+  }
+
+  .empty {
+    display: grid;
+    gap: 0.25rem;
+    padding: 1rem;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+
+    .free-play & {
+      max-width: 44rem;
+    }
+  }
+
+  .empty__title {
+    font-weight: 600;
+  }
+
+  .empty__body {
+    color: var(--muted);
+    font-size: 0.925rem;
+  }
+
+  .built__list {
+    display: grid;
+    gap: 0.4rem;
+    padding-left: 1.1rem;
+    color: var(--muted);
+
+    & b {
+      color: var(--fg);
+      font-weight: 600;
+    }
+  }
+
+  /* How it's built's node list (#121): each node's name opens the inspector. */
+  .built__node-list {
+    display: grid;
+    gap: 0.5rem;
+    padding: 0;
+    list-style: none;
+
+    & li {
+      display: grid;
+      grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+      gap: 0.25rem 1rem;
+      align-items: baseline;
+
+      @media (max-width: 30rem) {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+  }
+
+  .built__node {
+    justify-self: start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: 500 0.875rem/1.4 var(--mono);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+    cursor: pointer;
+  }
+
+  .built__purpose {
+    color: var(--muted);
+    font-size: 0.925rem;
+  }
+
+  /* The node inspector (#121): a calm bordered panel, modal, sized to fit a phone. */
+  .inspector {
+    width: min(36rem, calc(100vw - 2 * var(--gutter)));
+    max-height: calc(100dvh - 2 * var(--gutter));
+    margin: auto;
+    padding: 1.25rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    overflow-wrap: anywhere;
+
+    &::backdrop {
+      background: color-mix(in oklch, var(--fg) 35%, transparent);
+    }
+  }
+
+  .inspector__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .inspector__title {
+    font: 600 1.125rem/1.3 var(--mono);
+  }
+
+  .inspector__purpose {
+    margin-bottom: 1rem;
+  }
+
+  .inspector__facts {
+    display: grid;
+    gap: 0.25rem;
+
+    & dt {
+      margin-top: 0.5rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    & dd {
+      margin: 0;
+    }
+  }
+
+  .inspector__list {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0;
+    list-style: none;
+
+    & li {
+      display: grid;
+    }
+  }
+
+  .inspector__note {
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
+
+  /* Inspector head pinned, body scrolls. The dialog drops its padding so its frame fills
+     it (a click on the dialog itself is then a backdrop click). The frame takes the dialog's
+     height cap less its 1px borders, and only the body scrolls, so Close never leaves the screen. */
+  .inspector {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .inspector__frame {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 2 * var(--gutter) - 2px);
+  }
+
+  .inspector .inspector__head {
+    flex: none;
+    margin: 0;
+    padding: 1.25rem 1.25rem 0.75rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .inspector__body {
+    min-height: 0;
+    padding: 0.75rem 1.25rem 1.25rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* Free play (#120): the question form, then the panel's own run, drawn like the stage. */
+  .free-play__panel {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .ask {
+    display: grid;
+    gap: 0.75rem;
+    padding: 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .ask__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.75rem 1rem;
+
+    & .ask__field {
+      flex: 1 1 12rem;
+    }
+  }
+
+  .ask__field {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .ask__label {
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  .ask__input {
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    font: 0.925rem/1.4 var(--sans);
+    resize: vertical;
+  }
+
+  /* Free play's plain message about a question it won't send. */
+  .ask__error {
+    color: var(--bad);
+    font-size: 0.875rem;
+  }
+
+  .ask__input[aria-invalid="true"] {
+    border-color: var(--bad);
+  }
+
+  .ask__check {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 2.1rem;
+    font-size: 0.875rem;
+  }
+
+  .button--primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-fg);
+
+    &:hover {
+      border-color: var(--fg);
+    }
+  }
+
+  .free-play__model {
+    color: var(--muted);
+    font: 0.8rem/1.4 var(--mono);
+  }
+
+  .free-play__run {
+    min-width: 0;
+    display: grid;
+    gap: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+
+    /* At phone width the card keeps its surface, top and bottom rules and padding but
+       runs edge to edge, so its graph still gets the 343 px graph-layout.json is sized for. */
+    @media (max-width: 30rem) {
+      margin-inline: calc(-1 * var(--gutter));
+      border-inline: 0;
+      border-radius: 0;
+    }
+  }
+}
+
+/* Guided chapters (#119): chapters, each scenario a disclosure that opens inline with its
+   setup notes, controls, one-line summary, "Show everything" and the report. */
+@layer components {
+  .chapters__state {
+    display: grid;
+    gap: 2.25rem;
+  }
+
+  .chapters__loading {
+    color: var(--muted);
+  }
+
+  .notice--action {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+  }
+
+  .chapter {
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .chapter__heading {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    font-size: 1.15rem;
+    letter-spacing: -0.005em;
+  }
+
+  .chapter__number {
+    color: var(--muted);
+    font: 500 0.9rem/1 var(--mono);
+  }
+
+  .chapter__intro {
+    max-width: 62ch;
+    color: var(--muted);
+  }
+
+  .chapter__scenarios {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+    padding: 0;
+    list-style: none;
+  }
+
+  .scenario {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    /* The stage's way back lands with a little room above the card, not flush with the
+       window's edge. */
+    scroll-margin-top: 1rem;
+
+    &[data-open="true"] {
+      border-color: var(--line-strong);
+    }
+  }
+
+  .scenario__heading {
+    margin: 0;
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  .scenario__toggle {
+    display: grid;
+    gap: 0.15rem;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 0;
+    border-radius: var(--radius);
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    &:hover .scenario__title {
+      text-decoration: underline;
+    }
+  }
+
+  .scenario__title {
+    font-weight: 600;
+  }
+
+  .scenario__caption {
+    color: var(--muted);
+    font-size: 0.925rem;
+  }
+
+  .scenario__panel:not([hidden]) {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0 1rem 1rem;
+
+    & > .button {
+      justify-self: start;
+    }
+  }
+
+  .scenario__setup {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.6rem 0.75rem 0.6rem 1.75rem;
+    border-radius: var(--radius-sm);
+    background: var(--sunken);
+    font-size: 0.925rem;
+  }
+
+  .scenario__controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .scenario__line {
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .button--primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-fg);
+  }
+
+  .button--quiet {
+    border-color: var(--line);
+  }
+
+  /* Unavailable, as a quiet button's disabled state: a Skip to end with nothing left to skip,
+     and Triage while it can't ask (a run streaming, or a budget shed's countdown). After every
+     button rule, hover included; aria-disabled (not disabled) keeps a keyboard user's focus. */
+  .button--quiet[aria-disabled="true"],
+  .button--primary[aria-disabled="true"] {
+    border-style: dashed;
+    border-color: var(--line);
+    background: var(--sunken);
+    color: var(--faint);
+    cursor: not-allowed;
+  }
+
+  .badge {
+    padding: 0.1rem 0.5rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .events {
+    display: grid;
+    gap: 0.2rem;
+    max-height: 22rem;
+    overflow-y: auto;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--sunken);
+    font: 0.75rem/1.45 var(--mono);
+    list-style: none;
+
+    & li {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0 0.6rem;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .events__at {
+    min-width: 4.5rem;
+    color: var(--muted);
+  }
+
+  .events__kind {
+    font-weight: 600;
+  }
+
+  .events__detail {
+    flex-basis: 100%;
+    color: var(--muted);
+  }
+
+  .report {
+    display: grid;
+    gap: 0.6rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+
+  .report__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.6rem;
+    font-size: 0.8rem;
+  }
+
+  .chip {
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--line-strong);
+    border-left-width: 3px;
+    border-radius: var(--radius-sm);
+    font: 500 0.75rem/1.5 var(--mono);
+
+    &[data-tone="ok"] {
+      border-left-color: var(--ok);
+    }
+
+    &[data-tone="warn"] {
+      border-left-color: var(--warn);
+    }
+
+    &[data-tone="bad"] {
+      border-left-color: var(--bad);
+    }
+  }
+
+  .report__confidence {
+    color: var(--muted);
+  }
+
+  .report__summary {
+    font-weight: 600;
+  }
+
+  .report__provenance,
+  .report__target,
+  .report__raised {
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .report__facts {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.25rem 0.75rem;
+    font-size: 0.9rem;
+
+    & dt {
+      color: var(--muted);
+    }
+
+    & dd {
+      margin: 0;
+    }
+  }
+
+  .report__actions {
+    display: grid;
+    gap: 0.4rem;
+    padding: 0;
+    list-style: none;
+    font-size: 0.9rem;
+  }
+
+  .report__action {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.1rem 0.6rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--line);
+
+    &[data-raised="true"] .report__approval {
+      font-weight: 600;
+    }
+  }
+
+  .report__priority {
+    font: 500 0.8rem/1.6 var(--mono);
+  }
+
+  .report__what {
+    display: grid;
+  }
+
+  .report__approval {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 0.5rem;
+    grid-column: 2;
+  }
+}

@@ -1,23 +1,32 @@
-"""Node: compensate_blindspots - Compensates for tripped circuit breakers with historical cache context."""
+"""Node: compensate_blindspots - Fills in for tripped sources with past incidents from the cache."""
 
 from typing import Any
 
-from resilient_triage.cache.semantic_cache import semantic_cache
+from langgraph.runtime import Runtime
+
+from resilient_triage.graph.deps import TriageDeps
 from resilient_triage.schemas.incident import TelemetrySignal
 from resilient_triage.schemas.state import TriageState
 
 
-async def compensate_blindspots_node(state: TriageState) -> dict[str, Any]:
+async def compensate_blindspots_node(
+    state: TriageState, runtime: Runtime[TriageDeps]
+) -> dict[str, Any]:
     """Query semantic cache to bridge blind spots left by offline or tripped telemetry sources."""
     query = state.get("query", "")
     service_filter = state.get("service_filter")
     existing_signals = list(state.get("telemetry_signals", []))
     historical_context: list[str] = []
 
-    # Attempt to retrieve related historical incidents from cache (lower similarity threshold 0.70 for historical breadth)
-    match = await semantic_cache.lookup(query=query, service_filter=service_filter, threshold=0.70)
+    # Look up related historical incidents (lower similarity threshold 0.70 for breadth)
+    match = await runtime.context.history.lookup(
+        query=query, service_filter=service_filter, threshold=0.70
+    )
     if match:
-        snippet = f"Previous incident on '{match.matched_query}': Root cause: {match.report.root_cause_analysis}. Severity: {match.report.severity}."
+        snippet = (
+            f"Previous incident on '{match.matched_query}': Root cause: "
+            f"{match.report.root_cause_analysis}. Severity: {match.report.severity}."
+        )
         historical_context.append(snippet)
         existing_signals.append(
             TelemetrySignal(
@@ -28,7 +37,8 @@ async def compensate_blindspots_node(state: TriageState) -> dict[str, Any]:
         )
     else:
         historical_context.append(
-            f"No prior incident match found in semantic cache for scope '{service_filter or 'general'}'. Proceeding with baseline heuristics."
+            "No prior incident match found in semantic cache for scope "
+            f"'{service_filter or 'general'}'. Proceeding with baseline heuristics."
         )
 
     return {

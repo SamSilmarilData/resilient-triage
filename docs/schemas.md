@@ -17,8 +17,8 @@ The primary validated output produced by the triage agent.
 | `affected_services` | `list[ServiceImpact]` | List of impacted components | Non-hallucinated list |
 | `telemetry_signals` | `list[TelemetrySignal]`| Signals gathered from telemetry | Recorded observations |
 | `recommended_actions` | `list[ActionRecommendation]` | Remediation steps | Priority tagged |
-| `degradation_status` | `DegradationStatus` | Agent operational mode | `HEALTHY`, `PARTIALLY_DEGRADED`, `SEVERELY_DEGRADED`, `UNKNOWN` |
-| `circuit_breakers_tripped` | `list[str]` | Names of tripped breakers | E.g. `["statuspage", "chaos"]` |
+| `degradation_status` | `DegradationStatus` | Agent operational mode | `HEALTHY`, `PARTIALLY_DEGRADED`, `SEVERELY_DEGRADED`, `UNKNOWN`. Set by report reconciliation (the LLM's value is discarded); `UNKNOWN` is never produced |
+| `circuit_breakers_tripped` | `list[str]` | Names of tripped breakers | E.g. `["statuspage", "chaos"]`. Set by report reconciliation from the targeted breakers open at collection (the LLM's value is discarded) |
 | `confidence_score` | `float` | Model confidence score | Constrained between `0.0` and `1.0` |
 
 ### Enums
@@ -42,7 +42,7 @@ Runtime parameters for the configurable `/chaos` endpoint:
 - `active: bool`: Master toggle for chaos injection.
 - `inject_503: bool`: If true, immediately raises HTTP 503.
 - `failure_rate: float`: Probability fraction between `0.0` and `1.0`.
-- `latency_ms: int`: Milliseconds of artificial latency to introduce.
+- `latency_ms: int`: Milliseconds of artificial latency to introduce (`ge=0, le=30_000`; `/chaos/inject` answers 422 above 30 000).
 
 ---
 
@@ -59,7 +59,10 @@ Typed dictionary carrying execution state across graph nodes:
 - `candidate_report_raw: str | None`: Unparsed raw output from LLM.
 - `repair_attempts: int`: Number of self-repair retries attempted (max 2).
 - `validation_errors: list[str]`: Tracebacks from Pydantic `ValidationError`.
+- `provider_failure: ProviderFailure | None`: The latest generation's typed LLM provider failure (`RateLimited`, `Unavailable`, `Rejected` or `MalformedResponse`), else `None`. Set, it routes `generate_report` past `self_repair`: in a refine round to `finalize` with the pre-refine report (`refined_from`), else to `fallback_report`.
+- `refined_from: IncidentTriageReport | None`: The valid report a refine round started from, set by `refine_reflection`. If the round runs out of self-repair or hits a provider failure, the run finalizes this report instead of falling back.
 - `final_report: IncidentTriageReport | None`: Final validated report.
+- `previous_node: str`: The node that ran last, set by the trace wrapper in `graph/builder.py` so the next node can derive the route taken (ADR-008). No node or router reads it.
 
 ---
 
@@ -74,7 +77,10 @@ Typed dictionary carrying execution state across graph nodes:
 - `report: IncidentTriageReport`: The triage report.
 - `cached: bool`: Whether served from semantic cache (`X-Cache: HIT`).
 - `cache_similarity: float | None`: Cosine similarity score if matched in cache.
-- `execution_time_ms: float`: Request turnaround time in milliseconds.
+- `execution_time_ms: float`: Request turnaround time in milliseconds, measured by the Triage gateway.
+- `trace: TraceSummary | None`: The request's trace summary (`resilient_triage.trace.summary`, ADR-008), derived by `summarize()` from the events recorded before `trace_finished`; `null` when the request was not traced with a recorder that keeps its events. Structured ids, counts and timings only, never the event list. Fields and meanings: [API reference](api.md#1-post-triage). `IncidentTriageReport` is unchanged.
+
+`resilient_triage.schemas` re-exports nothing; import from the submodules (`schemas.api` imports `trace.summary`, which imports `schemas.incident`, so eager package re-exports would close an import cycle).
 
 ### `CircuitSnapshot`
 Snapshot representation of an individual circuit breaker's operational state:
@@ -88,26 +94,27 @@ Snapshot representation of an individual circuit breaker's operational state:
 - `last_failure_reason: str | None`: Error message or reason for the latest failure.
 
 ### `LLMQuotaSnapshot`
-Real-time quota, rate limit, and failover telemetry for the active LLM provider (specifically Groq free tier):
+Quota, rate limit and failover telemetry from the LLM gateway (`LLMGateway.snapshot()`). The budget fields and `last_status` describe the primary model only; the counters cover both models.
+
 - `provider: str`: Provider name (`"groq"`).
-- `active_model: str`: Active primary model (`"llama-3.3-70b-versatile"` or simulation).
-- `fallback_model: str | None`: Active fallback model (`"openai/gpt-oss-20b"`).
+- `active_model: str`: The model that served the last completion (the primary `"qwen/qwen3.8-27b"` until a fallback answers).
+- `fallback_model: str | None`: The fallback model, `GROQ_FALLBACK_MODEL` (`"llama-3.1-8b-instant"`).
 - `remaining_requests: int | None`: Requests remaining in current rate-limit window.
 - `limit_requests: int | None`: Total request limit for current window.
 - `remaining_tokens: int | None`: Tokens remaining in current rate-limit window.
 - `limit_tokens: int | None`: Total token limit for current window.
 - `reset_requests: str | None`: Duration until request quota window resets (e.g., `"12.4s"`).
 - `reset_tokens: str | None`: Duration until token quota window resets (e.g., `"8.1s"`).
-- `total_calls: int`: Total LLM API calls executed since process start.
+- `total_calls: int`: Model calls made since the app started or the last reset. A `complete()` that fails over counts each call.
 - `rate_limit_hits: int`: Total HTTP 429 rate limit events encountered.
-- `failover_events: int`: Total successful fallback model invocations.
-- `last_status: int | None`: HTTP status code of the most recent LLM API response.
+- `failover_events: int`: Completions answered by the fallback model, after a primary failure or while the primary cooled down.
+- `last_status: int | None`: HTTP status code of the primary model's most recent response.
 - `last_error: str | None`: Most recent error message or rate limit description.
 - `last_updated: datetime | None`: Timestamp of the most recent telemetry update.
 
 ### `HealthResponse`
 - `status`: Service status (`"healthy"` or `"degraded"`).
-- `version`: API release version string (`"1.3.0"`).
+- `version`: API release version string (`"2.0.0"`).
 - `redis_connected`: True if Redis is reachable and active.
 - `cache_driver`: Active vector driver (`"redisearch"`, `"redis_hash_fallback"`, or `"in_memory"`).
 - `circuits`: Dictionary mapping breaker names to states (`{"statuspage": "closed", "chaos": "closed"}`).

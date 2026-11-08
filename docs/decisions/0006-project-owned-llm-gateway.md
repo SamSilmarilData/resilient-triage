@@ -1,14 +1,14 @@
 # ADR-006: LLM Access Through a Project-Owned Gateway That Returns Failures as Values
 
 ## Status
-Accepted (supersedes the `GroqChatModel` / `GroqQuotaTracker` design in ADR-005)
+Accepted (supersedes the Groq chat model and quota tracker design, including the fallback model, in ADR-005)
 
 ## Date
 2026-10-28
 
 ## Context
-All model access went through LangChain `BaseChatModel` subclasses (`GroqChatModel`,
-`MockTriageChatModel`). Because of that shape:
+All model access went through LangChain `BaseChatModel` subclasses (a Groq chat model and
+a mock chat model for the simulation). Because of that shape:
 - Every provider failure became an exception that `generate_report` caught with a bare
   `except Exception`. The graph then routed on a string-matched `"LLM Provider Failure"`
   and on `repair_attempts` being forced to its maximum.
